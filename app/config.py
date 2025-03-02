@@ -1,35 +1,48 @@
+# config.py
+
 DEFAULT_VALUES = {
-    'input_file': './tests/data/phase_1_normalized_d1.csv',
-    'validation_file': './tests/data/phase_1_normalized_d2.csv',
-    'output_file': './csv_output.csv',
-    'save_encoder': './encoder_model.h5',
-    'save_decoder': './decoder_model.h5',
-    'load_encoder': None,
-    'load_decoder': None,
-    'evaluate_encoder': './encoder_eval.csv',
-    'evaluate_decoder': './decoder_eval.csv',
-    'encoder_plugin': 'transformer',
-    'decoder_plugin': 'transformer',
-    'use_sliding_windows': False,
-    'window_size': 256, 
-    'threshold_error': 0.5,
-    'initial_size': 16,
-    'step_size': 2,
-    'save_log': './debug_out.json',
+    "use_normalization_json": "examples\\config\\phase_2_normalizer_debug_out.json",
+
+
+    "x_train_file": "examples\\data\\phase_1\\phase_1_normalized_d2.csv",
+    #"x_train_file": "examples\\data\\phase_2\\normalized_d2.csv",
+    #"x_train_file": "examples\\data\\phase_3\\extracted_features_transformer_va_d2.csv",
+    "y_train_file": "examples\\data\\phase_1\\phase_1_normalized_d2.csv",
+    
+    "x_validation_file": "examples\\data\\phase_1\\phase_1_normalized_d3.csv",
+    #"x_validation_file": "examples\\data\\phase_2\\normalized_d3.csv",
+    #"x_validation_file": "examples\\data\\phase_3\\extracted_features_transformer_va_d2.csv",
+    "y_validation_file": "examples\\data\\phase_1\\phase_1_normalized_d3.csv",
+    
+    'target_column': 'CLOSE',
+    'output_file': './prediction.csv',
+    'results_file': './results.csv',
+    'save_model': './predictor_model.keras',
+    'load_model': None,
+    'loss_plot_file': './loss_plot.png',
+    'model_plot_file': './model_plot.png',	
+    'plugin': 'ann',
+    'time_horizon': 6,
+    'use_daily': False, # isntead of predicting the next time_horizon hours, predict the next time_horizon days.
+    'threshold_error': 0.0001,
     'remote_log': None,
     'remote_load_config': None,
     'remote_save_config': None,
     'username': None,
-    'password': None, 
+    'password': None,
     'load_config': None,
     'save_config': './config_out.json',
+    'save_log': './debug_out.json',
     'quiet_mode': False,
-    'force_date': True,
-    'incremental_search': True, # if false performs decresing search instead
+    'force_date': False,
     'headers': True,
-    'epochs': 600,  # Add epochs here
-    'batch_size': 128,  # Add batch_size here
-    'learning_rate': 0.0001,  # Add learning_rate here
-    'dataset_periodicity': '1h'  # Add dataset_periodicity here, can be 1m, 5m, 15m, 30m, 1h, 4h, daily
+    'input_offset': 0,
+    'window_size': 256,  # Number of time steps in each window (e.g., 24 for daily patterns)
+    'l2_reg': 1e-4,          # L2 regularization factor
+    'patience': 30,           # Early stopping patience
+    'max_steps_train': 6300,
+    'max_steps_test': 6300,
+    'iterations': 3,
+    'epochs': 1000
+    
 }
-
