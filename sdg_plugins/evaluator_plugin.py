@@ -17,7 +17,7 @@ Interfaz:
 import os
 import numpy as np
 import pandas as pd
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List
 
 
 class EvaluatorPlugin:
@@ -73,13 +73,23 @@ class EvaluatorPlugin:
         """
         debug_info.update(self.get_debug_info())
 
-    def evaluate(self, synthetic_data: np.ndarray, config: Dict[str, Any] = None) -> Dict[str, Any]:
+    def evaluate(
+        self,
+        synthetic_data: np.ndarray,
+        real_data_processed: np.ndarray,  # New
+        real_dates: Optional[pd.Index],   # New
+        feature_names: List[str],         # New
+        config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """
         Compara 'synthetic_data' con la señal real extraída de 'real_data_file'.
         Realiza sliding windows sobre la señal real de tamaño 'window_size',
         extrae el primer elemento de cada ventana y calcula métricas.
 
         :param synthetic_data: Array shape (n_samples, n_features).
+        :param real_data_processed: Array shape (n_samples, n_features).
+        :param real_dates: Opcional, índice de fechas de los datos reales.
+        :param feature_names: Lista de nombres de características.
         :param config: Opcional, puede sobreescribir 'real_data_file' o 'window_size'.
         :return: Diccionario con métricas:
                  - 'mae_per_feature'

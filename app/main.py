@@ -147,11 +147,28 @@ def main():
         print(f"Failed to load or initialize Optimizer Plugin '{plugin_name}': {e}")
         sys.exit(1)
 
+    # Carga del Preprocessor Plugin (para process_data, ventanas deslizantes y STL)
+    # Using the exact loading mechanism you provided:
+    plugin_name = config.get('preprocessor_plugin', 'stl_preprocessor') # Default name from your snippet
+    print(f"Loading Plugin ..{plugin_name}") # Print format from your snippet
+    try:
+        # Ensure 'preprocessor.plugins' is the correct group name for your preprocessor
+        preprocessor_class, _ = load_plugin('preprocessor.plugins', plugin_name) # Group from your snippet
+        preprocessor_plugin = preprocessor_class() # Instantiation from your snippet
+        preprocessor_plugin.set_params(**config) # Param setting from your snippet
+    except Exception as e:
+        print(f"Failed to load or initialize Preprocessor Plugin: {e}") # Error message format from your snippet
+        sys.exit(1)
+
     print("Merging configuration with CLI arguments and plugin parameters...")
     config = merge_config(config, feeder_plugin.plugin_params, {}, file_config, cli_args, unknown_args_dict)
     config = merge_config(config, generator_plugin.plugin_params, {}, file_config, cli_args, unknown_args_dict)
     config = merge_config(config, evaluator_plugin.plugin_params, {}, file_config, cli_args, unknown_args_dict)
     config = merge_config(config, optimizer_plugin.plugin_params, {}, file_config, cli_args, unknown_args_dict)
+    # Add preprocessor plugin params to merge if it has 'plugin_params' attribute
+    if hasattr(preprocessor_plugin, 'plugin_params'):
+        config = merge_config(config, preprocessor_plugin.plugin_params, {}, file_config, cli_args, unknown_args_dict)
+
 
     # --- DECISIÓN DE EJECUCIÓN ---
     if config.get('use_optimizer', False):
@@ -179,20 +196,65 @@ def main():
         print("Generating synthetic data and evaluating...")
 
         try:
+            # 0. Preprocess real data for evaluation using the loaded PreprocessorPlugin
+            # This assumes your PreprocessorPlugin has a method like 'preprocess_for_evaluation'
+            # that returns: processed_data_array, processed_dates_index, feature_names_list
+            print("Preprocessing real data for evaluation via PreprocessorPlugin...")
+            # You might need to pass specific parts of the config or the whole config
+            # depending on your preprocessor_plugin's method signature.
+            # Example: X_real_processed, real_dates, real_feature_names = preprocessor_plugin.run_preprocessing(config)
+            # For this example, let's assume a method name and return signature:
+            if not hasattr(preprocessor_plugin, 'preprocess_for_evaluation'):
+                raise AttributeError("PreprocessorPlugin does not have a 'preprocess_for_evaluation' method.")
+            
+            # The preprocessor should handle its own configuration for real_data_file, window_size etc.
+            # based on the `config` it received during set_params or passed here.
+            X_real_processed, real_dates, real_feature_names = preprocessor_plugin.preprocess_for_evaluation(config=config)
+            print(f"Real data preprocessed. Shape: {X_real_processed.shape}, Number of dates: {len(real_dates) if real_dates is not None else 'N/A'}")
+
+
             # 1. Muestreo latente (usar solo n_samples; latent_dim ya fue seteado)
-            Z = feeder_plugin.generate(config['n_samples'])
+            # Adjust n_samples for synthetic data to match preprocessed real data if necessary.
+            n_synthetic_samples = config['n_samples']
+            if X_real_processed.shape[0] < n_synthetic_samples and X_real_processed.shape[0] > 0 :
+                print(f"Warning: Number of preprocessed real samples ({X_real_processed.shape[0]}) is less than requested synthetic samples ({n_synthetic_samples}). Adjusting synthetic samples to match real data length.")
+                n_synthetic_samples = X_real_processed.shape[0]
+            elif X_real_processed.shape[0] == 0:
+                 print(f"Warning: Preprocessed real data has 0 samples. Using configured n_samples ({n_synthetic_samples}) for synthetic data.")
+
+            if n_synthetic_samples == 0:
+                raise ValueError("Cannot generate 0 synthetic samples. Check real data preprocessing or n_samples config.")
+
+            Z = feeder_plugin.generate(n_synthetic_samples)
+            
             # 2. Decodificación a ventanas sintéticas
             X_syn = generator_plugin.generate(Z)
+            
+            # Ensure X_syn has the same number of features as X_real_processed
+            if X_syn.shape[1] != X_real_processed.shape[1]:
+                raise ValueError(
+                    f"Feature mismatch after generation/preprocessing: "
+                    f"Synthetic data has {X_syn.shape[1]} features, "
+                    f"Preprocessed real data has {X_real_processed.shape[1]} features. "
+                    f"Feature names from preprocessor: {real_feature_names}"
+                )
+
             # 3. Guardado de datos sintéticos
             output_file = config['output_file']
-            pd.DataFrame(X_syn.reshape(-1, X_syn.shape[-1])).to_csv(
-                output_file, index=False, header=False
+            # Save with header if feature names are available
+            pd.DataFrame(X_syn, columns=real_feature_names if len(real_feature_names) == X_syn.shape[1] else None).to_csv(
+                output_file, index=False
             )
             print(f"Synthetic data saved to {output_file}.")
+            
             # 4. Evaluación de las ventanas generadas
+            # Pass the preprocessed real data and dates to the evaluator
             metrics = evaluator_plugin.evaluate(
                 synthetic_data=X_syn,
-                config=config  # Pass the main config dictionary
+                real_data_processed=X_real_processed, # Pass the preprocessed real data
+                real_dates=real_dates,                # Pass the corresponding dates
+                feature_names=real_feature_names,     # Pass the feature names
+                config=config                         # Pass main config for other evaluator params
             )
             metrics_file = config['metrics_file']
             with open(metrics_file, "w") as f:
