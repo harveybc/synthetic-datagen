@@ -16,6 +16,7 @@ from typing import Any, Dict
 import numpy as np
 import os # For path operations and temp file removal
 import tempfile # For creating temporary files
+from datetime import datetime, timedelta # Ensure these are imported
 
 from app.config_handler import (
     load_config,
@@ -172,6 +173,70 @@ def main():
     if hasattr(preprocessor_plugin, 'plugin_params'):
         config = merge_config(config, preprocessor_plugin.plugin_params, {}, file_config, cli_args, unknown_args_dict)
 
+
+    # --- Helper function to generate DATE_TIME column ---
+    def generate_datetime_column(start_datetime_str: str, num_samples: int, periodicity_str: str) -> list:
+        """
+        Generates a list of datetime strings based on start_datetime, num_samples, and periodicity.
+        Skips weekends for non-daily periodicities. For daily, only includes weekdays.
+        """
+        date_times = []
+        
+        try:
+            current_dt = pd.to_datetime(start_datetime_str)
+        except Exception as e:
+            print(f"Error parsing 'start_date_time' ('{start_datetime_str}'): {e}. DATE_TIME column will be empty.")
+            return []
+
+        time_delta_map = {
+            "1h": timedelta(hours=1),
+            "15min": timedelta(minutes=15),
+            "1min": timedelta(minutes=1),
+            "daily": timedelta(days=1)
+            # Add other supported periodicities here
+        }
+        time_step = time_delta_map.get(periodicity_str)
+
+        if not time_step:
+            print(f"Warning: Unsupported 'dataset_periodicity' ('{periodicity_str}') for DATE_TIME generation. Column will be empty.")
+            return []
+
+        generated_count = 0
+        
+        # Initial adjustment for non-daily: if start_dt is weekend, move to next Monday 00:00
+        if periodicity_str != "daily":
+            while current_dt.weekday() >= 5: # 5 = Saturday, 6 = Sunday
+                current_dt += timedelta(days=1)
+                current_dt = current_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        while generated_count < num_samples:
+            if periodicity_str == "daily":
+                if current_dt.weekday() < 5: # Monday to Friday
+                    date_times.append(current_dt.strftime('%Y-%m-%d %H:%M:%S'))
+                    generated_count += 1
+                current_dt += time_step # Increment by one day
+            else: # For hourly, minutely, etc.
+                date_times.append(current_dt.strftime('%Y-%m-%d %H:%M:%S'))
+                generated_count += 1
+                current_dt += time_step
+                # Skip to next weekday if current_dt lands on a weekend
+                while current_dt.weekday() >= 5:
+                    current_dt += timedelta(days=1)
+                    current_dt = current_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            if len(date_times) > num_samples * 2 and num_samples > 0 : # Safety break for potential infinite loops with complex date logic
+                print(f"Warning: DATE_TIME generation seems to be in a long loop. Breaking after generating {len(date_times)} dates for {num_samples} requested samples.")
+                break
+        
+        if len(date_times) > num_samples: # Trim if overshot (can happen if last step before weekend skip was not needed)
+            date_times = date_times[:num_samples]
+
+        if len(date_times) != num_samples:
+            print(f"Warning: Could not generate the exact number of timestamps for DATE_TIME. Expected {num_samples}, got {len(date_times)}. Check start_date and periodicity.")
+            # Optionally, fill with NaNs or handle differently if exact match is critical
+            # For now, it will save with fewer date_times if this happens.
+
+        return date_times
 
     # --- DECISIÓN DE EJECUCIÓN ---
     if config.get('use_optimizer', False):
@@ -380,16 +445,43 @@ def main():
                 )
 
             output_file = config['output_file']
-            pd.DataFrame(X_syn, columns=real_feature_names if len(real_feature_names) == X_syn.shape[1] else None).to_csv(
-                output_file, index=False
-            )
+            
+            # --- DATE_TIME Column Generation and DataFrame Creation ---
+            datetime_column_values = []
+            final_columns_for_csv = list(real_feature_names) # Start with numeric feature names
+
+            if "start_date_time" in config and config["start_date_time"] and \
+               "dataset_periodicity" in config and config["dataset_periodicity"]:
+                
+                print(f"Attempting to generate DATE_TIME column for {n_synthetic_samples} samples, starting from {config['start_date_time']} with periodicity {config['dataset_periodicity']}.")
+                datetime_column_values = generate_datetime_column(
+                    config["start_date_time"],
+                    n_synthetic_samples, # Use the actual number of synthetic samples being generated
+                    config["dataset_periodicity"]
+                )
+
+                if datetime_column_values and len(datetime_column_values) == X_syn.shape[0]:
+                    # Create DataFrame with DATE_TIME column first
+                    df_data_to_save = pd.DataFrame(X_syn, columns=real_feature_names)
+                    df_data_to_save.insert(0, "DATE_TIME", datetime_column_values)
+                    # The columns of df_data_to_save will now include DATE_TIME
+                    print(f"DATE_TIME column generated successfully with {len(datetime_column_values)} entries.")
+                else:
+                    # Fallback to saving without DATE_TIME if generation failed or length mismatch
+                    print("Warning: DATE_TIME column generation failed or length mismatch. Saving data without DATE_TIME column.")
+                    df_data_to_save = pd.DataFrame(X_syn, columns=real_feature_names if len(real_feature_names) == X_syn.shape[1] else None)
+            else:
+                print("Information: 'start_date_time' or 'dataset_periodicity' not found in config. Saving data without DATE_TIME column.")
+                df_data_to_save = pd.DataFrame(X_syn, columns=real_feature_names if len(real_feature_names) == X_syn.shape[1] else None)
+            
+            df_data_to_save.to_csv(output_file, index=False)
             print(f"Synthetic data saved to {output_file}.")
             
             metrics = evaluator_plugin.evaluate(
-                synthetic_data=X_syn,
+                synthetic_data=X_syn, # Pass original X_syn without datetime for numeric evaluation
                 real_data_processed=X_real_processed,
                 real_dates=real_dates,
-                feature_names=real_feature_names,
+                feature_names=real_feature_names, # Numeric feature names
                 config=config
             )
             metrics_file = config['metrics_file']
