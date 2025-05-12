@@ -39,7 +39,14 @@ def load_plugin(plugin_group: str, plugin_name: str):
         # Extract the keys from the plugin's plugin_params attribute as required parameters.
         required_params = list(plugin_class.plugin_params.keys())
         print(f"Successfully loaded plugin: {plugin_name} with params: {plugin_class.plugin_params}")
-        return plugin_class, required_params
+        # ADD THIS DEBUG BLOCK
+        return_value_to_send = (plugin_class, required_params)
+        print(f"DEBUG plugin_loader.py: About to return: {return_value_to_send}")
+        print(f"DEBUG plugin_loader.py: Type of return_value_to_send: {type(return_value_to_send)}")
+        if isinstance(return_value_to_send, tuple):
+            print(f"DEBUG plugin_loader.py: Length of return_value_to_send tuple: {len(return_value_to_send)}")
+        # END DEBUG BLOCK
+        return return_value_to_send
     except StopIteration:
         print(f"Failed to find plugin {plugin_name} in group {plugin_group}")
         raise ImportError(f"Plugin {plugin_name} not found in group {plugin_group}.")

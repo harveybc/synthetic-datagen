@@ -78,7 +78,15 @@ def main():
     plugin_name = config.get('generator', 'default_generator')
     print(f"Loading Generator Plugin: {plugin_name}")
     try:
-        generator_class,_ = load_plugin('generator.plugins', plugin_name)
+        # ADD THIS DEBUG BLOCK
+        returned_value_for_generator = load_plugin('generator.plugins', plugin_name)
+        print(f"DEBUG main.py: Received from load_plugin for generator: {returned_value_for_generator}")
+        print(f"DEBUG main.py: Type of received value: {type(returned_value_for_generator)}")
+        if isinstance(returned_value_for_generator, (tuple, list)): # Check if it's an iterable
+            print(f"DEBUG main.py: Length of received iterable: {len(returned_value_for_generator)}")
+        # END DEBUG BLOCK
+        
+        generator_class, _ = returned_value_for_generator # Use the inspected value
         generator_plugin = generator_class(config)
         generator_plugin.set_params(**config)
 
