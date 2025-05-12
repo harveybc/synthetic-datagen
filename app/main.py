@@ -78,7 +78,7 @@ def main():
     plugin_name = config.get('generator', 'default_generator')
     print(f"Loading Generator Plugin: {plugin_name}")
     try:
-        generator_class = load_plugin('generator.plugins', plugin_name)
+        generator_class,_ = load_plugin('generator.plugins', plugin_name)
         generator_plugin = generator_class(config)
         generator_plugin.set_params(**config)
 
