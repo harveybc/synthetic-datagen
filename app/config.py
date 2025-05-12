@@ -21,6 +21,13 @@ DEFAULT_VALUES = {
 
     # Data for evaluation
     "real_data_file": "examples/data/phase_3/normalized_d1.csv",
+    "x_train_file": "examples/data/phase_3/normalized_d1.csv",
+    "y_train_file": "examples/data/phase_3/normalized_d1.csv",
+    "x_validation_file": "examples/data/phase_3/normalized_d2.csv",
+    "y_validation_file": "examples/data/phase_3/normalized_d2.csv",
+    "x_test_file": "examples/data/phase_3/normalized_d3.csv",
+    "y_test_file": "examples/data/phase_3/normalized_d3.csv",
+
 
     # Output paths
     "output_file": "examples/results/phase_4_1/synthetic_data.csv",
