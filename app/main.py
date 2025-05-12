@@ -90,13 +90,32 @@ def main():
         generator_plugin = generator_class(config)
         generator_plugin.set_params(**config)
 
-        # --- INSERTAR AQUÍ: Inferir latent_dim desde el decoder y actualizar feeder_plugin ---
+        # --- Inferir latent_dim desde el decoder y actualizar feeder_plugin ---
         decoder_model = getattr(generator_plugin, "model", None)
         if decoder_model is None:
             raise RuntimeError("GeneratorPlugin must expose attribute 'model'.")
-        # decoder_model.input_shape == (None, latent_dim)
-        _, inferred_latent = decoder_model.input_shape
-        feeder_plugin.set_params(latent_dim=int(inferred_latent))
+        
+        print(f"DEBUG main.py: Raw decoder_model.input_shape: {decoder_model.input_shape}") # Add this line to see the shape
+
+        input_shape = decoder_model.input_shape
+        if not (isinstance(input_shape, tuple) and len(input_shape) >= 1):
+            raise RuntimeError(f"Unexpected decoder_model.input_shape: {input_shape}. Expected a tuple.")
+
+        # Assuming the actual latent dimension is the last element of the shape.
+        # Handles shapes like (None, latent_dim) or (None, ..., latent_dim)
+        inferred_latent_val = input_shape[-1]
+        
+        # If the last dimension is None (e.g. for variable length sequences, not typical for latent_dim itself),
+        # and there's a preceding dimension, try using that.
+        if inferred_latent_val is None and len(input_shape) > 1:
+            print(f"WARNING main.py: Last element of input_shape {input_shape} is None. Attempting to use second to last.")
+            inferred_latent_val = input_shape[-2] 
+
+        if inferred_latent_val is None:
+            raise RuntimeError(f"Could not determine a valid inferred latent dimension from shape: {input_shape}")
+
+        print(f"DEBUG main.py: Inferred latent_dim value: {inferred_latent_val} from shape: {input_shape}")
+        feeder_plugin.set_params(latent_dim=int(inferred_latent_val))
         # -------------------------------------------------------------------------------
     except Exception as e:
         print(f"Failed to load or initialize Generator Plugin '{plugin_name}': {e}")
