@@ -20,18 +20,18 @@ from tensorflow.keras.models import load_model, Model
 class GeneratorPlugin:
     # Parámetros configurables por defecto
     plugin_params = {
-        "decoder_model_file": None,  # Ruta al modelo decoder preentrenado
+        "decoder_file": None,  # Ruta al modelo decoder preentrenado
         "batch_size": 32       # Batch size para inferencia
     }
     # Variables incluidas en el debug
-    plugin_debug_vars = ["decoder_model_file", "batch_size"]
+    plugin_debug_vars = ["decoder_file", "batch_size"]
 
     def __init__(self, config: Dict[str, Any]):
         """
         Inicializa el GeneratorPlugin y carga el modelo decoder.
 
-        :param config: Diccionario con al menos 'decoder_model_file' y opcional 'batch_size'.
-        :raises ValueError: si no se proporciona 'decoder_model_file'.
+        :param config: Diccionario con al menos 'decoder_file' y opcional 'batch_size'.
+        :raises ValueError: si no se proporciona 'decoder_file'.
         """
         if config is None:
             raise ValueError("Se requiere el diccionario de configuración ('config').")
@@ -39,12 +39,14 @@ class GeneratorPlugin:
         self.params = self.plugin_params.copy()
         self.set_params(**config)
 
-        decoder_path = self.params.get("decoder_model_file")
+        decoder_path = self.params.get("decoder_file")
         if not decoder_path:
-            raise ValueError("El parámetro 'decoder_model_file' debe especificar la ruta al modelo decoder.")
+            raise ValueError("El parámetro 'decoder_file' debe especificar la ruta al modelo decoder.")
 
         # Carga del modelo decoder preentrenado sin compilar
         self.decoder: Model = load_model(decoder_path, compile=False)
+        self.model = self.decoder  # Exponer el modelo para compatibilidad con otros plugins
+
 
     def set_params(self, **kwargs):
         """
