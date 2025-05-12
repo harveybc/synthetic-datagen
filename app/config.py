@@ -13,8 +13,6 @@ DEFAULT_VALUES = {
     "evaluator": "default_evaluator",
     "optimizer": "default_optimizer",
 
-   
-
     # Data for evaluation
     "real_data_file": "examples/data/phase_3/normalized_d1.csv",
     "x_train_file": "examples/data/phase_3/normalized_d1.csv",
@@ -30,6 +28,7 @@ DEFAULT_VALUES = {
     "use_wavelets": True,
     "use_multi_tapper": True,
 
+    "dataset_periodicity": "1h", # <--- ADD THIS LINE (Example: hourly)
 
      # Generation parameters
     "n_samples": 6300,  # <--- CHANGE THIS to match X_real_processed.shape[0]
