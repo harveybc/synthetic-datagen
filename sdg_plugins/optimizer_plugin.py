@@ -52,7 +52,7 @@ class OptimizerPlugin:
 
     #: Default optimizer configuration
     plugin_params = {
-        "population_size": 30,        # Number of individuals per generation
+        "population_size": 15,        # Number of individuals per generation
         "n_generations": 20,          # Number of evolutionary iterations
         "cxpb": 0.6,                  # Crossover probability
         "mutpb": 0.3,                 # Mutation probability

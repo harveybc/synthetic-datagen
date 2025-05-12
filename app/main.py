@@ -26,12 +26,6 @@ from app.config import DEFAULT_VALUES
 from app.plugin_loader import load_plugin
 from config_merger import merge_config, process_unknown_args
 
-# Se asume que los siguientes plugins se cargan desde sus respectivos namespaces:
-# - predictor.plugins
-# - optimizer.plugins
-# - pipeline.plugins
-# - preprocessor.plugins
-
 def main():
     """
     Orquesta la ejecución completa del sistema, incluyendo la optimización (si se configura)
@@ -45,7 +39,6 @@ def main():
     config: Dict[str, Any] = DEFAULT_VALUES.copy()
 
     file_config: Dict[str, Any] = {}
-    # Carga remota de configuración si se solicita
     if args.remote_load_config:
         try:
             file_config = remote_load_config(args.remote_load_config, args.username, args.password)
@@ -54,7 +47,6 @@ def main():
             print(f"Failed to load remote configuration: {e}")
             sys.exit(1)
 
-    # Carga local de configuración si se solicita
     if args.load_config:
         try:
             file_config = load_config(args.load_config)
@@ -63,7 +55,6 @@ def main():
             print(f"Failed to load local configuration: {e}")
             sys.exit(1)
 
-    # Primera fusión de la configuración (sin parámetros específicos de plugins)
     print("Merging configuration with CLI arguments and unknown args (first pass, no plugin params)...")
     unknown_args_dict = process_unknown_args(unknown_args)
     config = merge_config(config, {}, {}, file_config, cli_args, unknown_args_dict)
@@ -90,6 +81,15 @@ def main():
         generator_class, _ = load_plugin('generator.plugins', plugin_name)
         generator_plugin = generator_class(config)
         generator_plugin.set_params(**config)
+
+        # --- INSERTAR AQUÍ: Inferir latent_dim desde el decoder y actualizar feeder_plugin ---
+        decoder_model = getattr(generator_plugin, "model", None)
+        if decoder_model is None:
+            raise RuntimeError("GeneratorPlugin must expose attribute 'model'.")
+        # decoder_model.input_shape == (None, latent_dim)
+        _, inferred_latent = decoder_model.input_shape
+        feeder_plugin.set_params(latent_dim=int(inferred_latent))
+        # -------------------------------------------------------------------------------
     except Exception as e:
         print(f"Failed to load or initialize Generator Plugin '{plugin_name}': {e}")
         sys.exit(1)
@@ -120,28 +120,22 @@ def main():
         print(f"Failed to load or initialize Optimizer Plugin '{plugin_name}': {e}")
         sys.exit(1)
 
-    # Fusión de configuración con parámetros específicos de cada plugin
     print("Merging configuration with CLI arguments and plugin parameters...")
     config = merge_config(config, feeder_plugin.plugin_params, {}, file_config, cli_args, unknown_args_dict)
     config = merge_config(config, generator_plugin.plugin_params, {}, file_config, cli_args, unknown_args_dict)
     config = merge_config(config, evaluator_plugin.plugin_params, {}, file_config, cli_args, unknown_args_dict)
     config = merge_config(config, optimizer_plugin.plugin_params, {}, file_config, cli_args, unknown_args_dict)
 
-    
-
     # --- DECISIÓN DE EJECUCIÓN ---
-    # Si se activa el optimizador, ejecutar optimización antes de generar datos
     if config.get('use_optimizer', False):
         print("Running hyperparameter optimization with Optimizer Plugin...")
         try:
-            # El optimizador recibe los plugins y la configuración
             optimal_params = optimizer_plugin.optimize(
                 feeder_plugin,
                 generator_plugin,
                 evaluator_plugin,
                 config
             )
-            # Guardar parámetros óptimos en JSON
             optimizer_output_file = config.get(
                 "optimizer_output_file",
                 "examples/results/phase_4_1/optimizer_output.json"
@@ -149,7 +143,6 @@ def main():
             with open(optimizer_output_file, "w") as f:
                 json.dump(optimal_params, f, indent=4)
             print(f"Optimized parameters saved to {optimizer_output_file}.")
-            # Actualizar configuración con los parámetros optimizados
             config.update(optimal_params)
         except Exception as e:
             print(f"Hyperparameter optimization failed: {e}")
@@ -159,18 +152,15 @@ def main():
         print("Generating synthetic data and evaluating...")
 
         try:
-            # 1. Muestreo latente
-            Z = feeder_plugin.generate(
-                n_samples=config['n_samples'],
-                latent_dim=config['latent_dim']
-            )
+            # 1. Muestreo latente (usar solo n_samples; latent_dim ya fue seteado)
+            Z = feeder_plugin.generate(config['n_samples'])
             # 2. Decodificación a ventanas sintéticas
             X_syn = generator_plugin.generate(Z)
             # 3. Guardado de datos sintéticos
             output_file = config['output_file']
-            pd.DataFrame(
-                X_syn.reshape(-1, X_syn.shape[-1])
-            ).to_csv(output_file, index=False, header=False)
+            pd.DataFrame(X_syn.reshape(-1, X_syn.shape[-1])).to_csv(
+                output_file, index=False, header=False
+            )
             print(f"Synthetic data saved to {output_file}.")
             # 4. Evaluación de las ventanas generadas
             metrics = evaluator_plugin.evaluate(
@@ -185,7 +175,6 @@ def main():
             print(f"Synthetic data generation or evaluation failed: {e}")
             sys.exit(1)
 
-    # Guardado de la configuración local y remota
     if config.get('save_config'):
         try:
             save_config(config, config['save_config'])

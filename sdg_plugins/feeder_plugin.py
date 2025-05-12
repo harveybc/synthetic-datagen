@@ -64,37 +64,28 @@ class FeederPlugin:
         """
         debug_info.update(self.get_debug_info())
 
-    def generate(self, config: Dict[str, Any] = None) -> np.ndarray:
+    def generate(self, n_samples: int) -> np.ndarray:
         """
-        Genera vectores latentes aleatorios desde N(0,1).
+        Generate latent codes.
 
-        :param config: Opcional, diccionario que puede sobreescribir los parámetros:
-                       'latent_dim', 'n_samples', 'random_seed'.
-        :return: Matriz Z de forma (n_samples, latent_dim).
-        :raises ValueError: Si los parámetros no están definidos o no son válidos.
+        Parameters
+        ----------
+        n_samples : int
+            Number of latent vectors to generate.
+
+        Returns
+        -------
+        Z : np.ndarray, shape (n_samples, latent_dim)
+            Latent codes sampled from standard normal.
         """
-        # Sobreescribir parámetros si están en config
-        if config:
-            self.set_params(**config)
-
         latent_dim = self.params.get("latent_dim")
-        n_samples = self.params.get("n_samples")
-        random_seed = self.params.get("random_seed")
-
-        # Validación de parámetros
-        if latent_dim is None or n_samples is None:
-            raise ValueError("'latent_dim' y 'n_samples' deben estar definidos en params.")
-
-        # Inicializar semilla para reproducibilidad si se proporciona
-        if random_seed is not None:
-            np.random.seed(random_seed)
-
-        # Generación de la matriz Z ~ N(0,1)
-        Z = np.random.normal(
-            loc=0.0,
-            scale=1.0,
-            size=(n_samples, latent_dim)
-        )
+        if latent_dim is None or not isinstance(latent_dim, int):
+            raise ValueError(
+                "FeederPlugin: 'latent_dim' must be set (int) before calling generate()."
+            )
+        # Sample from standard normal distribution
+        Z = np.random.normal(loc=0.0, scale=1.0, size=(n_samples, latent_dim))
+        return Z
 
         return Z
 
