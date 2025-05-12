@@ -101,7 +101,7 @@ def main():
     print(f"Loading Evaluator Plugin: {plugin_name}")
     try:
         evaluator_class, _ = load_plugin('evaluator.plugins', plugin_name)
-        evaluator_plugin = evaluator_class()
+        evaluator_plugin = evaluator_class(config)
         evaluator_plugin.set_params(**config)
     except Exception as e:
         print(f"Failed to load or initialize Evaluator Plugin '{plugin_name}': {e}")
@@ -114,7 +114,7 @@ def main():
     print(f"Loading Optimizer Plugin: {plugin_name}")
     try:
         optimizer_class, _ = load_plugin('optimizer.plugins', plugin_name)
-        optimizer_plugin = optimizer_class()
+        optimizer_plugin = optimizer_class(config)
         optimizer_plugin.set_params(**config)
     except Exception as e:
         print(f"Failed to load or initialize Optimizer Plugin '{plugin_name}': {e}")
