@@ -17,7 +17,7 @@ DEFAULT_VALUES = {
     "n_samples": 1000,
     "latent_dim": 16,
     "batch_size": 32,
-    "decoder_model_file": "examples/results/phase_4_1/decoder_model.keras",
+    "decoder_model_file": "examples/results/phase_4_1/phase_4_1_cnn_25200_1h_decoder_model.h5.keras",
 
     # Data for evaluation
     "real_data_file": "examples/data/phase_4_1/normalized_d1.csv",
