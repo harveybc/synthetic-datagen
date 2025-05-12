@@ -36,6 +36,7 @@ DEFAULT_VALUES = {
     "latent_dim": 16,
     "batch_size": 32,
     "decoder_model_file": "examples/results/phase_4_1/phase_4_1_cnn_25200_1h_decoder_model.h5.keras",
+    "encoder_model_file": "examples/results/phase_4_1/phase_4_1_cnn_25200_1h_encoder_model.h5.keras",
     "max_steps_train": 6300,
     "max_steps_val": 6300,
     "max_steps_test": 6300,
