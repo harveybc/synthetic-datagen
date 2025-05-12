@@ -38,7 +38,9 @@ class FeederPlugin:
             np.random.seed(self.params["random_seed"])
 
         self._encoder = None
-        self._empirical_latents = None # To store Z_real = encoder(X_real)
+        # For VAE: store z_mean and z_log_var from real data
+        self._empirical_z_means = None 
+        self._empirical_z_log_vars = None
 
         # Initial load if method is 'from_encoder' and necessary files are provided in config
         if self.params.get("sampling_method") == "from_encoder":
@@ -51,63 +53,77 @@ class FeederPlugin:
                 print("FeederPlugin: Warning - 'sampling_method' is 'from_encoder', but "
                       "'encoder_model_file' or 'real_data_file' may be missing in initial config.")
 
+    def _invalidate_encoder_state(self):
+        """Resets encoder-related attributes."""
+        self._encoder = None
+        self._empirical_z_means = None
+        self._empirical_z_log_vars = None
+
     def _load_and_process_for_encoder_mode(self):
-        """Loads the encoder model and generates latent codes from real_data_file."""
+        """Loads the encoder model and generates latent codes (z_mean, z_log_var) from real_data_file."""
         encoder_path = self.params.get("encoder_model_file")
         data_path = self.params.get("real_data_file")
 
         if not encoder_path or not data_path:
-            # This state means we can't operate in 'from_encoder' mode.
-            # Clear any previous state and raise error if called with intent to load.
-            self._encoder = None
-            self._empirical_latents = None
-            if self.params.get("sampling_method") == "from_encoder": # Explicit check
+            self._invalidate_encoder_state()
+            if self.params.get("sampling_method") == "from_encoder":
                  raise ValueError("FeederPlugin: For 'from_encoder' method, 'encoder_model_file' and 'real_data_file' must be set.")
             return
 
         try:
             import tensorflow as tf
+            # Load the Keras model. For VAEs, this model should output [z_mean, z_log_var].
             self._encoder = tf.keras.models.load_model(encoder_path, compile=False)
             # print(f"FeederPlugin: Encoder model loaded from '{encoder_path}'")
         except ImportError:
+            self._invalidate_encoder_state()
             raise ImportError("FeederPlugin: TensorFlow is required for 'from_encoder' sampling method. Please install it.")
         except Exception as e:
-            self._encoder = None # Ensure encoder is None on failure
+            self._invalidate_encoder_state()
             raise RuntimeError(f"FeederPlugin: Failed to load encoder model from '{encoder_path}'. Error: {e}")
 
         try:
             real_data = np.load(data_path)
             # print(f"FeederPlugin: Real data loaded from '{data_path}', shape: {real_data.shape}")
         except Exception as e:
-            self._empirical_latents = None # Ensure latents are None on failure
+            self._invalidate_encoder_state()
             raise RuntimeError(f"FeederPlugin: Failed to load real data from '{data_path}'. Error: {e}")
 
         try:
-            # print("FeederPlugin: Encoding real data to get latent representations...")
-            encoded_output = self._encoder.predict(real_data)
+            # print("FeederPlugin: Encoding real data to get latent representations (z_mean, z_log_var)...")
+            # Encoder is expected to return a list: [z_mean_array, z_log_var_array]
+            encoded_outputs = self._encoder.predict(real_data)
             
-            if isinstance(encoded_output, list):
-                if not encoded_output: # Empty list
-                    raise ValueError("FeederPlugin: Encoder predicted an empty list.")
-                # Heuristic: For VAEs [z_mean, z_log_var, z] or [z_mean, z_log_var],
-                # assume the first element is the primary latent vector (e.g., z_mean).
-                # This might need to be configurable if encoder outputs vary.
-                self._empirical_latents = encoded_output[0]
-                # print(f"FeederPlugin: Encoder output was a list, using first element. Shape: {self._empirical_latents.shape}")
-            else:
-                self._empirical_latents = encoded_output
-                # print(f"FeederPlugin: Encoder output shape: {self._empirical_latents.shape}")
-
-            if self._empirical_latents.shape[1] != self.params.get("latent_dim"):
-                current_latent_dim = self._empirical_latents.shape[1]
-                self._empirical_latents = None # Invalidate state
+            if not (isinstance(encoded_outputs, list) and len(encoded_outputs) == 2):
+                self._invalidate_encoder_state()
                 raise ValueError(
-                    f"FeederPlugin: Encoder output latent dimension ({current_latent_dim}) "
+                    "FeederPlugin: Encoder output was not a list of two elements (expected [z_mean, z_log_var]). "
+                    f"Got type: {type(encoded_outputs)}, length: {len(encoded_outputs) if isinstance(encoded_outputs, list) else 'N/A'}"
+                )
+            
+            z_mean_array, z_log_var_array = encoded_outputs
+            # print(f"FeederPlugin: Extracted z_mean (shape: {z_mean_array.shape}) and z_log_var (shape: {z_log_var_array.shape}).")
+
+            if z_mean_array.shape[1] != self.params.get("latent_dim"):
+                current_latent_dim = z_mean_array.shape[1]
+                self._invalidate_encoder_state()
+                raise ValueError(
+                    f"FeederPlugin: Encoder output latent dimension for z_mean ({current_latent_dim}) "
                     f"does not match configured 'latent_dim' ({self.params.get('latent_dim')})."
                 )
+            if z_log_var_array.shape != z_mean_array.shape:
+                self._invalidate_encoder_state()
+                raise ValueError(
+                    f"FeederPlugin: z_mean (shape: {z_mean_array.shape}) and z_log_var (shape: {z_log_var_array.shape}) "
+                    "do not have matching shapes."
+                )
+
+            self._empirical_z_means = z_mean_array
+            self._empirical_z_log_vars = z_log_var_array
+            
         except Exception as e:
-            self._empirical_latents = None # Ensure latents are None on failure
-            raise RuntimeError(f"FeederPlugin: Error during encoding real data. Error: {e}")
+            self._invalidate_encoder_state()
+            raise RuntimeError(f"FeederPlugin: Error during encoding real data or processing outputs. Error: {e}")
 
     def set_params(self, **kwargs):
         old_method = self.params.get("sampling_method")
@@ -122,26 +138,21 @@ class FeederPlugin:
         new_encoder_file = self.params.get("encoder_model_file")
         new_data_file = self.params.get("real_data_file")
 
-        # If critical parameters for 'from_encoder' mode changed, attempt to reload/reprocess.
         if new_method == "from_encoder":
             if (old_method != new_method or 
                 old_encoder_file != new_encoder_file or 
                 old_data_file != new_data_file):
-                if new_encoder_file and new_data_file: # Only if new paths are valid
+                if new_encoder_file and new_data_file: 
                     try:
                         # print("FeederPlugin: Relevant parameters changed, re-initializing for 'from_encoder' mode.")
                         self._load_and_process_for_encoder_mode()
                     except Exception as e:
                         print(f"FeederPlugin: Error during re-initialization for 'from_encoder' mode in set_params: {e}")
-                        # Invalidate state if loading failed
-                        self._encoder = None
-                        self._empirical_latents = None
-                else: # Files are not (or no longer) set, invalidate previous state
-                    self._encoder = None
-                    self._empirical_latents = None
-        elif old_method == "from_encoder" and new_method != "from_encoder": # Switched away from encoder mode
-            self._encoder = None
-            self._empirical_latents = None
+                        self._invalidate_encoder_state()
+                else: 
+                    self._invalidate_encoder_state()
+        elif old_method == "from_encoder" and new_method != "from_encoder": 
+            self._invalidate_encoder_state()
 
     def get_debug_info(self) -> Dict[str, Any]:
         return {var: self.params.get(var) for var in self.plugin_debug_vars}
@@ -159,29 +170,36 @@ class FeederPlugin:
             )
 
         if method == "from_encoder":
-            if self._empirical_latents is None:
-                # Attempt to load if not already loaded (e.g., if params set after __init__ without full info)
+            # Check if empirical distributions are loaded
+            if self._empirical_z_means is None or self._empirical_z_log_vars is None:
                 if self.params.get("encoder_model_file") and self.params.get("real_data_file"):
-                    print("FeederPlugin: Empirical latents not loaded, attempting to load now in generate().")
+                    print("FeederPlugin: Empirical z_mean/z_log_var not loaded, attempting to load now in generate().")
                     try:
                         self._load_and_process_for_encoder_mode()
                     except Exception as e:
                          raise RuntimeError(f"FeederPlugin: Failed to load/process for 'from_encoder' mode in generate(): {e}")
                 
-                if self._empirical_latents is None: # Check again after attempt
+                if self._empirical_z_means is None or self._empirical_z_log_vars is None: # Check again
                     raise RuntimeError(
-                        "FeederPlugin: 'from_encoder' method selected, but empirical latent samples "
+                        "FeederPlugin: 'from_encoder' method selected, but empirical z_mean/z_log_var "
                         "could not be loaded. Ensure 'encoder_model_file' and 'real_data_file' are correctly set and processed."
                     )
             
-            num_available_empirical = self._empirical_latents.shape[0]
+            num_available_empirical = self._empirical_z_means.shape[0]
             if n_samples > num_available_empirical:
                 print(f"FeederPlugin: Warning - Requesting {n_samples} samples, but only {num_available_empirical} "
-                      "unique empirical latent codes available from encoder. Sampling with replacement.")
+                      "unique empirical (z_mean, z_log_var) pairs available. Sampling with replacement.")
             
-            # Sample with replacement from the empirically obtained Z vectors
+            # Sample indices with replacement
             indices = np.random.choice(num_available_empirical, size=n_samples, replace=True)
-            Z = self._empirical_latents[indices]
+            
+            # Select the corresponding z_mean and z_log_var
+            selected_z_means = self._empirical_z_means[indices]
+            selected_z_log_vars = self._empirical_z_log_vars[indices]
+            
+            # Reparameterization trick: z = z_mean + exp(0.5 * z_log_var) * epsilon
+            epsilon = np.random.normal(loc=0.0, scale=1.0, size=(n_samples, latent_dim))
+            Z = selected_z_means + np.exp(0.5 * selected_z_log_vars) * epsilon
         
         elif method == "standard_normal":
             # Sample from standard normal distribution
