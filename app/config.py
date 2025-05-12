@@ -28,6 +28,11 @@ DEFAULT_VALUES = {
     "x_test_file": "examples/data/phase_3/normalized_d3.csv",
     "y_test_file": "examples/data/phase_3/normalized_d3.csv",
     "target_column": "CLOSE",
+    "stl_period":24,
+    "predicted_horizons": [24,48,72,96,120,144],
+    "use_stl": True,
+    "use_wavelets": True,
+    "use_multi_tapper": True,
 
     # Output paths
     "output_file": "examples/results/phase_4_1/synthetic_data.csv",
