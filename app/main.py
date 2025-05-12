@@ -231,52 +231,68 @@ def main():
 
 
             # WORKAROUND 2: For "Wavelet: Length of data must be even"
-            # The part below attempts to ensure the input file has an even number of rows.
-            # The part that disables wavelets via ACTUAL_WAVELET_CONFIG_KEY should be removed
-            # if wavelets are mandatory and you are relying solely on this file truncation.
+            # Ensure all relevant dataset files have an even number of rows.
             
-            # --- Ensure input file has even length ---
-            temp_data_file_to_delete = None
-            original_real_data_file_path = config_for_preprocessor_run.get('real_data_file')
-            print(f"DEBUG main.py: Wavelet Workaround: Original 'real_data_file' path from config: {original_real_data_file_path}")
+            print("DEBUG main.py: WORKAROUND 2: Starting process to ensure even row counts for relevant data files.")
+            
+            # List of config keys that might hold paths to data files used by the preprocessor.
+            # Add any other keys your stl_preprocessor.py might use.
+            data_file_keys = [
+                'real_data_file', # Often a primary input before splits
+                'x_train_file', 'y_train_file',
+                'x_validation_file', 'y_validation_file', 'x_val_file', 'y_val_file', # Added common val aliases
+                'x_test_file', 'y_test_file'
+            ]
+            
+            temp_files_created_paths = [] # Keep track of temp files for cleanup
 
-            if original_real_data_file_path and os.path.exists(original_real_data_file_path):
-                try:
-                    df_real_data = pd.read_csv(original_real_data_file_path)
-                    data_len = len(df_real_data)
-                    print(f"DEBUG main.py: Wavelet Workaround: Read '{original_real_data_file_path}', original length: {data_len}")
-                    if data_len > 0 and data_len % 2 != 0: 
-                        print(f"INFO: synthetic-datagen/main.py: Wavelet Workaround: Data in '{original_real_data_file_path}' has odd length ({data_len}). Truncating last row.")
-                        df_real_data_truncated = df_real_data.iloc[:-1]
+            for file_key in data_file_keys:
+                original_file_path = config_for_preprocessor_run.get(file_key)
+                
+                if original_file_path and isinstance(original_file_path, str) and os.path.exists(original_file_path):
+                    print(f"DEBUG main.py: WORKAROUND 2: Checking file for key '{file_key}': '{original_file_path}'")
+                    try:
+                        df_data = pd.read_csv(original_file_path)
+                        data_len = len(df_data)
+                        print(f"DEBUG main.py: WORKAROUND 2: Read '{original_file_path}', original length: {data_len}")
                         
-                        if not df_real_data_truncated.empty: # Ensure not empty after truncation
-                            with tempfile.NamedTemporaryFile(delete=False, mode='w', newline='', suffix='.csv') as tmp_file_obj:
-                                df_real_data_truncated.to_csv(tmp_file_obj.name, index=False)
-                                temp_data_file_to_delete = tmp_file_obj.name
+                        if data_len > 0 and data_len % 2 != 0:
+                            print(f"INFO: synthetic-datagen/main.py: WORKAROUND 2: Data in '{original_file_path}' (key: '{file_key}') has odd length ({data_len}). Truncating last row.")
+                            df_data_truncated = df_data.iloc[:-1]
                             
-                            config_for_preprocessor_run['real_data_file'] = temp_data_file_to_delete
-                            print(f"INFO: synthetic-datagen/main.py: Wavelet Workaround: Preprocessor will use temporary even-length data file: {temp_data_file_to_delete}. New length: {len(df_real_data_truncated)}")
-                        else:
-                            # This case means original length was 1. Truncating makes it 0.
-                            # pywt.swt will also fail on 0-length. Let preprocessor handle original 1-row file.
-                            print(f"WARN: synthetic-datagen/main.py: Wavelet Workaround: Original data in '{original_real_data_file_path}' had 1 row. Truncating made it empty. Preprocessor will use original file (which has odd length). Wavelet error may still occur.")
-                    else:
-                        print(f"INFO: synthetic-datagen/main.py: Wavelet Workaround: Data in '{original_real_data_file_path}' has length {data_len} (even or zero). No truncation of input file needed.")
-                except Exception as e_data_processing:
-                    print(f"WARN: synthetic-datagen/main.py: Wavelet Workaround: Error during data check/truncation for '{original_real_data_file_path}': {e_data_processing}. Preprocessor will use original file path.")
-            else:
-                print(f"DEBUG main.py: Wavelet Workaround: 'real_data_file' path '{original_real_data_file_path}' not found or not specified. Skipping input file length adjustment.")
+                            if not df_data_truncated.empty:
+                                with tempfile.NamedTemporaryFile(delete=False, mode='w', newline='', suffix=f'_{file_key}.csv') as tmp_file_obj:
+                                    df_data_truncated.to_csv(tmp_file_obj.name, index=False)
+                                    temp_file_path = tmp_file_obj.name
+                                temp_files_created_paths.append(temp_file_path)
+                                config_for_preprocessor_run[file_key] = temp_file_path
+                                print(f"INFO: synthetic-datagen/main.py: WORKAROUND 2: Preprocessor will use temporary even-length file for key '{file_key}': '{temp_file_path}'. New length: {len(df_data_truncated)}")
+                            else:
+                                print(f"WARN: synthetic-datagen/main.py: WORKAROUND 2: Original data in '{original_file_path}' (key: '{file_key}') had 1 row. Truncating made it empty. Preprocessor will use original file. Wavelet error may still occur for this file.")
+                        elif data_len == 0:
+                            print(f"INFO: synthetic-datagen/main.py: WORKAROUND 2: Data in '{original_file_path}' (key: '{file_key}') is empty. No truncation needed.")
+                        else: # Even length
+                            print(f"INFO: synthetic-datagen/main.py: WORKAROUND 2: Data in '{original_file_path}' (key: '{file_key}') has even length ({data_len}). No truncation needed.")
+                    except Exception as e_data_processing:
+                        print(f"WARN: synthetic-datagen/main.py: WORKAROUND 2: Error during data check/truncation for '{original_file_path}' (key: '{file_key}'): {e_data_processing}. Preprocessor will use original file path for this key.")
+                elif original_file_path:
+                    print(f"DEBUG main.py: WORKAROUND 2: File path for key '{file_key}' ('{original_file_path}') not found or not a string. Skipping.")
+                # else:
+                #    print(f"DEBUG main.py: WORKAROUND 2: Key '{file_key}' not found in config_for_preprocessor_run. Skipping.")
+
+            print(f"DEBUG main.py: Final 'config_for_preprocessor_run' being passed to preprocessor (after potential file truncations for multiple keys): {config_for_preprocessor_run}")
             
-            print(f"DEBUG main.py: Final 'config_for_preprocessor_run' being passed to preprocessor (after potential file truncation): {config_for_preprocessor_run}")
             try:
                 datasets = preprocessor_plugin.run_preprocessing(config=config_for_preprocessor_run)
             finally:
-                if temp_data_file_to_delete:
-                    try:
-                        os.remove(temp_data_file_to_delete)
-                        print(f"INFO: synthetic-datagen/main.py: Wavelet Workaround: Successfully removed temporary data file: {temp_data_file_to_delete}")
-                    except OSError as e_remove:
-                        print(f"WARN: synthetic-datagen/main.py: Wavelet Workaround: Failed to remove temporary data file '{temp_data_file_to_delete}': {e_remove}")
+                if temp_files_created_paths:
+                    print(f"INFO: synthetic-datagen/main.py: WORKAROUND 2: Cleaning up temporary files: {temp_files_created_paths}")
+                    for temp_file_path in temp_files_created_paths:
+                        try:
+                            os.remove(temp_file_path)
+                            print(f"INFO: synthetic-datagen/main.py: WORKAROUND 2: Successfully removed temporary file: {temp_file_path}")
+                        except OSError as e_remove:
+                            print(f"WARN: synthetic-datagen/main.py: WORKAROUND 2: Failed to remove temporary file '{temp_file_path}': {e_remove}")
             
             print("PreprocessorPlugin.run_preprocessing finished.")
 
