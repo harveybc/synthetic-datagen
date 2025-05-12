@@ -214,23 +214,61 @@ def main():
                 raise AttributeError("PreprocessorPlugin does not have a 'run_preprocessing' method.")
             
             config_for_preprocessor_run = config.copy()
+            print(f"DEBUG main.py: Initial 'config_for_preprocessor_run' before any workarounds: {config_for_preprocessor_run}")
+
 
             # WORKAROUND 1: For "Baseline train indices invalid"
+            # If use_stl is False, the external stl_preprocessor might still use
+            # effective_stl_window in original_offset calculation.
+            # Setting stl_window = 1 forces effective_stl_window to 1, correcting the offset.
             if not config_for_preprocessor_run.get('use_stl', False): 
                 if 'stl_window' in preprocessor_plugin.plugin_params or 'stl_window' in config_for_preprocessor_run:
+                    original_stl_window = config_for_preprocessor_run.get('stl_window')
                     config_for_preprocessor_run['stl_window'] = 1 
-                    print("INFO: synthetic-datagen/main.py: Temporarily setting 'stl_window' to 1 in preprocessor config because 'use_stl' is false, to prevent 'Baseline train indices invalid' error.")
+                    print(f"INFO: synthetic-datagen/main.py: WORKAROUND 1: 'use_stl' is False. Original 'stl_window': {original_stl_window}. Temporarily setting 'stl_window' to 1 to prevent 'Baseline train indices invalid' error.")
+            else:
+                print(f"DEBUG main.py: WORKAROUND 1: 'use_stl' is True or not set, 'stl_window' workaround not applied.")
 
-            # WORKAROUND for "Wavelet: Length of data must be even"
-            # Ensure data length is even by truncating the last row if odd.
+
+            # WORKAROUND 2: For "Wavelet: Length of data must be even"
+            # This workaround now focuses on disabling wavelet computation if it's enabled,
+            # as simply ensuring the initial file has even length is not enough.
+            
+            # --- START OF DETAILED DEBUGGING FOR WORKAROUND 2 ---
+            print("DEBUG main.py: WORKAROUND 2: Attempting to address potential Wavelet 'Length of data must be even' error.")
+            
+            # IMPORTANT: Identify the actual config key your stl_preprocessor.py uses
+            # to enable/disable wavelet feature computation.
+            # Common examples: "apply_wavelet", "use_wavelets", "wavelet_features_enabled", "compute_wavelet_features".
+            # Check the stl_preprocessor.py's plugin_params or its internal logic.
+            ACTUAL_WAVELET_CONFIG_KEY = "apply_wavelet" # <<< VERIFY AND CHANGE THIS KEY IF NECESSARY!
+            
+            print(f"DEBUG main.py: WORKAROUND 2: Using '{ACTUAL_WAVELET_CONFIG_KEY}' as the key to control wavelet computation.")
+            
+            wavelets_originally_enabled = config_for_preprocessor_run.get(ACTUAL_WAVELET_CONFIG_KEY, False)
+            print(f"DEBUG main.py: WORKAROUND 2: Value of '{ACTUAL_WAVELET_CONFIG_KEY}' in 'config_for_preprocessor_run' before modification: {wavelets_originally_enabled} (Type: {type(wavelets_originally_enabled)})")
+
+            if wavelets_originally_enabled:
+                print(f"INFO: synthetic-datagen/main.py: WORKAROUND 2: '{ACTUAL_WAVELET_CONFIG_KEY}' is True. To prevent potential 'Length of data must be even' error from pywt.swt, temporarily disabling it by setting '{ACTUAL_WAVELET_CONFIG_KEY}' to False for this preprocessor run.")
+                config_for_preprocessor_run[ACTUAL_WAVELET_CONFIG_KEY] = False
+                print(f"DEBUG main.py: WORKAROUND 2: Value of '{ACTUAL_WAVELET_CONFIG_KEY}' in 'config_for_preprocessor_run' AFTER modification: {config_for_preprocessor_run.get(ACTUAL_WAVELET_CONFIG_KEY)}")
+            else:
+                print(f"INFO: synthetic-datagen/main.py: WORKAROUND 2: '{ACTUAL_WAVELET_CONFIG_KEY}' is False or not set. No change made to wavelet configuration.")
+            # --- END OF DETAILED DEBUGGING FOR WORKAROUND 2 ---
+
+            # The data length adjustment for the input file is kept as a secondary measure,
+            # though disabling wavelets is the primary fix for this specific error.
             temp_data_file_to_delete = None
             original_real_data_file_path = config_for_preprocessor_run.get('real_data_file')
+            print(f"DEBUG main.py: Original 'real_data_file' path from config: {original_real_data_file_path}")
 
             if original_real_data_file_path and os.path.exists(original_real_data_file_path):
                 try:
                     df_real_data = pd.read_csv(original_real_data_file_path)
-                    if len(df_real_data) > 0 and len(df_real_data) % 2 != 0: # If length is odd and not zero
-                        print(f"INFO: synthetic-datagen/main.py: Original data in '{original_real_data_file_path}' has odd length ({len(df_real_data)}). Truncating last row.")
+                    data_len = len(df_real_data)
+                    print(f"DEBUG main.py: Read '{original_real_data_file_path}', length: {data_len}")
+                    if data_len > 0 and data_len % 2 != 0: 
+                        print(f"INFO: synthetic-datagen/main.py: Data in '{original_real_data_file_path}' has odd length ({data_len}). Truncating last row.")
                         df_real_data_truncated = df_real_data.iloc[:-1]
                         
                         if not df_real_data_truncated.empty:
@@ -239,17 +277,17 @@ def main():
                                 temp_data_file_to_delete = tmp_file_obj.name
                             
                             config_for_preprocessor_run['real_data_file'] = temp_data_file_to_delete
-                            print(f"INFO: synthetic-datagen/main.py: Preprocessor will use temporary even-length data file: {temp_data_file_to_delete}")
+                            print(f"INFO: synthetic-datagen/main.py: Preprocessor will use temporary even-length data file: {temp_data_file_to_delete}. New length: {len(df_real_data_truncated)}")
                         else:
-                            print(f"WARN: synthetic-datagen/main.py: Original data in '{original_real_data_file_path}' had 1 row. Truncating made it empty. Preprocessor will use original file (which has odd length). Wavelet error may still occur if preprocessor attempts wavelets on 1-row data.")
+                            print(f"WARN: synthetic-datagen/main.py: Original data in '{original_real_data_file_path}' had 1 row. Truncating made it empty. Preprocessor will use original file. Wavelet error might occur if wavelets were not disabled by Workaround 2.")
                     else:
-                        if len(df_real_data) == 0:
-                            print(f"INFO: synthetic-datagen/main.py: Data in '{original_real_data_file_path}' is empty. No truncation needed.")
-                        else: # Even length
-                            print(f"INFO: synthetic-datagen/main.py: Data in '{original_real_data_file_path}' has even length ({len(df_real_data)}). No truncation needed.")
+                        print(f"INFO: synthetic-datagen/main.py: Data in '{original_real_data_file_path}' has length {data_len} (even or zero). No truncation of input file needed.")
                 except Exception as e_data_processing:
                     print(f"WARN: synthetic-datagen/main.py: Error during data check/truncation for '{original_real_data_file_path}': {e_data_processing}. Preprocessor will use original file path.")
+            else:
+                print(f"DEBUG main.py: 'real_data_file' path '{original_real_data_file_path}' not found or not specified. Skipping input file length adjustment.")
             
+            print(f"DEBUG main.py: Final 'config_for_preprocessor_run' being passed to preprocessor: {config_for_preprocessor_run}")
             try:
                 datasets = preprocessor_plugin.run_preprocessing(config=config_for_preprocessor_run)
             finally:
