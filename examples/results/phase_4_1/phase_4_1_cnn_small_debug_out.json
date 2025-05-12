@@ -1,5 +1,5 @@
 {
-    "execution_time": 2490.909497499466,
+    "execution_time": 1225.214328289032,
     "encoder": {
         "input_shape": 288,
         "interface_size_config": 48
@@ -13,6 +13,6 @@
             8
         ]
     },
-    "val_mae": 0.09201763570308685,
-    "train_mae": 0.07916730642318726
+    "val_mae": 0.10260704159736633,
+    "train_mae": 0.09011562913656235
 }
