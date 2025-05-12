@@ -14,6 +14,8 @@ import json
 import pandas as pd
 from typing import Any, Dict
 import numpy as np
+import os # For path operations and temp file removal
+import tempfile # For creating temporary files
 
 from app.config_handler import (
     load_config,
@@ -208,12 +210,65 @@ def main():
             # 0. Preprocess real data for evaluation using the loaded PreprocessorPlugin
             print("Preprocessing real data for evaluation via PreprocessorPlugin...")
             
-            # Call run_preprocessing as per your example
-            # This method should return a dictionary.
             if not hasattr(preprocessor_plugin, 'run_preprocessing'):
                 raise AttributeError("PreprocessorPlugin does not have a 'run_preprocessing' method.")
             
-            datasets = preprocessor_plugin.run_preprocessing(config=config)
+            config_for_preprocessor_run = config.copy()
+
+            # WORKAROUND 1: For "Baseline train indices invalid"
+            # If use_stl is False, the external stl_preprocessor might still use
+            # effective_stl_window in original_offset calculation.
+            # Setting stl_window = 1 forces effective_stl_window to 1, correcting the offset.
+            if not config_for_preprocessor_run.get('use_stl', False): 
+                if 'stl_window' in preprocessor_plugin.plugin_params or 'stl_window' in config_for_preprocessor_run:
+                    config_for_preprocessor_run['stl_window'] = 1 
+                    print("INFO: synthetic-datagen/main.py: Temporarily setting 'stl_window' to 1 in preprocessor config because 'use_stl' is false, to prevent 'Baseline train indices invalid' error.")
+
+            # WORKAROUND for "Wavelet: Length of data must be even"
+            # Ensure data length is even by truncating the last row if odd.
+            temp_data_file_to_delete = None
+            original_real_data_file_path = config_for_preprocessor_run.get('real_data_file')
+
+            if original_real_data_file_path and os.path.exists(original_real_data_file_path):
+                try:
+                    df_real_data = pd.read_csv(original_real_data_file_path)
+                    if len(df_real_data) > 0 and len(df_real_data) % 2 != 0: # If length is odd and not zero
+                        print(f"INFO: synthetic-datagen/main.py: Original data in '{original_real_data_file_path}' has odd length ({len(df_real_data)}). Truncating last row.")
+                        df_real_data_truncated = df_real_data.iloc[:-1]
+                        
+                        # Only use temp file if truncated data is not empty (original length > 1)
+                        # If original length was 1, truncating makes it 0. pywt.swt will also fail on 0 rows.
+                        # In such a case (1 row original), it's better to let the preprocessor handle the original 1-row file.
+                        if not df_real_data_truncated.empty:
+                            # Create a temporary file to store the truncated data
+                            with tempfile.NamedTemporaryFile(delete=False, mode='w', newline='', suffix='.csv') as tmp_file_obj:
+                                df_real_data_truncated.to_csv(tmp_file_obj.name, index=False)
+                                temp_data_file_to_delete = tmp_file_obj.name # Store path for deletion
+                            
+                            # Update the config to point to the temporary file
+                            config_for_preprocessor_run['real_data_file'] = temp_data_file_to_delete
+                            print(f"INFO: synthetic-datagen/main.py: Preprocessor will use temporary even-length data file: {temp_data_file_to_delete}")
+                        else:
+                            print(f"WARN: synthetic-datagen/main.py: Original data in '{original_real_data_file_path}' had 1 row. Truncating made it empty. Preprocessor will use original file (which has odd length). Wavelet error may still occur.")
+                    else:
+                        # This branch is for even length or empty original data
+                        if len(df_real_data) == 0:
+                            print(f"INFO: synthetic-datagen/main.py: Data in '{original_real_data_file_path}' is empty. No truncation needed.")
+                        else: # Even length
+                            print(f"INFO: synthetic-datagen/main.py: Data in '{original_real_data_file_path}' has even length ({len(df_real_data)}). No truncation needed.")
+                except Exception as e_data_processing:
+                    print(f"WARN: synthetic-datagen/main.py: Error during data check/truncation for '{original_real_data_file_path}': {e_data_processing}. Preprocessor will use original file path.")
+            
+            try:
+                datasets = preprocessor_plugin.run_preprocessing(config=config_for_preprocessor_run)
+            finally:
+                if temp_data_file_to_delete:
+                    try:
+                        os.remove(temp_data_file_to_delete)
+                        print(f"INFO: synthetic-datagen/main.py: Successfully removed temporary data file: {temp_data_file_to_delete}")
+                    except OSError as e_remove:
+                        print(f"WARN: synthetic-datagen/main.py: Failed to remove temporary data file '{temp_data_file_to_delete}': {e_remove}")
+            
             print("PreprocessorPlugin.run_preprocessing finished.")
 
             # Extract the relevant processed real data, dates, and feature names
