@@ -67,10 +67,15 @@ class OptimizerPlugin:
     #: Keys included in debug output
     plugin_debug_vars = ["population_size", "n_generations", "cxpb", "mutpb"]
 
-    def __init__(self) -> None:
+    def __init__(self, config: Dict[str, Any]) -> None:
         """
         Initialize optimizer plugin with default parameters.
         """
+        if config is None:
+            raise ValueError("Se requiere el diccionario de configuración ('config').")
+        # Copia parámetros por defecto y aplica la configuración
+        self.params = self.plugin_params.copy()
+        self.set_params(**config)
         # Deep copy to avoid mutating the class attribute
         self.params: Dict[str, Any] = copy.deepcopy(self.plugin_params)
 
