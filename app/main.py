@@ -192,7 +192,7 @@ def main():
             # 4. Evaluación de las ventanas generadas
             metrics = evaluator_plugin.evaluate(
                 synthetic_data=X_syn,
-                real_data_file=config['real_data_file']
+                config=config  # Pass the main config dictionary
             )
             metrics_file = config['metrics_file']
             with open(metrics_file, "w") as f:
