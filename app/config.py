@@ -14,7 +14,7 @@ DEFAULT_VALUES = {
     "optimizer": "default_optimizer",
 
     # Generation parameters
-    "n_samples": 1000,
+    "n_samples": 29826,  # <--- CHANGE THIS to match X_real_processed.shape[0]
     "latent_dim": 16,
     "batch_size": 32,
     "decoder_model_file": "examples/results/phase_4_1/phase_4_1_cnn_25200_1h_decoder_model.h5.keras",

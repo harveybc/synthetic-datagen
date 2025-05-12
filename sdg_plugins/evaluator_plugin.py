@@ -76,88 +76,66 @@ class EvaluatorPlugin:
     def evaluate(
         self,
         synthetic_data: np.ndarray,
-        real_data_processed: np.ndarray,  # New
-        real_dates: Optional[pd.Index],   # New
-        feature_names: List[str],         # New
+        real_data_processed: np.ndarray,  # Use this directly
+        real_dates: Optional[pd.Index],
+        feature_names: List[str],
         config: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Compara 'synthetic_data' con la señal real extraída de 'real_data_file'.
-        Realiza sliding windows sobre la señal real de tamaño 'window_size',
-        extrae el primer elemento de cada ventana y calcula métricas.
-
-        :param synthetic_data: Array shape (n_samples, n_features).
-        :param real_data_processed: Array shape (n_samples, n_features).
-        :param real_dates: Opcional, índice de fechas de los datos reales.
-        :param feature_names: Lista de nombres de características.
-        :param config: Opcional, puede sobreescribir 'real_data_file' o 'window_size'.
-        :return: Diccionario con métricas:
-                 - 'mae_per_feature'
-                 - 'mse_per_feature'
-                 - 'pearson_r_per_feature'
-                 - 'acf1_per_feature'
-                 - 'overall_mae'
-                 - 'overall_mse'
-                 - 'overall_pearson_r'
-                 - 'overall_acf1'
-        :raises ValueError: si las formas no coinciden o faltan datos.
+        Compares 'synthetic_data' with 'real_data_processed'.
+        Assumes real_data_processed is already in the shape (n_samples, n_features)
+        and aligned with synthetic_data.
         """
-        # Sobreescribir parámetros si están en config
-        if config:
+        if config: # Allow overriding params like window_size if still needed for other logic
             self.set_params(**config)
 
-        real_file = self.params.get("real_data_file")
-        window_size = self.params.get("window_size")
+        # The 'real_data_processed' is now the definitive real signal for comparison.
+        # It should already be shaped (n_samples, n_features).
+        real_signal = real_data_processed
 
-        # Carga de datos reales
-        ext = os.path.splitext(real_file)[1].lower()
-        if ext == '.npy':
-            real = np.load(real_file)
-        else:
-            real = pd.read_csv(real_file).values
-
-        # Validar dimensiones
-        if real.ndim != 2:
-            raise ValueError(f"Datos reales deben ser 2D, ndim={real.ndim}")
-
-        n_ticks, n_features = real.shape
-        expected_samples = n_ticks - window_size + 1
-        if expected_samples <= 0:
-            raise ValueError("window_size es mayor que la longitud de la señal real.")
-
-        # Crear sliding windows manualmente
-        windows = np.zeros((expected_samples, window_size, n_features), dtype=real.dtype)
-        for i in range(expected_samples):
-            windows[i] = real[i:i + window_size]
-
-        # Extraer primer elemento de cada ventana: real_signal shape (n_samples, n_features)
-        real_signal = windows[:, 0, :]
+        if real_signal.ndim != 2:
+            raise ValueError(f"real_data_processed must be 2D (samples, features), got ndim={real_signal.ndim}")
 
         # Validar que synthetic_data coincide en forma
         if synthetic_data.ndim != 2 or synthetic_data.shape != real_signal.shape:
             raise ValueError(
-                f"synthetic_data shape {synthetic_data.shape} != expected {real_signal.shape}"
+                f"synthetic_data shape {synthetic_data.shape} != expected real_data_processed shape {real_signal.shape}"
             )
+        
+        n_features = real_signal.shape[1]
+        if len(feature_names) != n_features:
+            print(f"WARN: Length of feature_names ({len(feature_names)}) does not match number of features in data ({n_features}). Metrics might be misaligned if names are used.")
+
 
         # Cálculo de métricas por característica
         mae_per = np.mean(np.abs(synthetic_data - real_signal), axis=0)
         mse_per = np.mean((synthetic_data - real_signal) ** 2, axis=0)
-        # Pearson r
+        
         pearson_r_per = []
-        acf1_per = []
-        for f in range(n_features):
+        acf1_per = [] # For ACF of the real_signal features
+
+        for f_idx in range(n_features):
+            y_true_feat = real_signal[:, f_idx]
+            y_syn_feat = synthetic_data[:, f_idx]
+
             # Pearson r
-            y_true = real_signal[:, f]
-            y_syn = synthetic_data[:, f]
-            cov = np.cov(y_true, y_syn, ddof=0)[0, 1]
-            stds = np.std(y_true) * np.std(y_syn)
-            r = cov / stds if stds != 0 else np.nan
+            if len(y_true_feat) > 1 and len(y_syn_feat) > 1: # Need at least 2 points for std
+                cov = np.cov(y_true_feat, y_syn_feat, ddof=0)[0, 1] # Use ddof=0 for population covariance if comparing directly
+                std_true = np.std(y_true_feat)
+                std_syn = np.std(y_syn_feat)
+                stds_prod = std_true * std_syn
+                r = cov / stds_prod if stds_prod != 0 else np.nan
+            else:
+                r = np.nan
             pearson_r_per.append(r)
-            # ACF lag 1
-            y_mean = np.mean(y_true)
-            y_lag = y_true[:-1] - y_mean
-            y_cur = y_true[1:] - y_mean
-            acf1 = np.corrcoef(y_lag, y_cur)[0, 1] if y_lag.size > 0 else np.nan
+
+            # ACF lag 1 for the real signal feature
+            if len(y_true_feat) > 1:
+                # Simplified ACF-1 calculation using pandas for robustness
+                acf_series = pd.Series(y_true_feat).acf(nlags=1, fft=False) # fft=False for direct method
+                acf1 = acf_series[1] if len(acf_series) > 1 else np.nan
+            else:
+                acf1 = np.nan
             acf1_per.append(acf1)
 
         pearson_r_per = np.array(pearson_r_per)
@@ -165,14 +143,17 @@ class EvaluatorPlugin:
 
         # Métricas globales agregadas
         metrics = {
-            "mae_per_feature": mae_per,
-            "mse_per_feature": mse_per,
-            "pearson_r_per_feature": pearson_r_per,
-            "acf1_per_feature": acf1_per,
+            "mae_per_feature": mae_per.tolist(), # Convert to list for JSON serialization
+            "mse_per_feature": mse_per.tolist(),
+            "pearson_r_per_feature": np.nan_to_num(pearson_r_per).tolist(), # Handle NaNs from constant series
+            "acf1_per_feature": np.nan_to_num(acf1_per).tolist(),
             "overall_mae": np.mean(mae_per),
             "overall_mse": np.mean(mse_per),
-            "overall_pearson_r": np.nanmean(pearson_r_per),
+            "overall_pearson_r": np.nanmean(pearson_r_per), # nanmean ignores NaNs
             "overall_acf1": np.nanmean(acf1_per)
         }
+        # Add feature names to metrics if available and lengths match
+        if feature_names and len(feature_names) == n_features:
+            metrics["feature_names"] = feature_names
 
         return metrics
