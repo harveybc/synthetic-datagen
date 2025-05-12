@@ -460,66 +460,83 @@ def main():
             ]
 
             # --- Determine initial datetime for DATE_TIME column generation ---
-            # real_feature_names comes from preprocessor output, assumed to match X_syn columns
             start_datetime_str_for_generation = ""
             try:
                 base_date_str = config.get("start_date", "2022-01-01") # Default to Jan 1, 2022
                 base_dt = pd.to_datetime(base_date_str)
+                print(f"DEBUG: Base date for DATE_TIME generation: {base_dt.strftime('%Y-%m-%d')}")
 
                 if 'day_of_month' in real_feature_names and \
                    'hour_of_day' in real_feature_names and \
                    X_syn.shape[0] > 0:
+                    print(f"DEBUG: Attempting to use day/hour from X_syn[0]. Features 'day_of_month', 'hour_of_day' found in real_feature_names. X_syn has {X_syn.shape[0]} samples.")
                     
                     day_of_month_idx = real_feature_names.index('day_of_month')
                     hour_of_day_idx = real_feature_names.index('hour_of_day')
                     
-                    day_val = int(X_syn[0, day_of_month_idx])
-                    hour_val = int(X_syn[0, hour_of_day_idx])
+                    raw_day_val = X_syn[0, day_of_month_idx]
+                    raw_hour_val = X_syn[0, hour_of_day_idx]
+                    print(f"DEBUG: Raw X_syn[0] values for day_of_month: {raw_day_val}, hour_of_day: {raw_hour_val}")
 
-                    # Validate day and hour values before constructing datetime
-                    valid_day = True
-                    if not (1 <= day_val <= 31): # Basic check
-                        print(f"Warning: Extracted day_of_month ({day_val}) from synthetic data is out of typical range (1-31). Using day from base_date: {base_dt.day}.")
-                        day_val = base_dt.day # Fallback to day from base_dt
-                        valid_day = False # Mark as potentially problematic for specific construction
+                    day_val = pd.NA # Using pandas NA for missing/unconvertible
+                    hour_val = pd.NA
 
-                    if not (0 <= hour_val <= 23):
-                        print(f"Warning: Extracted hour_of_day ({hour_val}) from synthetic data is out of range (0-23). Using hour 0.")
-                        hour_val = 0
+                    try:
+                        if pd.notna(raw_day_val): day_val = int(float(raw_day_val)) # Convert to float first, then int
+                    except (ValueError, TypeError):
+                        print(f"Warning: Could not convert X_syn day_of_month value '{raw_day_val}' to int.")
                     
                     try:
-                        # Attempt to create the specific start datetime
-                        # Uses year and month from base_dt, and potentially day/hour from synthetic data
-                        # If day_val was invalid, this might still use base_dt.day if it was reset
+                        if pd.notna(raw_hour_val): hour_val = int(float(raw_hour_val))
+                    except (ValueError, TypeError):
+                        print(f"Warning: Could not convert X_syn hour_of_day value '{raw_hour_val}' to int.")
+
+                    print(f"DEBUG: Converted X_syn[0] day_val: {day_val}, hour_val: {hour_val}")
+
+                    # Validate day and hour values
+                    if pd.notna(day_val) and (1 <= day_val <= 31):
+                        # Day is plausible, use it
+                        pass
+                    else:
+                        print(f"Warning: Extracted day_of_month ({day_val}) from synthetic data is invalid, NA, or out of range (1-31). Using day from base_date: {base_dt.day}.")
+                        day_val = base_dt.day # Fallback to day from base_dt (e.g., 1st of the month)
+                    
+                    if pd.notna(hour_val) and (0 <= hour_val <= 23):
+                        # Hour is plausible, use it
+                        pass
+                    else:
+                        print(f"Warning: Extracted hour_of_day ({hour_val}) from synthetic data is invalid, NA, or out of range (0-23). Using hour 0.")
+                        hour_val = 0 # Fallback to hour 0
+                    
+                    try:
                         specific_start_dt = datetime(base_dt.year, base_dt.month, day_val, hour_val, 0, 0)
                         start_datetime_str_for_generation = specific_start_dt.strftime('%Y-%m-%d %H:%M:%S')
-                        print(f"Constructed start_datetime for generation: {start_datetime_str_for_generation}")
+                        print(f"DEBUG: Constructed start_datetime for generation (from X_syn day/hour logic): {start_datetime_str_for_generation}")
                     except ValueError as e_dt:
-                        # This catches invalid dates like February 30th
                         print(f"Warning: Could not construct specific start datetime (Year: {base_dt.year}, Month: {base_dt.month}, Day: {day_val}, Hour: {hour_val}): {e_dt}. Falling back to configured/default start_date at 00:00.")
                         start_datetime_str_for_generation = base_dt.replace(hour=0, minute=0, second=0, microsecond=0).strftime('%Y-%m-%d %H:%M:%S')
+                        print(f"DEBUG: Fallback start_datetime (ValueError during construction): {start_datetime_str_for_generation}")
                 else:
-                    missing_keys_msg = []
-                    if 'day_of_month' not in real_feature_names:
-                        missing_keys_msg.append("'day_of_month'")
-                    if 'hour_of_day' not in real_feature_names:
-                        missing_keys_msg.append("'hour_of_day'")
-                    if X_syn.shape[0] == 0:
-                        missing_keys_msg.append("no synthetic samples (X_syn is empty)")
+                    missing_info = []
+                    if 'day_of_month' not in real_feature_names: missing_info.append("'day_of_month' not in real_feature_names")
+                    if 'hour_of_day' not in real_feature_names: missing_info.append("'hour_of_day' not in real_feature_names")
+                    if X_syn.shape[0] == 0: missing_info.append("X_syn is empty")
                     
-                    print(f"Warning: Cannot use day/hour from synthetic data ({', '.join(missing_keys_msg)}). Using configured/default start_date '{base_date_str}' at 00:00 for DATE_TIME generation.")
+                    print(f"Warning: Cannot use day/hour from synthetic data ({'; '.join(missing_info)}). Using configured/default start_date '{base_date_str}' at 00:00 for DATE_TIME generation.")
                     start_datetime_str_for_generation = base_dt.replace(hour=0, minute=0, second=0, microsecond=0).strftime('%Y-%m-%d %H:%M:%S')
+                    print(f"DEBUG: Fallback start_datetime (features unavailable or X_syn empty): {start_datetime_str_for_generation}")
 
             except Exception as e_init_dt:
-                print(f"Error determining initial datetime: {e_init_dt}. Defaulting to current system time for DATE_TIME generation (or NaT if further issues).")
+                print(f"CRITICAL Error determining initial datetime: {e_init_dt}. Defaulting to current system time for DATE_TIME generation as a last resort.")
                 start_datetime_str_for_generation = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                print(f"DEBUG: Fallback start_datetime (exception in outer try): {start_datetime_str_for_generation}")
 
             # --- Generate DATE_TIME column values ---
             datetime_column_values = [pd.NaT] * n_synthetic_samples
             dataset_periodicity_str = config.get("dataset_periodicity")
 
             if dataset_periodicity_str and start_datetime_str_for_generation:
-                print(f"Attempting to generate DATE_TIME column for {n_synthetic_samples} samples, starting from {start_datetime_str_for_generation} with periodicity {dataset_periodicity_str}.")
+                print(f"DEBUG: Attempting to generate DATE_TIME column for {n_synthetic_samples} samples, starting from '{start_datetime_str_for_generation}' with periodicity '{dataset_periodicity_str}'.")
                 generated_dates = generate_datetime_column(
                     start_datetime_str_for_generation,
                     n_synthetic_samples,
@@ -527,42 +544,51 @@ def main():
                 )
                 if generated_dates and len(generated_dates) == n_synthetic_samples:
                     datetime_column_values = generated_dates
-                    print(f"DATE_TIME column generated successfully with {len(datetime_column_values)} entries.")
+                    print(f"DEBUG: DATE_TIME column generated successfully with {len(datetime_column_values)} entries.")
                 else:
-                    print(f"Warning: DATE_TIME column generation did not produce the expected {n_synthetic_samples} valid entries. The DATE_TIME column will contain placeholders (NaT). Review messages from date generation function.")
+                    print(f"Warning: DATE_TIME column generation did not produce the expected {n_synthetic_samples} valid entries (got {len(generated_dates) if generated_dates else 0}). The DATE_TIME column will contain placeholders (NaT). Review messages from date generation function.")
             else:
-                if not dataset_periodicity_str:
-                    print("Information: 'dataset_periodicity' not found in config. DATE_TIME column will contain placeholders (NaT).")
-                if not start_datetime_str_for_generation:
-                     print("Information: Could not determine a valid start_datetime_str for generation. DATE_TIME column will contain placeholders (NaT).")
+                if not dataset_periodicity_str: print("Information: 'dataset_periodicity' not found in config. DATE_TIME column will contain placeholders (NaT).")
+                if not start_datetime_str_for_generation: print("Information: Could not determine a valid start_datetime_str for generation. DATE_TIME column will contain placeholders (NaT).")
             
             # --- Create DataFrame with synthetic data and feature names from preprocessor ---
             if len(real_feature_names) != X_syn.shape[1]:
                 print(f"CRITICAL WARNING: Mismatch between number of real_feature_names ({len(real_feature_names)}) and X_syn columns ({X_syn.shape[1]}). DataFrame creation might be incorrect or fail. Feature names from preprocessor: {real_feature_names}")
-                # Fallback or error based on severity. For now, we'll let pandas try.
             
             df_synthetic_data = pd.DataFrame(X_syn, columns=real_feature_names)
+            print(f"DEBUG: df_synthetic_data created. Columns: {list(df_synthetic_data.columns)}")
 
             # --- Add DATE_TIME column as the first column ---
             df_synthetic_data.insert(0, "DATE_TIME", datetime_column_values)
+            print(f"DEBUG: DATE_TIME column inserted. Current columns: {list(df_synthetic_data.columns)}")
+            if datetime_column_values:
+                 print(f"DEBUG: First few DATE_TIME values after insertion: {datetime_column_values[:5]}...")
+            else:
+                 print(f"DEBUG: datetime_column_values is empty or None after generation attempt.")
+
 
             # --- Reorder columns to the specified TARGET_COLUMN_ORDER ---
-            # Ensure all target columns (except DATE_TIME already inserted) are handled.
-            # Columns in df_synthetic_data not in TARGET_COLUMN_ORDER will be dropped.
-            # Columns in TARGET_COLUMN_ORDER not in df_synthetic_data will be added with NaN.
+            print(f"DEBUG: Reordering columns to TARGET_COLUMN_ORDER. Target: {TARGET_COLUMN_ORDER}")
             
-            current_cols = set(df_synthetic_data.columns)
-            target_cols_set = set(TARGET_COLUMN_ORDER)
-
-            missing_in_df = [col for col in TARGET_COLUMN_ORDER if col not in current_cols]
-            if missing_in_df:
-                print(f"Warning: The following columns specified in TARGET_COLUMN_ORDER are not present in the generated data + DATE_TIME column and will be added as NaN: {missing_in_df}")
-
-            extra_in_df = [col for col in current_cols if col not in target_cols_set]
-            if extra_in_df:
-                print(f"Warning: The following columns are present in the generated data but not in TARGET_COLUMN_ORDER and will be dropped: {extra_in_df}")
-                
-            df_data_to_save = df_synthetic_data.reindex(columns=TARGET_COLUMN_ORDER)
+            # Ensure all columns in TARGET_COLUMN_ORDER exist in the DataFrame, adding NaNs if not.
+            # Then select them in the specified order.
+            df_data_to_save = pd.DataFrame() # Start with an empty DataFrame
+            for col_name in TARGET_COLUMN_ORDER:
+                if col_name in df_synthetic_data:
+                    df_data_to_save[col_name] = df_synthetic_data[col_name]
+                else:
+                    df_data_to_save[col_name] = np.nan # Or pd.NaT for DATE_TIME if it was truly missing
+                    if col_name == "DATE_TIME" and not ("DATE_TIME" in df_synthetic_data): # Should not happen due to insert
+                         print(f"DEBUG: DATE_TIME column was not in df_synthetic_data during reorder; adding as NaN/NaT.")
+                    else:
+                         print(f"DEBUG: Column '{col_name}' from TARGET_COLUMN_ORDER not found in generated data; adding as NaN.")
+            
+            # Verify final column order
+            final_columns = list(df_data_to_save.columns)
+            if final_columns != TARGET_COLUMN_ORDER:
+                print(f"CRITICAL WARNING: Final column order {final_columns} does not match TARGET_COLUMN_ORDER {TARGET_COLUMN_ORDER}. Reindexing might have failed.")
+            else:
+                print(f"DEBUG: df_data_to_save after reordering. Columns: {final_columns}")
             
             # --- Save to CSV ---
             df_data_to_save.to_csv(output_file, index=False, date_format='%Y-%m-%d %H:%M:%S')
