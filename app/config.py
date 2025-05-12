@@ -13,11 +13,7 @@ DEFAULT_VALUES = {
     "evaluator": "default_evaluator",
     "optimizer": "default_optimizer",
 
-    # Generation parameters
-    "n_samples": 25200,  # <--- CHANGE THIS to match X_real_processed.shape[0]
-    "latent_dim": 16,
-    "batch_size": 32,
-    "decoder_model_file": "examples/results/phase_4_1/phase_4_1_cnn_25200_1h_decoder_model.h5.keras",
+   
 
     # Data for evaluation
     "real_data_file": "examples/data/phase_3/normalized_d1.csv",
@@ -33,6 +29,13 @@ DEFAULT_VALUES = {
     "use_stl": True,
     "use_wavelets": True,
     "use_multi_tapper": True,
+
+
+     # Generation parameters
+    "n_samples": 25200,  # <--- CHANGE THIS to match X_real_processed.shape[0]
+    "latent_dim": 16,
+    "batch_size": 32,
+    "decoder_model_file": "examples/results/phase_4_1/phase_4_1_cnn_25200_1h_decoder_model.h5.keras",
     "max_steps_train": 25200,
     "max_steps_test": 6300,
 
