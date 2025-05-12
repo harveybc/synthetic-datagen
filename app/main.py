@@ -177,7 +177,8 @@ def main():
             optimal_params = optimizer_plugin.optimize(
                 feeder_plugin,
                 generator_plugin,
-                evaluator_plugin,
+                evaluator_plugin, # Pass the evaluator instance
+                preprocessor_plugin, # Pass the preprocessor instance
                 config
             )
             optimizer_output_file = config.get(
@@ -187,7 +188,14 @@ def main():
             with open(optimizer_output_file, "w") as f:
                 json.dump(optimal_params, f, indent=4)
             print(f"Optimized parameters saved to {optimizer_output_file}.")
-            config.update(optimal_params)
+            config.update(optimal_params) # Update main config with optimal params
+            # Re-set params for plugins if they were optimized
+            feeder_plugin.set_params(**config)
+            generator_plugin.set_params(**config)
+            # Evaluator and Preprocessor might not have optimizable params, but good practice if they could
+            evaluator_plugin.set_params(**config)
+            preprocessor_plugin.set_params(**config)
+
         except Exception as e:
             print(f"Hyperparameter optimization failed: {e}")
             sys.exit(1)
@@ -197,24 +205,77 @@ def main():
 
         try:
             # 0. Preprocess real data for evaluation using the loaded PreprocessorPlugin
-            # This assumes your PreprocessorPlugin has a method like 'preprocess_for_evaluation'
-            # that returns: processed_data_array, processed_dates_index, feature_names_list
             print("Preprocessing real data for evaluation via PreprocessorPlugin...")
-            # You might need to pass specific parts of the config or the whole config
-            # depending on your preprocessor_plugin's method signature.
-            # Example: X_real_processed, real_dates, real_feature_names = preprocessor_plugin.run_preprocessing(config)
-            # For this example, let's assume a method name and return signature:
-            if not hasattr(preprocessor_plugin, 'preprocess_for_evaluation'):
-                raise AttributeError("PreprocessorPlugin does not have a 'preprocess_for_evaluation' method.")
             
-            # The preprocessor should handle its own configuration for real_data_file, window_size etc.
-            # based on the `config` it received during set_params or passed here.
-            X_real_processed, real_dates, real_feature_names = preprocessor_plugin.preprocess_for_evaluation(config=config)
-            print(f"Real data preprocessed. Shape: {X_real_processed.shape}, Number of dates: {len(real_dates) if real_dates is not None else 'N/A'}")
+            # Call run_preprocessing as per your example
+            # This method should return a dictionary.
+            if not hasattr(preprocessor_plugin, 'run_preprocessing'):
+                raise AttributeError("PreprocessorPlugin does not have a 'run_preprocessing' method.")
+            
+            datasets = preprocessor_plugin.run_preprocessing(config=config)
+            print("PreprocessorPlugin.run_preprocessing finished.")
 
+            # Extract the relevant processed real data, dates, and feature names
+            # Adjust these keys based on what your preprocessor_plugin.run_preprocessing returns
+            # For example, if your preprocessor prepares data specifically for this kind of evaluation,
+            # it might return a single processed array, dates, and feature names directly,
+            # or they might be under specific keys in the 'datasets' dictionary.
+            
+            # Scenario 1: Preprocessor's run_preprocessing is adapted for this use case and
+            # returns a structure similar to the previous 'preprocess_for_evaluation'
+            if "processed_eval_data" in datasets and "eval_dates" in datasets and "eval_feature_names" in datasets:
+                X_real_processed = datasets["processed_eval_data"]
+                real_dates = datasets["eval_dates"]
+                real_feature_names = datasets["eval_feature_names"]
+            # Scenario 2: Using "x_train" or similar from a more general preprocessor output
+            # YOU MIGHT NEED TO ADJUST THESE KEYS AND LOGIC
+            elif "x_train" in datasets:
+                X_real_processed = datasets["x_train"]
+                # Attempt to get corresponding dates and feature names
+                # This assumes your preprocessor stores them in a way that can be aligned with x_train
+                # For example, if 'x_train_dates' and 'feature_names' are provided:
+                real_dates = datasets.get("x_train_dates") # Or "train_dates", "y_train_dates" etc.
+                
+                # Feature names might come from a general key or be inferred
+                if "feature_names" in datasets:
+                    real_feature_names = datasets["feature_names"]
+                elif hasattr(X_real_processed, 'columns') and isinstance(X_real_processed, pd.DataFrame): # If it's a DataFrame
+                    real_feature_names = list(X_real_processed.columns)
+                    X_real_processed = X_real_processed.values # Convert to NumPy array for evaluator
+                elif X_real_processed.ndim == 2: # If NumPy array, create generic feature names
+                    real_feature_names = [f"feature_{i}" for i in range(X_real_processed.shape[1])]
+                else:
+                    raise ValueError("Could not determine feature names for the processed real data.")
+
+                # Ensure X_real_processed is a NumPy array
+                if not isinstance(X_real_processed, np.ndarray):
+                    if hasattr(X_real_processed, 'values'): # e.g. Pandas DataFrame/Series
+                        X_real_processed = X_real_processed.values
+                    else:
+                        try:
+                            X_real_processed = np.array(X_real_processed)
+                        except Exception as e_conv:
+                            raise TypeError(f"Could not convert processed real data to NumPy array: {e_conv}")
+            else:
+                raise KeyError("Could not find 'x_train' or 'processed_eval_data' in the datasets returned by PreprocessorPlugin.run_preprocessing.")
+
+            # Ensure X_real_processed is 2D (samples, features)
+            if X_real_processed.ndim == 1:
+                X_real_processed = X_real_processed.reshape(-1, 1)
+            elif X_real_processed.ndim == 3:
+                # If data is (samples, window_size, features) from preprocessor,
+                # and generator produces (samples, features) representing the first tick,
+                # you need to ensure X_real_processed is also (samples, features)
+                # This might mean your preprocessor needs a specific mode for this evaluation,
+                # or you extract the relevant part here.
+                # Example: if X_real_processed is (samples, window, features) and you need first tick:
+                # X_real_processed = X_real_processed[:, 0, :]
+                print(f"Warning: X_real_processed has shape {X_real_processed.shape}. Assuming it's (samples, window, features) and taking [:, 0, :] for comparison.")
+                X_real_processed = X_real_processed[:, 0, :] # Adjust if this assumption is wrong
+
+            print(f"Real data extracted for evaluation. Shape: {X_real_processed.shape}, Number of dates: {len(real_dates) if real_dates is not None else 'N/A'}")
 
             # 1. Muestreo latente (usar solo n_samples; latent_dim ya fue seteado)
-            # Adjust n_samples for synthetic data to match preprocessed real data if necessary.
             n_synthetic_samples = config['n_samples']
             if X_real_processed.shape[0] < n_synthetic_samples and X_real_processed.shape[0] > 0 :
                 print(f"Warning: Number of preprocessed real samples ({X_real_processed.shape[0]}) is less than requested synthetic samples ({n_synthetic_samples}). Adjusting synthetic samples to match real data length.")
@@ -227,10 +288,8 @@ def main():
 
             Z = feeder_plugin.generate(n_synthetic_samples)
             
-            # 2. Decodificación a ventanas sintéticas
-            X_syn = generator_plugin.generate(Z)
+            X_syn = generator_plugin.generate(Z) # X_syn is (n_samples, features)
             
-            # Ensure X_syn has the same number of features as X_real_processed
             if X_syn.shape[1] != X_real_processed.shape[1]:
                 raise ValueError(
                     f"Feature mismatch after generation/preprocessing: "
@@ -239,22 +298,18 @@ def main():
                     f"Feature names from preprocessor: {real_feature_names}"
                 )
 
-            # 3. Guardado de datos sintéticos
             output_file = config['output_file']
-            # Save with header if feature names are available
             pd.DataFrame(X_syn, columns=real_feature_names if len(real_feature_names) == X_syn.shape[1] else None).to_csv(
                 output_file, index=False
             )
             print(f"Synthetic data saved to {output_file}.")
             
-            # 4. Evaluación de las ventanas generadas
-            # Pass the preprocessed real data and dates to the evaluator
             metrics = evaluator_plugin.evaluate(
                 synthetic_data=X_syn,
-                real_data_processed=X_real_processed, # Pass the preprocessed real data
-                real_dates=real_dates,                # Pass the corresponding dates
-                feature_names=real_feature_names,     # Pass the feature names
-                config=config                         # Pass main config for other evaluator params
+                real_data_processed=X_real_processed,
+                real_dates=real_dates,
+                feature_names=real_feature_names,
+                config=config
             )
             metrics_file = config['metrics_file']
             with open(metrics_file, "w") as f:
