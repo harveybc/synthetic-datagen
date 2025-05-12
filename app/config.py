@@ -20,7 +20,7 @@ DEFAULT_VALUES = {
     "decoder_model_file": "examples/results/phase_4_1/phase_4_1_cnn_25200_1h_decoder_model.h5.keras",
 
     # Data for evaluation
-    "real_data_file": "examples/data/phase_4_1/normalized_d1.csv",
+    "real_data_file": "examples/data/phase_3/normalized_d1.csv",
 
     # Output paths
     "output_file": "examples/results/phase_4_1/synthetic_data.csv",
