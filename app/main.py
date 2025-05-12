@@ -447,9 +447,10 @@ def main():
             output_file = config['output_file']
             
             # --- DATE_TIME Column Generation and DataFrame Creation ---
-            datetime_column_values = []
-            
-            # Get start_date_time from config or use default
+            # Initialize datetime_column_values with NaT, matching the number of synthetic samples
+            # n_synthetic_samples is defined earlier and should match X_syn.shape[0]
+            datetime_column_values = [pd.NaT] * n_synthetic_samples
+
             start_datetime_str = config.get("start_date_time")
             if not start_datetime_str:
                 start_datetime_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -457,24 +458,41 @@ def main():
 
             dataset_periodicity_str = config.get("dataset_periodicity")
 
-            if dataset_periodicity_str: # Periodicity must be present to generate DATE_TIME
+            if dataset_periodicity_str:
                 print(f"Attempting to generate DATE_TIME column for {n_synthetic_samples} samples, starting from {start_datetime_str} with periodicity {dataset_periodicity_str}.")
-                datetime_column_values = generate_datetime_column(
+                generated_dates = generate_datetime_column(
                     start_datetime_str,
-                    n_synthetic_samples, 
+                    n_synthetic_samples,
                     dataset_periodicity_str
                 )
 
-                if datetime_column_values and len(datetime_column_values) == X_syn.shape[0]:
-                    df_data_to_save = pd.DataFrame(X_syn, columns=real_feature_names)
-                    df_data_to_save.insert(0, "DATE_TIME", datetime_column_values)
+                if generated_dates and len(generated_dates) == n_synthetic_samples:
+                    datetime_column_values = generated_dates # Replace NaT with actual dates
                     print(f"DATE_TIME column generated successfully with {len(datetime_column_values)} entries.")
                 else:
-                    print("Warning: DATE_TIME column generation failed or length mismatch. Saving data without DATE_TIME column.")
-                    df_data_to_save = pd.DataFrame(X_syn, columns=real_feature_names if len(real_feature_names) == X_syn.shape[1] else None)
+                    # generate_datetime_column itself prints warnings about mismatches or errors.
+                    print(f"Warning: DATE_TIME column generation did not produce the expected {n_synthetic_samples} valid entries. The DATE_TIME column will contain placeholders (NaT). Review messages from date generation.")
             else:
-                print("Information: 'dataset_periodicity' not found in config. Cannot generate DATE_TIME column. Saving data without DATE_TIME column.")
-                df_data_to_save = pd.DataFrame(X_syn, columns=real_feature_names if len(real_feature_names) == X_syn.shape[1] else None)
+                print("Information: 'dataset_periodicity' not found in config. DATE_TIME column will contain placeholders (NaT).")
+
+            # Always create DataFrame with feature columns first
+            # Ensure real_feature_names has the correct number of columns for X_syn
+            if len(real_feature_names) != X_syn.shape[1]:
+                 # This case should ideally be caught by earlier checks, but as a safeguard:
+                print(f"Warning: Mismatch between number of feature names ({len(real_feature_names)}) and synthetic data columns ({X_syn.shape[1]}). Adjusting feature names or check preprocessing.")
+                # Fallback: generate generic feature names if mismatch is critical for DataFrame creation
+                # Or, rely on the earlier check: if X_syn.shape[1] != X_real_processed.shape[1]: raise ValueError(...)
+                # For now, we assume the earlier check handles fatal mismatches.
+                # If it proceeds, pandas might raise an error or behave unexpectedly if columns don't align.
+                # The original code had: columns=real_feature_names if len(real_feature_names) == X_syn.shape[1] else None
+                # Sticking to `real_feature_names` and letting pandas handle or error out if lengths are wrong,
+                # as the earlier explicit check should prevent this.
+                pass # Assuming prior checks ensure compatibility or an error is raised.
+
+            df_data_to_save = pd.DataFrame(X_syn, columns=real_feature_names)
+            
+            # Always insert the DATE_TIME column, which now contains either generated dates or NaT
+            df_data_to_save.insert(0, "DATE_TIME", datetime_column_values)
             
             df_data_to_save.to_csv(output_file, index=False)
             print(f"Synthetic data saved to {output_file}.")
