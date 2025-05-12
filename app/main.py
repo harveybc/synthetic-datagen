@@ -169,7 +169,6 @@ def main():
     config = merge_config(config, generator_plugin.plugin_params, {}, file_config, cli_args, unknown_args_dict)
     config = merge_config(config, evaluator_plugin.plugin_params, {}, file_config, cli_args, unknown_args_dict)
     config = merge_config(config, optimizer_plugin.plugin_params, {}, file_config, cli_args, unknown_args_dict)
-    # Add preprocessor plugin params to merge if it has 'plugin_params' attribute
     if hasattr(preprocessor_plugin, 'plugin_params'):
         config = merge_config(config, preprocessor_plugin.plugin_params, {}, file_config, cli_args, unknown_args_dict)
 
@@ -177,20 +176,20 @@ def main():
     # --- Helper function to generate DATE_TIME column ---
     def generate_datetime_column(start_datetime_str: str, num_samples: int, periodicity_str: str) -> list:
         """
-        Generates a list of datetime objects or pd.NaT based on start_datetime, num_samples, and periodicity.
+        Generates a list of datetime strings. Forcefully ensures num_samples valid date strings are returned.
         Skips weekends for non-daily periodicities, attempting to preserve the time of day.
         For daily periodicity, only includes weekdays, using the time from start_datetime_str.
         """
-        date_times = []
+        date_times_objs = [] # Store datetime objects
         if num_samples == 0:
             return []
-            
+
         try:
             current_dt = pd.to_datetime(start_datetime_str)
-            print(f"DEBUG generate_datetime_column: Initial current_dt: {current_dt}, type: {type(current_dt)}")
+            # print(f"DEBUG generate_datetime_column: Initial current_dt: {current_dt}, type: {type(current_dt)}")
         except Exception as e:
-            print(f"Error parsing 'start_datetime_str' ('{start_datetime_str}'): {e}. DATE_TIME column will contain NaT.")
-            return [pd.NaT] * num_samples
+            print(f"ERROR generate_datetime_column: Error parsing 'start_datetime_str' ('{start_datetime_str}'): {e}. Defaulting to current system time.")
+            current_dt = pd.to_datetime(datetime.now().replace(microsecond=0))
 
         time_delta_map = {
             "1h": timedelta(hours=1), "1H": timedelta(hours=1),
@@ -201,94 +200,126 @@ def main():
         }
         time_step = time_delta_map.get(periodicity_str)
 
+        original_periodicity_str = periodicity_str # Keep for reference
         if not time_step:
-            print(f"Warning: Unsupported 'dataset_periodicity' ('{periodicity_str}') for DATE_TIME generation. Column will contain NaT.")
-            return [pd.NaT] * num_samples
+            print(f"WARNING generate_datetime_column: Unsupported 'dataset_periodicity' ('{original_periodicity_str}'). Defaulting to hourly ('1h').")
+            time_step = timedelta(hours=1)
+            periodicity_str = "1h" # Update for internal logic
 
         generated_count = 0
-        
-        # Store original time components from the start_datetime_str for consistent application
-        initial_hour = current_dt.hour
-        initial_minute = current_dt.minute
-        initial_second = current_dt.second
+        initial_hour, initial_minute, initial_second = current_dt.hour, current_dt.minute, current_dt.second
 
-        # Initial adjustment for non-daily: if start_dt is weekend, move to next weekday at the original time
         if periodicity_str != "daily":
             if current_dt.weekday() >= 5: # 5 = Saturday, 6 = Sunday
-                print(f"DEBUG generate_datetime_column: Initial start_datetime {current_dt} is on a weekend. Adjusting.")
+                # print(f"DEBUG generate_datetime_column: Initial start_datetime {current_dt} is on a weekend. Adjusting.")
                 while current_dt.weekday() >= 5:
-                    current_dt += timedelta(days=1) # Move to the next day
-                # Now current_dt is on a weekday. Ensure it has the original time.
+                    current_dt += timedelta(days=1)
                 current_dt = current_dt.replace(hour=initial_hour, minute=initial_minute, second=initial_second, microsecond=0)
-                print(f"DEBUG generate_datetime_column: Adjusted start_datetime to {current_dt} (next weekday at original time).")
+                # print(f"DEBUG generate_datetime_column: Adjusted start_datetime to {current_dt} (next weekday at original time).")
 
         loop_iterations = 0
-        max_loop_iterations = num_samples * 5  # Allow more iterations for weekend/holiday skipping
+        # Increased max_loop_iterations to be more generous, especially with weekend skipping
+        max_loop_iterations = num_samples * 7 if num_samples > 0 else 100
 
         while generated_count < num_samples:
             loop_iterations += 1
-            if loop_iterations > max_loop_iterations and num_samples > 0:
-                print(f"Warning: DATE_TIME generation exceeded max_loop_iterations ({max_loop_iterations}). Breaking. Generated {generated_count}/{num_samples} dates.")
+            if loop_iterations > max_loop_iterations:
+                print(f"WARNING generate_datetime_column: Exceeded max_loop_iterations ({max_loop_iterations}) while generating dates. Generated {generated_count}/{num_samples}. Will forcefully complete.")
                 break
 
             if periodicity_str == "daily":
-                # For daily, only include if it's a weekday
-                if current_dt.weekday() < 5: # Monday to Friday
-                    # Use the time components from the original start_datetime_str for daily entries
-                    date_times.append(current_dt.replace(hour=initial_hour, minute=initial_minute, second=initial_second, microsecond=0))
+                if current_dt.weekday() < 5:
+                    date_times_objs.append(current_dt.replace(hour=initial_hour, minute=initial_minute, second=initial_second, microsecond=0))
                     generated_count += 1
-                current_dt += time_step # Increment by one full day to check the next day
-            else: # For hourly, minutely, etc.
-                # Add the current timestamp (it's already adjusted to be on a weekday or is the initial start)
-                date_times.append(current_dt)
-                generated_count += 1
-                
-                if generated_count >= num_samples: # Check if we have enough after adding
-                    break
-                
-                # Increment to the next potential time
                 current_dt += time_step
+            else: # For hourly, minutely, etc.
+                date_times_objs.append(current_dt)
+                generated_count += 1
+                if generated_count >= num_samples: break
                 
-                # If the new current_dt is on a weekend, advance it to the next weekday, preserving time of day
+                current_dt += time_step
                 if current_dt.weekday() >= 5:
-                    # Store the time of day of the *incremented* step before potentially changing the day
-                    target_hour_after_increment = current_dt.hour
-                    target_minute_after_increment = current_dt.minute
-                    target_second_after_increment = current_dt.second
-                    
-                    print(f"DEBUG generate_datetime_column: Incremented to {current_dt} which is a weekend. Adjusting.")
+                    target_h, target_m, target_s = current_dt.hour, current_dt.minute, current_dt.second
+                    # print(f"DEBUG generate_datetime_column: Incremented to {current_dt} (weekend). Adjusting.")
                     while current_dt.weekday() >= 5:
-                        current_dt += timedelta(days=1) # Move to the next day
-                    # Now current_dt is on the next weekday. Set its time.
-                    current_dt = current_dt.replace(hour=target_hour_after_increment, minute=target_minute_after_increment, second=target_second_after_increment, microsecond=0)
-                    print(f"DEBUG generate_datetime_column: Adjusted incremented time to {current_dt} (next weekday at incremented time).")
-            
-        # If not enough dates were generated, fill the rest with NaT
-        while len(date_times) < num_samples:
-            date_times.append(pd.NaT)
+                        current_dt += timedelta(days=1)
+                    current_dt = current_dt.replace(hour=target_h, minute=target_m, second=target_s, microsecond=0)
+                    # print(f"DEBUG generate_datetime_column: Adjusted incremented time to {current_dt}.")
         
-        # Ensure the list is exactly num_samples long
-        if len(date_times) > num_samples:
-            date_times = date_times[:num_samples]
+        # Forcefully complete if not enough dates were generated
+        if generated_count < num_samples:
+            print(f"INFO generate_datetime_column: Loop generated {generated_count}/{num_samples} dates. Forcefully completing remaining dates.")
+            # Determine the last valid datetime object to continue from, or use current_dt
+            if date_times_objs:
+                last_dt_obj = date_times_objs[-1]
+            else: # If date_times_objs is empty, current_dt is the starting point for filling
+                last_dt_obj = current_dt - time_step # current_dt would be the *next* one, so step back once
 
-        # Convert datetime objects to string representation or keep as NaT
-        output_dates = []
-        for dt_obj in date_times:
-            if pd.isna(dt_obj):
-                output_dates.append(pd.NaT) # Keep NaT as is for DataFrame
+            # Ensure last_dt_obj is a valid datetime before proceeding
+            if not isinstance(last_dt_obj, (datetime, pd.Timestamp)):
+                 print(f"CRITICAL WARNING generate_datetime_column: last_dt_obj for fill is invalid ({last_dt_obj}). Resetting to current time.")
+                 last_dt_obj = pd.to_datetime(datetime.now().replace(microsecond=0))
+
+
+            while generated_count < num_samples:
+                last_dt_obj += time_step # Increment from the last known good datetime
+
+                # Apply weekend skipping for the fill part as well for consistency
+                if periodicity_str != "daily":
+                    if last_dt_obj.weekday() >= 5:
+                        target_h, target_m, target_s = last_dt_obj.hour, last_dt_obj.minute, last_dt_obj.second
+                        while last_dt_obj.weekday() >= 5:
+                            last_dt_obj += timedelta(days=1)
+                        last_dt_obj = last_dt_obj.replace(hour=target_h, minute=target_m, second=target_s, microsecond=0)
+                    date_times_objs.append(last_dt_obj)
+                    generated_count += 1
+                elif periodicity_str == "daily":
+                    # For daily, keep advancing until a weekday is found
+                    while last_dt_obj.weekday() >= 5:
+                        last_dt_obj += time_step # time_step is 1 day
+                    # Apply initial time for daily
+                    date_times_objs.append(last_dt_obj.replace(hour=initial_hour, minute=initial_minute, second=initial_second, microsecond=0))
+                    generated_count += 1
+                
+                if generated_count >= num_samples: break
+
+
+        # Ensure the list is exactly num_samples long, truncating if somehow over (shouldn't happen with this logic)
+        if len(date_times_objs) > num_samples:
+            date_times_objs = date_times_objs[:num_samples]
+        
+        # If still not enough (highly unlikely now), fill with emergency datetimes
+        emergency_fill_count = 0
+        while len(date_times_objs) < num_samples:
+            emergency_fill_count +=1
+            emergency_dt_val = (pd.to_datetime(datetime.now().replace(microsecond=0)) + timedelta(hours=len(date_times_objs)))
+            date_times_objs.append(emergency_dt_val)
+        if emergency_fill_count > 0:
+            print(f"CRITICAL WARNING generate_datetime_column: Had to emergency fill {emergency_fill_count} dates. This indicates a flaw in generation logic.")
+
+
+        # Convert all datetime objects to string representation
+        output_dates_str = []
+        for dt_obj in date_times_objs:
+            if isinstance(dt_obj, (datetime, pd.Timestamp)):
+                output_dates_str.append(dt_obj.strftime('%Y-%m-%d %H:%M:%S'))
             else:
-                try:
-                    output_dates.append(dt_obj.strftime('%Y-%m-%d %H:%M:%S'))
-                except AttributeError: # Should not happen if logic is correct
-                    print(f"Warning: Item {dt_obj} in date_times is not a datetime object. Appending NaT.")
-                    output_dates.append(pd.NaT)
+                # This is an absolute last resort if an item is not a datetime object
+                print(f"CRITICAL ERROR generate_datetime_column: Non-datetime object '{dt_obj}' (type: {type(dt_obj)}) found in list. Using emergency string.")
+                fallback_dt_str = (pd.to_datetime(datetime.now().replace(microsecond=0)) + timedelta(seconds=len(output_dates_str))).strftime('%Y-%m-%d %H:%M:%S')
+                output_dates_str.append(fallback_dt_str)
+        
+        # Final check on counts
+        if len(output_dates_str) != num_samples and num_samples > 0:
+            print(f"CRITICAL ERROR generate_datetime_column: Final date string list length ({len(output_dates_str)}) does not match num_samples ({num_samples}).")
+            # Pad with emergency strings if short, truncate if long
+            while len(output_dates_str) < num_samples:
+                output_dates_str.append((pd.to_datetime(datetime.now().replace(microsecond=0)) + timedelta(seconds=len(output_dates_str))).strftime('%Y-%m-%d %H:%M:%S'))
+            if len(output_dates_str) > num_samples:
+                output_dates_str = output_dates_str[:num_samples]
 
-
-        if len(output_dates) != num_samples or any(d is pd.NaT for d in output_dates if num_samples > 0):
-             print(f"INFO: DATE_TIME generation produced {len(output_dates)} entries for {num_samples} requested. Some entries might be NaT. First few: {output_dates[:5]}")
-        else:
-             print(f"DEBUG: DATE_TIME generation successful. First few: {output_dates[:5]}")
-        return output_dates
+        # print(f"DEBUG generate_datetime_column: Generated {len(output_dates_str)} date strings. First few: {output_dates_str[:5]}")
+        return output_dates_str
 
     # --- DECISIÓN DE EJECUCIÓN ---
     if config.get('use_optimizer', False):
