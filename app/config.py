@@ -35,8 +35,8 @@ DEFAULT_VALUES = {
     "n_samples": 6300,  # <--- CHANGE THIS to match X_real_processed.shape[0]
     "latent_dim": 16,
     "batch_size": 32,
-    "decoder_model_file": "examples/results/phase_4_1/phase_4_1_cnn_small_25200_decoder_model.h5.keras",
-    "encoder_model_file": "examples/results/phase_4_1/phase_4_1_cnn_small_25200_encoder_model.h5.keras",
+    "decoder_model_file": "examples/results/phase_4_1/phase_4_1_cnn_small_decoder_model.h5.keras",
+    "encoder_model_file": "examples/results/phase_4_1/phase_4_1_cnn_small_encoder_model.h5.keras",
     "max_steps_train": 6300,
     "max_steps_val": 6300,
     "max_steps_test": 6300,
