@@ -26,9 +26,10 @@ class FeederPlugin:
         "sampling_method": "standard_normal", # Options: "standard_normal", "from_encoder"
         "encoder_sampling_technique": "direct", # Options for "from_encoder": "direct", "kde", "copula"
         "encoder_model_file": None,       # Path to the Keras encoder model file
-        "real_data_file": None            # Path to the .npy file containing real data (X_real) for the encoder
+        "real_data_file": None,           # Path to the .npy file containing real data (X_real) for the encoder
+        "copula_kde_bw_method": None      # Bandwidth method for marginal KDEs in copula. Examples: 'scott' (default), 'silverman', or a scalar float.
     }
-    plugin_debug_vars = ["latent_dim", "random_seed", "sampling_method", "encoder_sampling_technique", "encoder_model_file", "real_data_file"]
+    plugin_debug_vars = ["latent_dim", "random_seed", "sampling_method", "encoder_sampling_technique", "encoder_model_file", "real_data_file", "copula_kde_bw_method"]
 
     def __init__(self, config: Dict[str, Any]):
         if config is None:
@@ -111,6 +112,7 @@ class FeederPlugin:
         encoder_path = self.params.get("encoder_model_file")
         data_path = self.params.get("real_data_file")
         technique = self.params.get("encoder_sampling_technique")
+        copula_bw_method = self.params.get("copula_kde_bw_method") # Get the new parameter
 
         # Invalidate previous state before loading new
         self._invalidate_encoder_state()
@@ -177,16 +179,14 @@ class FeederPlugin:
                          class ConstantKDE: # Simplified placeholder for constant marginals
                              def __init__(self, val): self.val = val
                              def ppf(self, q): return np.full_like(q, self.val)
-                             def resample(self, size): return np.full((1,size), self.val) # for completeness
-                             def evaluate(self, points): # for completeness
-                                 # This is tricky; a true KDE of a constant is a dirac delta.
-                                 # For evaluation, it's 0 everywhere except at the point, where it's inf.
-                                 # This is unlikely to be used by the copula sampling path directly.
+                             def resample(self, size): return np.full((1,size), self.val) 
+                             def evaluate(self, points): 
                                  return np.where(points == self.val, np.inf, 0)
 
                          self._marginal_kdes.append(ConstantKDE(const_val))
                     else:
-                         self._marginal_kdes.append(gaussian_kde(marginal_data))
+                         # Use the new bw_method parameter for gaussian_kde
+                         self._marginal_kdes.append(gaussian_kde(marginal_data, bw_method=copula_bw_method))
 
                 if num_samples > 1 and total_dims > 0:
                     # spearmanr can handle 1D arrays if total_dims is 1 after hstack (e.g. latent_dim=0, means=1col, logvars=0col - unlikely)
@@ -224,6 +224,7 @@ class FeederPlugin:
         old_encoder_file = self.params.get("encoder_model_file")
         old_data_file = self.params.get("real_data_file")
         old_technique = self.params.get("encoder_sampling_technique")
+        old_copula_bw_method = self.params.get("copula_kde_bw_method") # Store old value of the new param
 
         for key, value in kwargs.items():
             if key in self.plugin_params:
@@ -233,6 +234,7 @@ class FeederPlugin:
         new_encoder_file = self.params.get("encoder_model_file")
         new_data_file = self.params.get("real_data_file")
         new_technique = self.params.get("encoder_sampling_technique")
+        new_copula_bw_method = self.params.get("copula_kde_bw_method") # Get new value of the new param
 
         # Determine if re-initialization is needed
         reinitialize = False
@@ -243,9 +245,13 @@ class FeederPlugin:
                 reinitialize = True
             elif new_technique != old_technique: # Technique changed
                 reinitialize = True
-            elif new_technique == "kde" and self._joint_kde is None: # KDE selected but not fitted
+            # If technique is copula and bw_method changed, or if copula structures are missing
+            elif new_technique == "copula" and \
+                 (old_copula_bw_method != new_copula_bw_method or \
+                  self._copula_spearman_corr is None or \
+                  not self._marginal_kdes):
                 reinitialize = True
-            elif new_technique == "copula" and (self._copula_spearman_corr is None or not self._marginal_kdes): # Copula selected but not fitted
+            elif new_technique == "kde" and self._joint_kde is None: # KDE selected but not fitted
                 reinitialize = True
         
         if reinitialize:
