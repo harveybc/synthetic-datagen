@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)  # Set default log level
 
 
-class Plugin:
+class OptimizerPlugin:
     """
     DEAP-based optimizer plugin for synthetic data generation.
 
