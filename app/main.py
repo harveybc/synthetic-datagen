@@ -75,7 +75,7 @@ def main():
     print(f"Loading Feeder Plugin: {plugin_name}")
     try:
         feeder_class, _ = load_plugin('feeder.plugins', plugin_name)
-        feeder_plugin = feeder_class()
+        feeder_plugin = feeder_class(config)
         feeder_plugin.set_params(**config)
     except Exception as e:
         print(f"Failed to load or initialize Feeder Plugin '{plugin_name}': {e}")
@@ -88,7 +88,7 @@ def main():
     print(f"Loading Generator Plugin: {plugin_name}")
     try:
         generator_class, _ = load_plugin('generator.plugins', plugin_name)
-        generator_plugin = generator_class()
+        generator_plugin = generator_class(config)
         generator_plugin.set_params(**config)
     except Exception as e:
         print(f"Failed to load or initialize Generator Plugin '{plugin_name}': {e}")
