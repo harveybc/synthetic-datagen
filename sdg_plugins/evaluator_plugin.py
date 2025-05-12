@@ -130,12 +130,27 @@ class EvaluatorPlugin:
             pearson_r_per.append(r)
 
             # ACF lag 1 for the real signal feature
+            acf1 = np.nan # Default to NaN
             if len(y_true_feat) > 1:
-                # Simplified ACF-1 calculation using pandas for robustness
-                acf_series = pd.Series(y_true_feat).acf(nlags=1, fft=False) # fft=False for direct method
-                acf1 = acf_series[1] if len(acf_series) > 1 else np.nan
-            else:
-                acf1 = np.nan
+                try:
+                    # Explicitly create a pandas Series from the NumPy array slice
+                    series_for_acf = pd.Series(y_true_feat)
+                    if not isinstance(series_for_acf, pd.Series):
+                        # This should not happen if pd.Series() is called correctly
+                        print(f"WARN: Feature {f_idx} ({feature_names[f_idx] if f_idx < len(feature_names) else 'Unknown'}): y_true_feat did not convert to pd.Series as expected. Type: {type(series_for_acf)}")
+                    else:
+                        # Use pandas Series' acf method
+                        computed_acf_values = series_for_acf.acf(nlags=1, fft=False) # fft=False for direct method, robust for short series
+                        if len(computed_acf_values) > 1:
+                            acf1 = computed_acf_values[1] # ACF at lag 1
+                        else:
+                            # This case might occur if series is too short or constant, acf might return just lag 0
+                            print(f"WARN: Feature {f_idx} ({feature_names[f_idx] if f_idx < len(feature_names) else 'Unknown'}): ACF calculation returned fewer than 2 values. Length of y_true_feat: {len(y_true_feat)}")
+                except AttributeError as e_attr:
+                    print(f"ERROR: Feature {f_idx} ({feature_names[f_idx] if f_idx < len(feature_names) else 'Unknown'}): AttributeError during ACF calculation. y_true_feat type: {type(y_true_feat)}. Error: {e_attr}")
+                    # This is where you'd hit "'Series' object has no attribute 'acf'" if series_for_acf was not a Series
+                except Exception as e_acf:
+                    print(f"ERROR: Feature {f_idx} ({feature_names[f_idx] if f_idx < len(feature_names) else 'Unknown'}): Exception during ACF calculation. Error: {e_acf}")
             acf1_per.append(acf1)
 
         pearson_r_per = np.array(pearson_r_per)
