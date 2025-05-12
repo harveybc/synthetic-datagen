@@ -18,156 +18,130 @@ import os
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, Optional, List
-
+from statsmodels.tsa.stattools import acf as sm_acf # Import statsmodels acf directly
 
 class EvaluatorPlugin:
     # Parámetros configurables por defecto
     plugin_params = {
-        "real_data_file": None,  # Ruta al archivo de datos reales (CSV o NPY)
-        "window_size": 288       # Tamaño de la ventana deslizante
+        "real_data_file": None,
+        "window_size": 288
     }
     # Variables incluidas en el debug
     plugin_debug_vars = ["real_data_file", "window_size"]
 
     def __init__(self, config: Dict[str, Any]):
-        """
-        Inicializa el EvaluatorPlugin y valida parámetros básicos.
-
-        :param config: Diccionario con 'real_data_file' y 'window_size'.
-        :raises ValueError: si faltan parámetros obligatorios.
-        """
         if config is None:
             raise ValueError("Se requiere el diccionario de configuración ('config').")
         self.params = self.plugin_params.copy()
         self.set_params(**config)
 
-        real_file = self.params.get("real_data_file")
-        if not real_file:
-            raise ValueError("El parámetro 'real_data_file' es obligatorio.")
-        if not os.path.exists(real_file):
-            raise ValueError(f"Archivo de datos reales no encontrado: {real_file}")
+        # real_file validation was removed as real_data_processed is now primary
+        # However, if you still need real_data_file for other potential logic,
+        # ensure it's handled or validated appropriately if self.params["real_data_file"] is used.
+        # For now, assuming it's not strictly needed by this evaluate method anymore.
 
     def set_params(self, **kwargs):
-        """
-        Actualiza parámetros del plugin.
-
-        :param kwargs: pares clave-valor para actualizar plugin_params.
-        """
         for key, value in kwargs.items():
-            if key in self.plugin_params:
+            if key in self.plugin_params: # Only update known params
                 self.params[key] = value
+            # else:
+            #     print(f"WARN: Unknown parameter '{key}' passed to EvaluatorPlugin.set_params.")
+
 
     def get_debug_info(self) -> Dict[str, Any]:
-        """
-        Devuelve un diccionario con valores de las variables de debug.
-
-        :return: {var: valor} para cada var en plugin_debug_vars.
-        """
         return {var: self.params.get(var) for var in self.plugin_debug_vars}
 
     def add_debug_info(self, debug_info: Dict[str, Any]):
-        """
-        Añade información de debug al diccionario proporcionado.
-
-        :param debug_info: diccionario destino.
-        """
         debug_info.update(self.get_debug_info())
 
     def evaluate(
         self,
         synthetic_data: np.ndarray,
-        real_data_processed: np.ndarray,  # Use this directly
+        real_data_processed: np.ndarray,
         real_dates: Optional[pd.Index],
         feature_names: List[str],
         config: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """
-        Compares 'synthetic_data' with 'real_data_processed'.
-        Assumes real_data_processed is already in the shape (n_samples, n_features)
-        and aligned with synthetic_data.
-        """
-        if config: # Allow overriding params like window_size if still needed for other logic
+        if config:
             self.set_params(**config)
 
-        # The 'real_data_processed' is now the definitive real signal for comparison.
-        # It should already be shaped (n_samples, n_features).
         real_signal = real_data_processed
 
         if real_signal.ndim != 2:
             raise ValueError(f"real_data_processed must be 2D (samples, features), got ndim={real_signal.ndim}")
 
-        # Validar que synthetic_data coincide en forma
         if synthetic_data.ndim != 2 or synthetic_data.shape != real_signal.shape:
             raise ValueError(
                 f"synthetic_data shape {synthetic_data.shape} != expected real_data_processed shape {real_signal.shape}"
             )
         
         n_features = real_signal.shape[1]
-        if len(feature_names) != n_features:
-            print(f"WARN: Length of feature_names ({len(feature_names)}) does not match number of features in data ({n_features}). Metrics might be misaligned if names are used.")
+        if feature_names and len(feature_names) != n_features: # Check if feature_names is provided
+            print(f"WARN: Length of feature_names ({len(feature_names)}) does not match number of features in data ({n_features}). Metrics might be misaligned if names are used or feature-specific metrics might lack names.")
+        elif not feature_names:
+            print(f"WARN: feature_names not provided to evaluator. Feature-specific metrics will not have names.")
 
 
-        # Cálculo de métricas por característica
         mae_per = np.mean(np.abs(synthetic_data - real_signal), axis=0)
         mse_per = np.mean((synthetic_data - real_signal) ** 2, axis=0)
         
         pearson_r_per = []
-        acf1_per = [] # For ACF of the real_signal features
+        acf1_per = []
 
         for f_idx in range(n_features):
             y_true_feat = real_signal[:, f_idx]
             y_syn_feat = synthetic_data[:, f_idx]
+            current_feature_name = feature_names[f_idx] if feature_names and f_idx < len(feature_names) else f"Feature_{f_idx}"
 
             # Pearson r
-            if len(y_true_feat) > 1 and len(y_syn_feat) > 1: # Need at least 2 points for std
-                cov = np.cov(y_true_feat, y_syn_feat, ddof=0)[0, 1] # Use ddof=0 for population covariance if comparing directly
-                std_true = np.std(y_true_feat)
-                std_syn = np.std(y_syn_feat)
-                stds_prod = std_true * std_syn
-                r = cov / stds_prod if stds_prod != 0 else np.nan
-            else:
-                r = np.nan
+            r = np.nan
+            if len(y_true_feat) > 1 and len(y_syn_feat) > 1:
+                # Check for constant series which result in std_dev = 0
+                if np.std(y_true_feat) > 1e-9 and np.std(y_syn_feat) > 1e-9: # Add tolerance for near-constant
+                    # Using pandas for potentially more robust correlation calculation
+                    s_true = pd.Series(y_true_feat)
+                    s_syn = pd.Series(y_syn_feat)
+                    r = s_true.corr(s_syn, method='pearson')
+                else:
+                    # If one or both series are constant (or near-constant)
+                    if np.allclose(y_true_feat, y_true_feat[0]) and np.allclose(y_syn_feat, y_syn_feat[0]) and np.allclose(y_true_feat[0], y_syn_feat[0]):
+                        r = 1.0 # Both constant and equal
+                    elif np.allclose(y_true_feat, y_true_feat[0]) and np.allclose(y_syn_feat, y_syn_feat[0]):
+                        r = np.nan # Both constant but different, correlation is undefined or NaN
+                    else:
+                        r = 0.0 # One is constant, other is not, or other edge cases. Pearson is typically 0 or undefined.
             pearson_r_per.append(r)
 
+
             # ACF lag 1 for the real signal feature
-            acf1 = np.nan # Default to NaN
+            acf1 = np.nan
             if len(y_true_feat) > 1:
                 try:
-                    # Explicitly create a pandas Series from the NumPy array slice
-                    series_for_acf = pd.Series(y_true_feat)
-                    if not isinstance(series_for_acf, pd.Series):
-                        # This should not happen if pd.Series() is called correctly
-                        print(f"WARN: Feature {f_idx} ({feature_names[f_idx] if f_idx < len(feature_names) else 'Unknown'}): y_true_feat did not convert to pd.Series as expected. Type: {type(series_for_acf)}")
+                    # Using statsmodels.tsa.stattools.acf directly
+                    # nlags includes lag 0, so for lag 1 we need nlags=1. Result will have 2 elements.
+                    computed_acf_values = sm_acf(y_true_feat, nlags=1, fft=False, adjusted=False) # fft=False for direct method
+                    if len(computed_acf_values) > 1:
+                        acf1 = computed_acf_values[1] 
                     else:
-                        # Use pandas Series' acf method
-                        computed_acf_values = series_for_acf.acf(nlags=1, fft=False) # fft=False for direct method, robust for short series
-                        if len(computed_acf_values) > 1:
-                            acf1 = computed_acf_values[1] # ACF at lag 1
-                        else:
-                            # This case might occur if series is too short or constant, acf might return just lag 0
-                            print(f"WARN: Feature {f_idx} ({feature_names[f_idx] if f_idx < len(feature_names) else 'Unknown'}): ACF calculation returned fewer than 2 values. Length of y_true_feat: {len(y_true_feat)}")
-                except AttributeError as e_attr:
-                    print(f"ERROR: Feature {f_idx} ({feature_names[f_idx] if f_idx < len(feature_names) else 'Unknown'}): AttributeError during ACF calculation. y_true_feat type: {type(y_true_feat)}. Error: {e_attr}")
-                    # This is where you'd hit "'Series' object has no attribute 'acf'" if series_for_acf was not a Series
+                        print(f"WARN: Feature '{current_feature_name}': sm_acf returned fewer than 2 values. Length of y_true_feat: {len(y_true_feat)}")
                 except Exception as e_acf:
-                    print(f"ERROR: Feature {f_idx} ({feature_names[f_idx] if f_idx < len(feature_names) else 'Unknown'}): Exception during ACF calculation. Error: {e_acf}")
+                    print(f"ERROR: Feature '{current_feature_name}': Exception during ACF calculation using sm_acf. Error: {e_acf}")
             acf1_per.append(acf1)
 
-        pearson_r_per = np.array(pearson_r_per)
-        acf1_per = np.array(acf1_per)
+        pearson_r_per_np = np.array(pearson_r_per)
+        acf1_per_np = np.array(acf1_per)
 
-        # Métricas globales agregadas
+        # Convert all numpy types to Python native types for JSON serialization
         metrics = {
-            "mae_per_feature": mae_per.tolist(), # Convert to list for JSON serialization
+            "mae_per_feature": mae_per.tolist(),
             "mse_per_feature": mse_per.tolist(),
-            "pearson_r_per_feature": np.nan_to_num(pearson_r_per).tolist(), # Handle NaNs from constant series
-            "acf1_per_feature": np.nan_to_num(acf1_per).tolist(),
-            "overall_mae": np.mean(mae_per),
-            "overall_mse": np.mean(mse_per),
-            "overall_pearson_r": np.nanmean(pearson_r_per), # nanmean ignores NaNs
-            "overall_acf1": np.nanmean(acf1_per)
+            "pearson_r_per_feature": [float(x) if not np.isnan(x) else None for x in pearson_r_per_np], # Convert NaN to None for JSON
+            "acf1_per_feature": [float(x) if not np.isnan(x) else None for x in acf1_per_np],       # Convert NaN to None for JSON
+            "overall_mae": float(np.mean(mae_per)),
+            "overall_mse": float(np.mean(mse_per)),
+            "overall_pearson_r": float(np.nanmean(pearson_r_per_np)) if not np.all(np.isnan(pearson_r_per_np)) else None,
+            "overall_acf1": float(np.nanmean(acf1_per_np)) if not np.all(np.isnan(acf1_per_np)) else None
         }
-        # Add feature names to metrics if available and lengths match
         if feature_names and len(feature_names) == n_features:
             metrics["feature_names"] = feature_names
 
