@@ -448,30 +448,32 @@ def main():
             
             # --- DATE_TIME Column Generation and DataFrame Creation ---
             datetime_column_values = []
-            final_columns_for_csv = list(real_feature_names) # Start with numeric feature names
+            
+            # Get start_date_time from config or use default
+            start_datetime_str = config.get("start_date_time")
+            if not start_datetime_str:
+                start_datetime_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                print(f"Warning: 'start_date_time' not found in config or is empty. Using current datetime as default: {start_datetime_str}")
 
-            if "start_date_time" in config and config["start_date_time"] and \
-               "dataset_periodicity" in config and config["dataset_periodicity"]:
-                
-                print(f"Attempting to generate DATE_TIME column for {n_synthetic_samples} samples, starting from {config['start_date_time']} with periodicity {config['dataset_periodicity']}.")
+            dataset_periodicity_str = config.get("dataset_periodicity")
+
+            if dataset_periodicity_str: # Periodicity must be present to generate DATE_TIME
+                print(f"Attempting to generate DATE_TIME column for {n_synthetic_samples} samples, starting from {start_datetime_str} with periodicity {dataset_periodicity_str}.")
                 datetime_column_values = generate_datetime_column(
-                    config["start_date_time"],
-                    n_synthetic_samples, # Use the actual number of synthetic samples being generated
-                    config["dataset_periodicity"]
+                    start_datetime_str,
+                    n_synthetic_samples, 
+                    dataset_periodicity_str
                 )
 
                 if datetime_column_values and len(datetime_column_values) == X_syn.shape[0]:
-                    # Create DataFrame with DATE_TIME column first
                     df_data_to_save = pd.DataFrame(X_syn, columns=real_feature_names)
                     df_data_to_save.insert(0, "DATE_TIME", datetime_column_values)
-                    # The columns of df_data_to_save will now include DATE_TIME
                     print(f"DATE_TIME column generated successfully with {len(datetime_column_values)} entries.")
                 else:
-                    # Fallback to saving without DATE_TIME if generation failed or length mismatch
                     print("Warning: DATE_TIME column generation failed or length mismatch. Saving data without DATE_TIME column.")
                     df_data_to_save = pd.DataFrame(X_syn, columns=real_feature_names if len(real_feature_names) == X_syn.shape[1] else None)
             else:
-                print("Information: 'start_date_time' or 'dataset_periodicity' not found in config. Saving data without DATE_TIME column.")
+                print("Information: 'dataset_periodicity' not found in config. Cannot generate DATE_TIME column. Saving data without DATE_TIME column.")
                 df_data_to_save = pd.DataFrame(X_syn, columns=real_feature_names if len(real_feature_names) == X_syn.shape[1] else None)
             
             df_data_to_save.to_csv(output_file, index=False)
