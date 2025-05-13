@@ -494,8 +494,9 @@ def main():
                      print("ERROR: 'x_train' not found in datasets from preprocessor. Cannot determine eval_feature_names. Exiting.")
                      sys.exit(1)
 
-            print(f"DEBUG: eval_feature_names (from preprocessor for evaluation): {eval_feature_names}")
-            
+            initial_preprocessor_feature_names = list(eval_feature_names) # ADD THIS LINE
+            print(f"DEBUG: Stored initial_preprocessor_feature_names: {initial_preprocessor_feature_names}")
+
             # Ensure X_real_processed is correctly shaped for evaluation (as in your existing code)
             X_real_processed = datasets.get("x_train") # Or your specific key for processed evaluation data
             if X_real_processed is None: raise KeyError("Processed real data for evaluation (e.g., 'x_train') not found in 'datasets'.")
@@ -695,62 +696,63 @@ def main():
             print(f"Combined data saved to {output_file}. Total rows: {len(df_data_to_save)}")
 
             # --- Evaluation (uses X_syn_for_output_processed and X_real_processed from earlier) ---
-            # The synthetic data for evaluation should be the same as what went into the combined file.
-            # X_real_processed is the data processed by preprocessor_plugin.run_preprocessing for evaluation.
             if n_synthetic_samples > 0 and X_syn_raw_preprocessed_space is not None:
-                # X_syn_raw_preprocessed_space has features described by eval_feature_names (potentially with 'CLOSE' added)
-                # X_real_processed is datasets.get("x_train") (or your specific key for processed evaluation data)
-                # original_preprocessor_feature_names are the features X_real_processed was created with by the preprocessor.
-
-                # --- BEGIN PATCH: Align X_real_processed with eval_feature_names if 'CLOSE' was added ---
-                # If 'CLOSE' is in the (potentially 55-feature) eval_feature_names list (because it was added to synthetic data),
-                # then X_real_processed also needs a 'CLOSE' column for a consistent evaluation.
+                # At this point:
+                # - X_syn_raw_preprocessed_space might have 'CLOSE' added.
+                # - eval_feature_names reflects the columns of X_syn_raw_preprocessed_space (potentially including 'CLOSE').
+                # - X_real_processed corresponds to 'initial_preprocessor_feature_names' (which does NOT have 'CLOSE' added by the synthetic patch).
                 
-                # Make a working copy of X_real_processed to potentially modify it
-                # X_real_processed_for_eval = X_real_processed.copy() # if numpy, or pd.DataFrame
-                # To handle both DataFrame and NumPy array for X_real_processed:
-                
-                temp_x_real_df = None
-                is_real_data_numpy = isinstance(X_real_processed, np.ndarray)
+                X_real_processed_for_eval = X_real_processed # Start with the original real processed data.
 
-                if is_real_data_numpy:
-                    if len(original_preprocessor_feature_names) == X_real_processed.shape[1]:
-                        temp_x_real_df = pd.DataFrame(X_real_processed, columns=original_preprocessor_feature_names)
-                    else:
-                        print(f"CRITICAL ERROR: Mismatch for X_real_processed (NumPy array) columns ({X_real_processed.shape[1]}) and original_preprocessor_feature_names count ({len(original_preprocessor_feature_names)}). Cannot align for 'CLOSE' in evaluation.")
-                elif isinstance(X_real_processed, pd.DataFrame):
-                    temp_x_real_df = X_real_processed.copy() # Work on a copy if it's already a DataFrame
-                else:
-                    print(f"CRITICAL ERROR: X_real_processed is of unexpected type {type(X_real_processed)}. Cannot align for 'CLOSE' in evaluation.")
+                # Align X_real_processed_for_eval with the (potentially augmented) eval_feature_names
+                if 'CLOSE' in eval_feature_names and 'CLOSE' not in initial_preprocessor_feature_names:
+                    # This implies 'CLOSE' was added to synthetic data and its eval_feature_names,
+                    # but X_real_processed (described by initial_preprocessor_feature_names) doesn't have it yet.
+                    print("INFO: Evaluation: 'CLOSE' is in target eval_feature_names and was added to synthetic data. Aligning X_real_processed.")
+                    
+                    df_real_temp = None
+                    is_real_numpy = isinstance(X_real_processed, np.ndarray)
 
-                if temp_x_real_df is not None:
-                    if 'CLOSE' in eval_feature_names and 'CLOSE' not in temp_x_real_df.columns:
-                        print("INFO: Evaluation: 'CLOSE' is in eval_feature_names (from synthetic) but not in X_real_processed. Attempting to add 'CLOSE' to X_real_processed.")
-                        if 'BC-BO' in temp_x_real_df.columns and 'OPEN' in temp_x_real_df.columns:
-                            temp_x_real_df['CLOSE'] = temp_x_real_df['BC-BO'] + temp_x_real_df['OPEN']
-                            print("INFO: Evaluation: Successfully calculated and added 'CLOSE' column to X_real_processed.")
-                            # Update X_real_processed with the modified DataFrame (or its NumPy version)
-                            if is_real_data_numpy:
-                                X_real_processed = temp_x_real_df.to_numpy()
-                            else: # It was a DataFrame
-                                X_real_processed = temp_x_real_df 
+                    if is_real_numpy:
+                        if X_real_processed.shape[1] == len(initial_preprocessor_feature_names):
+                            df_real_temp = pd.DataFrame(X_real_processed, columns=initial_preprocessor_feature_names)
                         else:
-                            print("WARNING: Evaluation: Could not add 'CLOSE' to X_real_processed as 'BC-BO' or 'OPEN' is missing in its features. Feature counts for evaluation will likely mismatch.")
-                    elif 'CLOSE' in eval_feature_names and 'CLOSE' in temp_x_real_df.columns:
-                        print("DEBUG: Evaluation: 'CLOSE' is in eval_feature_names and already present in X_real_processed columns.")
-                    # If 'CLOSE' is not in eval_feature_names, no action needed for X_real_processed regarding 'CLOSE'.
-                # --- END PATCH ---
+                            print(f"ERROR: Evaluation: Shape mismatch for X_real_processed (NumPy array with {X_real_processed.shape[1]} cols) and initial_preprocessor_feature_names (count: {len(initial_preprocessor_feature_names)}). Cannot add 'CLOSE'.")
+                    elif isinstance(X_real_processed, pd.DataFrame):
+                        # If X_real_processed is already a DataFrame, ensure its columns match the expected original set.
+                        if list(X_real_processed.columns) == initial_preprocessor_feature_names:
+                            df_real_temp = X_real_processed.copy()
+                        else:
+                            # This is a less ideal state, try to proceed if BC-BO and OPEN exist.
+                            print(f"WARNING: Evaluation: Columns of X_real_processed DataFrame do not exactly match initial_preprocessor_feature_names. Will attempt to find 'BC-BO' and 'OPEN' in existing columns: {list(X_real_processed.columns)}")
+                            df_real_temp = X_real_processed.copy() 
+                    else:
+                        print(f"ERROR: Evaluation: X_real_processed is of unexpected type {type(X_real_processed)}. Cannot align for 'CLOSE'.")
 
-                print(f"DEBUG: For evaluation - synthetic_data (raw preprocessed) shape: {X_syn_raw_preprocessed_space.shape}, real_data_processed shape: {X_real_processed.shape}, feature_names for eval (eval_feature_names): {eval_feature_names}")
+                    if df_real_temp is not None:
+                        if 'BC-BO' in df_real_temp.columns and 'OPEN' in df_real_temp.columns:
+                            if 'CLOSE' not in df_real_temp.columns: # Add only if not somehow already there
+                                df_real_temp['CLOSE'] = df_real_temp['BC-BO'] + df_real_temp['OPEN']
+                                print("INFO: Evaluation: Successfully calculated and added 'CLOSE' column to a temporary DataFrame for X_real_processed.")
+                                X_real_processed_for_eval = df_real_temp.to_numpy() if is_real_numpy else df_real_temp
+                            else:
+                                print("DEBUG: Evaluation: 'CLOSE' column already exists in df_real_temp. No addition needed.")
+                                X_real_processed_for_eval = df_real_temp.to_numpy() if is_real_numpy else df_real_temp # Ensure it's assigned
+                        else:
+                            print("WARNING: Evaluation: Could not add 'CLOSE' to X_real_processed as 'BC-BO' or 'OPEN' (or both) are missing in its features. Evaluation might fail due to feature mismatch.")
+                    else:
+                        print("WARNING: Evaluation: df_real_temp was not created. Cannot add 'CLOSE' to X_real_processed. Evaluation might fail.")
                 
-                if X_syn_raw_preprocessed_space.shape[1] != X_real_processed.shape[1]:
-                     print(f"CRITICAL WARNING: Mismatch in feature counts for evaluation. Synthetic preprocessed features: {X_syn_raw_preprocessed_space.shape[1]}, Real preprocessed features: {X_real_processed.shape[1]}. Evaluation may fail or be incorrect.")
+                print(f"DEBUG: For evaluation - synthetic_data (raw preprocessed) shape: {X_syn_raw_preprocessed_space.shape}, real_data_processed_for_eval shape: {X_real_processed_for_eval.shape}, feature_names for eval (eval_feature_names): {eval_feature_names}")
+                
+                if X_syn_raw_preprocessed_space.shape[1] != X_real_processed_for_eval.shape[1]:
+                     print(f"CRITICAL WARNING: Mismatch in feature counts for evaluation. Synthetic preprocessed features: {X_syn_raw_preprocessed_space.shape[1]}, Real preprocessed features for eval: {X_real_processed_for_eval.shape[1]}. Evaluation may fail or be incorrect.")
                 
                 metrics = evaluator_plugin.evaluate(
-                    synthetic_data=X_syn_raw_preprocessed_space, # Has features described by eval_feature_names
-                    real_data_processed=X_real_processed,    # Should now also align with eval_feature_names if CLOSE was added
+                    synthetic_data=X_syn_raw_preprocessed_space, 
+                    real_data_processed=X_real_processed_for_eval, # Use the aligned real data
                     real_dates=datasets.get("eval_dates") or datasets.get("y_test_dates"), 
-                    feature_names=eval_feature_names,        # This list defines the expected features for both
+                    feature_names=eval_feature_names,        # This list now accurately describes both datasets
                     config=config
                 )
                 metrics_file = config['metrics_file']
