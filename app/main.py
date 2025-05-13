@@ -472,20 +472,29 @@ def main():
             
             print("PreprocessorPlugin.run_preprocessing finished.")
 
-            # Extract data for evaluation (as in your existing code)
-            # ... (Your existing logic to extract X_real_processed, real_dates, real_feature_names from 'datasets') ...
-            # Ensure 'real_feature_names' is populated here, as it's crucial.
+            # Extract feature names from preprocessor output (primarily for evaluation purposes)
             if "feature_names" in datasets:
-                real_feature_names = datasets["feature_names"]
+                eval_feature_names = datasets["feature_names"] # Renamed from real_feature_names
             elif hasattr(datasets.get("x_train"), 'columns') and isinstance(datasets.get("x_train"), pd.DataFrame):
-                real_feature_names = list(datasets.get("x_train").columns)
+                eval_feature_names = list(datasets.get("x_train").columns) # Renamed
             elif datasets.get("x_train") is not None and datasets.get("x_train").ndim == 2:
-                real_feature_names = [f"feature_{i}" for i in range(datasets.get("x_train").shape[1])]
+                eval_feature_names = [f"feature_{i}" for i in range(datasets.get("x_train").shape[1])] # Renamed
             else: # Fallback if preprocessor doesn't provide clear feature names
-                print("WARNING: Could not reliably get 'real_feature_names' from preprocessor output. Attempting to use TARGET_COLUMN_ORDER excluding DATE_TIME.")
-                temp_target_cols = [col for col in TARGET_COLUMN_ORDER if col != "DATE_TIME"] # Defined later, ensure it's available or define earlier
-                if not temp_target_cols: raise ValueError("TARGET_COLUMN_ORDER is not defined or only contains DATE_TIME.")
-                real_feature_names = temp_target_cols # This is a fallback
+                print("WARNING: Could not reliably get 'eval_feature_names' from preprocessor output. Attempting to use TARGET_COLUMN_ORDER excluding DATE_TIME.")
+                # Ensure TARGET_COLUMN_ORDER is defined or accessible here if used as a fallback
+                # For safety, define it before this block or ensure it's globally available.
+                # temp_target_cols = [col for col in TARGET_COLUMN_ORDER if col != "DATE_TIME"] 
+                # if not temp_target_cols: raise ValueError("TARGET_COLUMN_ORDER is not defined or only contains DATE_TIME.")
+                # eval_feature_names = temp_target_cols # Renamed
+                # A safer fallback if TARGET_COLUMN_ORDER is problematic here:
+                if datasets.get("x_train") is not None: # Check if x_train exists
+                     print("ERROR: Could not determine eval_feature_names and x_train shape is not helpful. Exiting.")
+                     sys.exit(1)
+                else: # If x_train doesn't exist, this is a deeper issue with preprocessor output
+                     print("ERROR: 'x_train' not found in datasets from preprocessor. Cannot determine eval_feature_names. Exiting.")
+                     sys.exit(1)
+
+            print(f"DEBUG: eval_feature_names (from preprocessor for evaluation): {eval_feature_names}")
             
             # Ensure X_real_processed is correctly shaped for evaluation (as in your existing code)
             X_real_processed = datasets.get("x_train") # Or your specific key for processed evaluation data
@@ -510,6 +519,11 @@ def main():
                 real_df_for_concat['DATE_TIME'] = pd.to_datetime(real_df_for_concat['DATE_TIME'])
                 real_df_for_concat.sort_values('DATE_TIME', inplace=True)
                 real_data_first_datetime_for_concat = real_df_for_concat['DATE_TIME'].iloc[0]
+                
+                # Define feature names for the output CSV based on the loaded real_data_file
+                output_feature_names = [col for col in real_df_for_concat.columns if col != 'DATE_TIME']
+                print(f"DEBUG: output_feature_names (for CSV, from '{real_data_filepath_for_concat}'): {output_feature_names}")
+
             except Exception as e:
                 print(f"ERROR: Loading or processing real data for concatenation from '{real_data_filepath_for_concat}': {e}. Exiting.")
                 sys.exit(1)
@@ -547,40 +561,41 @@ def main():
                 Z_for_output = feeder_plugin.generate(n_synthetic_samples)
                 X_syn_for_output_raw = generator_plugin.generate(Z_for_output)
 
-                # Apply inverse transform if your generator produces normalized/scaled data
-                # Assuming preprocessor_plugin is already fitted from run_preprocessing(datasets)
-                # This step depends heavily on your preprocessor's design.
-                # If generator_plugin already outputs de-normalized data, this might not be needed
-                # or inverse_transform_synthetic_data should handle it gracefully.
+                # The raw synthetic data should have a number of features matching output_feature_names
+                if X_syn_for_output_raw.shape[1] != len(output_feature_names):
+                    print(f"ERROR: Generator output {X_syn_for_output_raw.shape[1]} features, but expected {len(output_feature_names)} features based on '{real_data_filepath_for_concat}'.")
+                    sys.exit(1)
+
+                X_syn_for_output_processed = X_syn_for_output_raw # Default to raw if inverse transform fails or not available
                 try:
-                    # The 'datasets' variable should be the output from preprocessor_plugin.run_preprocessing
-                    X_syn_for_output_processed = preprocessor_plugin.inverse_transform_synthetic_data(X_syn_for_output_raw, datasets)
+                    if hasattr(preprocessor_plugin, 'inverse_transform_synthetic_data'):
+                        # This method is expected to de-scale/de-normalize X_syn_for_output_raw.
+                        # It needs to correctly use 'datasets' to find scalers for features corresponding to 'output_feature_names'.
+                        X_syn_for_output_processed = preprocessor_plugin.inverse_transform_synthetic_data(X_syn_for_output_raw, datasets)
+                        print("INFO: Called preprocessor_plugin.inverse_transform_synthetic_data.")
+                    else:
+                        print(f"WARNING: PreprocessorPlugin object has no attribute 'inverse_transform_synthetic_data'. Using raw generated data for output. Ensure generator produces data in the desired final scale if no specific inverse transformation is applied for output columns.")
                 except Exception as e_inv:
-                    print(f"WARNING: Could not inverse transform synthetic data for output: {e_inv}. Using raw generated data.")
-                    X_syn_for_output_processed = X_syn_for_output_raw
+                    print(f"WARNING: Error during preprocessor_plugin.inverse_transform_synthetic_data: {e_inv}. Using raw generated data for output.")
+                    # X_syn_for_output_processed remains X_syn_for_output_raw
 
-
-                if len(real_feature_names) != X_syn_for_output_processed.shape[1]:
-                     print(f"CRITICAL WARNING: Mismatch between number of real_feature_names ({len(real_feature_names)}) and processed synthetic data columns ({X_syn_for_output_processed.shape[1]}) for output. Adjusting feature names list or check preprocessor/generator.")
-                     if len(real_feature_names) > X_syn_for_output_processed.shape[1]:
-                         real_feature_names = real_feature_names[:X_syn_for_output_processed.shape[1]]
-                     else: # Not enough feature names, this will likely cause an error in DataFrame creation
-                         print("ERROR: Not enough feature names for the processed synthetic data columns. Exiting.")
-                         sys.exit(1)
-
-
-                df_synthetic_for_output = pd.DataFrame(X_syn_for_output_processed, columns=real_feature_names)
+                # Ensure X_syn_for_output_processed still has the correct number of columns after attempted inverse transform
+                if X_syn_for_output_processed.shape[1] != len(output_feature_names):
+                    print(f"ERROR: Processed synthetic data has {X_syn_for_output_processed.shape[1]} features, but expected {len(output_feature_names)} features for output. Inverse transform might have altered column count incorrectly.")
+                    sys.exit(1)
+                
+                df_synthetic_for_output = pd.DataFrame(X_syn_for_output_processed, columns=output_feature_names) # Use output_feature_names
                 df_synthetic_for_output.insert(0, "DATE_TIME", synthetic_datetime_objects)
 
             # --- Prepare Real Data for Concatenation ---
             # Ensure real_df_for_concat has the DATE_TIME column and the features in the correct order
-            # Use 'real_feature_names' derived from the preprocessor for consistency
-            aligned_real_columns = ['DATE_TIME'] + real_feature_names
+            # Use 'output_feature_names' derived from the real_data_file for concatenation
+            aligned_real_columns = ['DATE_TIME'] + output_feature_names # Use output_feature_names
             
-            # Check if all expected feature names are in the real_df_for_concat
-            missing_cols_in_real_concat = [col for col in real_feature_names if col not in real_df_for_concat.columns]
-            if missing_cols_in_real_concat:
-                print(f"ERROR: The following features are missing in the real_data_file for concatenation '{real_data_filepath_for_concat}': {missing_cols_in_real_concat}. These names were derived from preprocessor output: {real_feature_names}")
+            # This check should now be against output_feature_names which are derived from real_df_for_concat
+            missing_cols_in_real_concat = [col for col in output_feature_names if col not in real_df_for_concat.columns]
+            if missing_cols_in_real_concat: # This should ideally be an empty list now
+                print(f"INTERNAL LOGIC ERROR: Columns {missing_cols_in_real_concat} (derived from real_df_for_concat) are somehow missing from real_df_for_concat. This indicates a bug. Exiting.")
                 sys.exit(1)
             
             real_df_prepared_for_concat = real_df_for_concat[aligned_real_columns].copy()
@@ -629,11 +644,23 @@ def main():
             # The synthetic data for evaluation should be the same as what went into the combined file.
             # X_real_processed is the data processed by preprocessor_plugin.run_preprocessing for evaluation.
             if n_synthetic_samples > 0: # Only evaluate if synthetic data was generated
+                print(f"DEBUG: For evaluation - synthetic_data shape: {X_syn_for_output_processed.shape} (these are features for output CSV), real_data_processed shape: {X_real_processed.shape}, feature_names for eval (for real_data_processed): {eval_feature_names}")
+                
+                # WARNING: The synthetic data (X_syn_for_output_processed) is based on 'output_feature_names' (original columns).
+                # The real data for evaluation (X_real_processed) is based on 'eval_feature_names' (potentially engineered features).
+                # If these feature sets differ, the evaluation might be misleading or error out.
+                # A robust solution would prepare a separate synthetic dataset for evaluation, processed identically to X_real_processed.
+                # For now, we proceed, and the evaluator must handle this or this warning serves as a flag.
+                if X_syn_for_output_processed.shape[1] != X_real_processed.shape[1] and len(eval_feature_names) == X_real_processed.shape[1]:
+                     print(f"WARNING: Evaluation is comparing synthetic data with {X_syn_for_output_processed.shape[1]} features (matching original file) "
+                           f"against processed real data with {X_real_processed.shape[1]} features (matching preprocessor output: {eval_feature_names}). "
+                           "This may lead to errors or incomparable results in evaluation.")
+
                 metrics = evaluator_plugin.evaluate(
-                    synthetic_data=X_syn_for_output_processed, # Processed synthetic features
-                    real_data_processed=X_real_processed,    # Processed real features for comparison
-                    real_dates=datasets.get("eval_dates") or datasets.get("y_test_dates"), # Dates corresponding to X_real_processed
-                    feature_names=real_feature_names,        # Numeric feature names
+                    synthetic_data=X_syn_for_output_processed, # Data aligned with original columns
+                    real_data_processed=X_real_processed,    # Data aligned with preprocessor's output columns
+                    real_dates=datasets.get("eval_dates") or datasets.get("y_test_dates"), 
+                    feature_names=eval_feature_names,        # Feature names for X_real_processed
                     config=config
                 )
                 metrics_file = config['metrics_file']
