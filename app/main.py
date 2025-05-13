@@ -321,6 +321,67 @@ def main():
         # print(f"DEBUG generate_datetime_column: Generated {len(output_dates_str)} date strings. First few: {output_dates_str[:5]}")
         return output_dates_str
 
+    # --- Helper function to generate DATE_TIME values for synthetic data ---
+    def generate_synthetic_datetimes_before_real(
+        real_start_dt: pd.Timestamp,
+        num_synthetic_samples: int,
+        time_delta_val: timedelta,
+        periodicity_str_val: str
+    ) -> list[pd.Timestamp]:
+        """
+        Generates a list of 'num_synthetic_samples' datetime objects in chronological order,
+        ending such that the next tick after the last synthetic datetime would lead into 'real_start_dt'.
+        Skips weekends.
+        """
+        if num_synthetic_samples == 0:
+            return []
+
+        generated_datetimes_reversed = [] # Store in reverse chronological order first
+        current_reference_dt = real_start_dt
+
+        # Determine the target time of day for 'daily' periodicity from real_start_dt
+        daily_target_time = None
+        if periodicity_str_val == "daily":
+            daily_target_time = real_start_dt.time()
+
+        for _ in range(num_synthetic_samples):
+            # Calculate the datetime one tick before current_reference_dt
+            prev_dt_candidate = current_reference_dt - time_delta_val
+
+            if periodicity_str_val == "daily":
+                # For daily, ensure the time component matches daily_target_time
+                # and that the date is a weekday.
+                prev_dt_candidate = prev_dt_candidate.replace(
+                    hour=daily_target_time.hour,
+                    minute=daily_target_time.minute,
+                    second=daily_target_time.second,
+                    microsecond=0
+                )
+                while prev_dt_candidate.weekday() >= 5: # Monday is 0, Saturday is 5, Sunday is 6
+                    prev_dt_candidate -= timedelta(days=1)
+                    # Re-apply target time after day change
+                    prev_dt_candidate = prev_dt_candidate.replace(
+                        hour=daily_target_time.hour,
+                        minute=daily_target_time.minute,
+                        second=daily_target_time.second,
+                        microsecond=0
+                    )
+            else: # For hourly, minutely, etc.
+                # Preserve the time of day from the simple subtraction,
+                # then adjust the date part if it falls on a weekend.
+                target_h, target_m, target_s = prev_dt_candidate.hour, prev_dt_candidate.minute, prev_dt_candidate.second
+                while prev_dt_candidate.weekday() >= 5:
+                    prev_dt_candidate -= timedelta(days=1) # Move to the previous day
+                # After finding a weekday, set the time to what it was after the initial timedelta subtraction.
+                prev_dt_candidate = prev_dt_candidate.replace(hour=target_h, minute=target_m, second=target_s, microsecond=0)
+
+            generated_datetimes_reversed.append(prev_dt_candidate)
+            current_reference_dt = prev_dt_candidate # The next iteration calculates the tick before this new dt
+
+        return list(reversed(generated_datetimes_reversed)) # Return in chronological order
+
+    # --- (The old generate_datetime_column function can be removed or kept if used elsewhere) ---
+
     # --- DECISIÓN DE EJECUCIÓN ---
     if config.get('use_optimizer', False):
         print("Running hyperparameter optimization with Optimizer Plugin...")
