@@ -85,9 +85,12 @@ class EvaluatorPlugin:
 
         if eval_real_signal.ndim != 2:
             raise ValueError(f"real_data_processed must be 2D (samples, features), got ndim={eval_real_signal.ndim}")
-        if eval_synthetic_data.ndim != 2 or eval_synthetic_data.shape[0] != eval_real_signal.shape[0] or eval_synthetic_data.shape[1] != eval_real_signal.shape[1]:
+        
+        # MODIFIED: Check only for ndim and feature count (shape[1]) mismatch for synthetic_data.
+        # Allow different number of samples (shape[0]).
+        if eval_synthetic_data.ndim != 2 or eval_synthetic_data.shape[1] != eval_real_signal.shape[1]:
             raise ValueError(
-                f"Sliced synthetic_data shape {eval_synthetic_data.shape} != sliced real_data_processed shape {eval_real_signal.shape}. Original shapes were {synthetic_data.shape} and {real_data_processed.shape}"
+                f"Synthetic data feature count mismatch or dimension error. Synthetic shape: {eval_synthetic_data.shape}, Real shape: {eval_real_signal.shape}. Original shapes were {synthetic_data.shape} and {real_data_processed.shape}"
             )
         
         n_features = eval_real_signal.shape[1]
@@ -195,8 +198,16 @@ class EvaluatorPlugin:
         basic_errors = {}
         print("Calculating basic point-wise errors...")
         # These are usually very fast, so tqdm might be overkill here unless data is truly massive even after slicing
-        basic_errors["overall_mae_pointwise"] = float(np.mean(np.abs(eval_synthetic_data - eval_real_signal)))
-        basic_errors["overall_mse_pointwise"] = float(np.mean((eval_synthetic_data - eval_real_signal) ** 2))
+        
+        # MODIFIED: Calculate point-wise errors only if sample counts are identical.
+        if eval_synthetic_data.shape[0] == eval_real_signal.shape[0]:
+            basic_errors["overall_mae_pointwise"] = float(np.mean(np.abs(eval_synthetic_data - eval_real_signal)))
+            basic_errors["overall_mse_pointwise"] = float(np.mean((eval_synthetic_data - eval_real_signal) ** 2))
+            print(f"INFO: Point-wise MAE/MSE calculated as sample sizes match ({eval_synthetic_data.shape[0]} samples).")
+        else:
+            basic_errors["overall_mae_pointwise"] = np.nan
+            basic_errors["overall_mse_pointwise"] = np.nan
+            print(f"INFO: Point-wise MAE/MSE not calculated. Synthetic samples: {eval_synthetic_data.shape[0]}, Real samples: {eval_real_signal.shape[0]}. These metrics require identical sample counts for direct comparison.")
 
         final_metrics = {
             "per_feature_fidelity": metrics_per_feature,
