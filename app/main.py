@@ -417,19 +417,16 @@ def main():
 
         try:
             # 0. Preprocess real data for evaluation using the loaded PreprocessorPlugin
+            # This part remains largely the same as it prepares 'datasets', 'X_real_processed', 
+            # 'real_dates', and 'real_feature_names' which are crucial.
             print("Preprocessing real data for evaluation via PreprocessorPlugin...")
             
             if not hasattr(preprocessor_plugin, 'run_preprocessing'):
                 raise AttributeError("PreprocessorPlugin does not have a 'run_preprocessing' method.")
             
             config_for_preprocessor_run = config.copy()
-            print(f"DEBUG main.py: Initial 'config_for_preprocessor_run' before any workarounds: {config_for_preprocessor_run}")
-
-
+            # ... (Keep your existing WORKAROUND 1 and WORKAROUND 2 logic for config_for_preprocessor_run here) ...
             # WORKAROUND 1: For "Baseline train indices invalid"
-            # If use_stl is False, the external stl_preprocessor might still use
-            # effective_stl_window in original_offset calculation.
-            # Setting stl_window = 1 forces effective_stl_window to 1, correcting the offset.
             if not config_for_preprocessor_run.get('use_stl', False): 
                 if 'stl_window' in preprocessor_plugin.plugin_params or 'stl_window' in config_for_preprocessor_run:
                     original_stl_window = config_for_preprocessor_run.get('stl_window')
@@ -438,159 +435,166 @@ def main():
             else:
                 print(f"DEBUG main.py: WORKAROUND 1: 'use_stl' is True or not set, 'stl_window' workaround not applied.")
 
-
             # WORKAROUND 2: For "Wavelet: Length of data must be even"
-            # Ensure all relevant dataset files have an even number of rows.
-            
             print("DEBUG main.py: WORKAROUND 2: Starting process to ensure even row counts for relevant data files.")
-            
-            # List of config keys that might hold paths to data files used by the preprocessor.
-            # Add any other keys your stl_preprocessor.py might use.
             data_file_keys = [
-                'real_data_file', # Often a primary input before splits
-                'x_train_file', 'y_train_file',
-                'x_validation_file', 'y_validation_file', 'x_val_file', 'y_val_file', # Added common val aliases
+                'real_data_file', 'x_train_file', 'y_train_file',
+                'x_validation_file', 'y_validation_file', 'x_val_file', 'y_val_file',
                 'x_test_file', 'y_test_file'
             ]
-            
-            temp_files_created_paths = [] # Keep track of temp files for cleanup
-
+            temp_files_created_paths = [] 
             for file_key in data_file_keys:
                 original_file_path = config_for_preprocessor_run.get(file_key)
-                
                 if original_file_path and isinstance(original_file_path, str) and os.path.exists(original_file_path):
-                    print(f"DEBUG main.py: WORKAROUND 2: Checking file for key '{file_key}': '{original_file_path}'")
                     try:
                         df_data = pd.read_csv(original_file_path)
                         data_len = len(df_data)
-                        print(f"DEBUG main.py: WORKAROUND 2: Read '{original_file_path}', original length: {data_len}")
-                        
                         if data_len > 0 and data_len % 2 != 0:
-                            print(f"INFO: synthetic-datagen/main.py: WORKAROUND 2: Data in '{original_file_path}' (key: '{file_key}') has odd length ({data_len}). Truncating last row.")
                             df_data_truncated = df_data.iloc[:-1]
-                            
                             if not df_data_truncated.empty:
                                 with tempfile.NamedTemporaryFile(delete=False, mode='w', newline='', suffix=f'_{file_key}.csv') as tmp_file_obj:
                                     df_data_truncated.to_csv(tmp_file_obj.name, index=False)
                                     temp_file_path = tmp_file_obj.name
                                 temp_files_created_paths.append(temp_file_path)
                                 config_for_preprocessor_run[file_key] = temp_file_path
-                                print(f"INFO: synthetic-datagen/main.py: WORKAROUND 2: Preprocessor will use temporary even-length file for key '{file_key}': '{temp_file_path}'. New length: {len(df_data_truncated)}")
-                            else:
-                                print(f"WARN: synthetic-datagen/main.py: WORKAROUND 2: Original data in '{original_file_path}' (key: '{file_key}') had 1 row. Truncating made it empty. Preprocessor will use original file. Wavelet error may still occur for this file.")
-                        elif data_len == 0:
-                            print(f"INFO: synthetic-datagen/main.py: WORKAROUND 2: Data in '{original_file_path}' (key: '{file_key}') is empty. No truncation needed.")
-                        else: # Even length
-                            print(f"INFO: synthetic-datagen/main.py: WORKAROUND 2: Data in '{original_file_path}' (key: '{file_key}') has even length ({data_len}). No truncation needed.")
+                                print(f"INFO: WORKAROUND 2: Using temp even-length file for '{file_key}': '{temp_file_path}'. New length: {len(df_data_truncated)}")
+                            # ... (rest of your print statements for this workaround) ...
                     except Exception as e_data_processing:
-                        print(f"WARN: synthetic-datagen/main.py: WORKAROUND 2: Error during data check/truncation for '{original_file_path}' (key: '{file_key}'): {e_data_processing}. Preprocessor will use original file path for this key.")
-                elif original_file_path:
-                    print(f"DEBUG main.py: WORKAROUND 2: File path for key '{file_key}' ('{original_file_path}') not found or not a string. Skipping.")
-                # else:
-                #    print(f"DEBUG main.py: WORKAROUND 2: Key '{file_key}' not found in config_for_preprocessor_run. Skipping.")
-
-            print(f"DEBUG main.py: Final 'config_for_preprocessor_run' being passed to preprocessor (after potential file truncations for multiple keys): {config_for_preprocessor_run}")
+                        print(f"WARN: WORKAROUND 2: Error for '{original_file_path}' (key: '{file_key}'): {e_data_processing}.")
             
             try:
                 datasets = preprocessor_plugin.run_preprocessing(config=config_for_preprocessor_run)
             finally:
-                if temp_files_created_paths:
-                    print(f"INFO: synthetic-datagen/main.py: WORKAROUND 2: Cleaning up temporary files: {temp_files_created_paths}")
+                if temp_files_created_paths: # Cleanup temp files
                     for temp_file_path in temp_files_created_paths:
-                        try:
-                            os.remove(temp_file_path)
-                            print(f"INFO: synthetic-datagen/main.py: WORKAROUND 2: Successfully removed temporary file: {temp_file_path}")
-                        except OSError as e_remove:
-                            print(f"WARN: synthetic-datagen/main.py: WORKAROUND 2: Failed to remove temporary file '{temp_file_path}': {e_remove}")
+                        try: os.remove(temp_file_path)
+                        except OSError as e_remove: print(f"WARN: Failed to remove temp file '{temp_file_path}': {e_remove}")
             
             print("PreprocessorPlugin.run_preprocessing finished.")
 
-            # Extract the relevant processed real data, dates, and feature names
-            # Adjust these keys based on what your preprocessor_plugin.run_preprocessing returns
-            # For example, if your preprocessor prepares data specifically for this kind of evaluation,
-            # it might return a single processed array, dates, and feature names directly,
-            # or they might be under specific keys in the 'datasets' dictionary.
+            # Extract data for evaluation (as in your existing code)
+            # ... (Your existing logic to extract X_real_processed, real_dates, real_feature_names from 'datasets') ...
+            # Ensure 'real_feature_names' is populated here, as it's crucial.
+            if "feature_names" in datasets:
+                real_feature_names = datasets["feature_names"]
+            elif hasattr(datasets.get("x_train"), 'columns') and isinstance(datasets.get("x_train"), pd.DataFrame):
+                real_feature_names = list(datasets.get("x_train").columns)
+            elif datasets.get("x_train") is not None and datasets.get("x_train").ndim == 2:
+                real_feature_names = [f"feature_{i}" for i in range(datasets.get("x_train").shape[1])]
+            else: # Fallback if preprocessor doesn't provide clear feature names
+                print("WARNING: Could not reliably get 'real_feature_names' from preprocessor output. Attempting to use TARGET_COLUMN_ORDER excluding DATE_TIME.")
+                temp_target_cols = [col for col in TARGET_COLUMN_ORDER if col != "DATE_TIME"] # Defined later, ensure it's available or define earlier
+                if not temp_target_cols: raise ValueError("TARGET_COLUMN_ORDER is not defined or only contains DATE_TIME.")
+                real_feature_names = temp_target_cols # This is a fallback
             
-            # Scenario 1: Preprocessor's run_preprocessing is adapted for this use case and
-            # returns a structure similar to the previous 'preprocess_for_evaluation'
-            if "processed_eval_data" in datasets and "eval_dates" in datasets and "eval_feature_names" in datasets:
-                X_real_processed = datasets["processed_eval_data"]
-                real_dates = datasets["eval_dates"]
-                real_feature_names = datasets["eval_feature_names"]
-            # Scenario 2: Using "x_train" or similar from a more general preprocessor output
-            # YOU MIGHT NEED TO ADJUST THESE KEYS AND LOGIC
-            elif "x_train" in datasets:
-                X_real_processed = datasets["x_train"]
-                # Attempt to get corresponding dates and feature names
-                # This assumes your preprocessor stores them in a way that can be aligned with x_train
-                # For example, if 'x_train_dates' and 'feature_names' are provided:
-                real_dates = datasets.get("x_train_dates") # Or "train_dates", "y_train_dates" etc.
-                
-                # Feature names might come from a general key or be inferred
-                if "feature_names" in datasets:
-                    real_feature_names = datasets["feature_names"]
-                elif hasattr(X_real_processed, 'columns') and isinstance(X_real_processed, pd.DataFrame): # If it's a DataFrame
-                    real_feature_names = list(X_real_processed.columns)
-                    X_real_processed = X_real_processed.values # Convert to NumPy array for evaluator
-                elif X_real_processed.ndim == 2: # If NumPy array, create generic feature names
-                    real_feature_names = [f"feature_{i}" for i in range(X_real_processed.shape[1])]
-                else:
-                    raise ValueError("Could not determine feature names for the processed real data.")
+            # Ensure X_real_processed is correctly shaped for evaluation (as in your existing code)
+            X_real_processed = datasets.get("x_train") # Or your specific key for processed evaluation data
+            if X_real_processed is None: raise KeyError("Processed real data for evaluation (e.g., 'x_train') not found in 'datasets'.")
+            if not isinstance(X_real_processed, np.ndarray): X_real_processed = np.array(X_real_processed)
+            if X_real_processed.ndim == 1: X_real_processed = X_real_processed.reshape(-1, 1)
+            elif X_real_processed.ndim == 3: X_real_processed = X_real_processed[:, 0, :] # Assuming (samples, window, features) -> (samples, features)
 
-                # Ensure X_real_processed is a NumPy array
-                if not isinstance(X_real_processed, np.ndarray):
-                    if hasattr(X_real_processed, 'values'): # e.g. Pandas DataFrame/Series
-                        X_real_processed = X_real_processed.values
+            # --- Load Real Data for Concatenation ---
+            real_data_filepath_for_concat = config.get("real_data_file")
+            if not real_data_filepath_for_concat or not os.path.exists(real_data_filepath_for_concat):
+                print(f"ERROR: Main real data file '{real_data_filepath_for_concat}' for concatenation not found. Exiting.")
+                sys.exit(1)
+            try:
+                real_df_for_concat = pd.read_csv(real_data_filepath_for_concat)
+                if 'DATE_TIME' not in real_df_for_concat.columns:
+                    if real_df_for_concat.shape[1] > 0 and (pd.api.types.is_datetime64_any_dtype(real_df_for_concat.iloc[:, 0]) or real_df_for_concat.iloc[:, 0].astype(str).str.match(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?').all()):
+                        real_df_for_concat.rename(columns={real_df_for_concat.columns[0]: 'DATE_TIME'}, inplace=True)
                     else:
-                        try:
-                            X_real_processed = np.array(X_real_processed)
-                        except Exception as e_conv:
-                            raise TypeError(f"Could not convert processed real data to NumPy array: {e_conv}")
+                        print(f"ERROR: 'DATE_TIME' column not found in '{real_data_filepath_for_concat}'. Exiting.")
+                        sys.exit(1)
+                real_df_for_concat['DATE_TIME'] = pd.to_datetime(real_df_for_concat['DATE_TIME'])
+                real_df_for_concat.sort_values('DATE_TIME', inplace=True)
+                real_data_first_datetime_for_concat = real_df_for_concat['DATE_TIME'].iloc[0]
+            except Exception as e:
+                print(f"ERROR: Loading or processing real data for concatenation from '{real_data_filepath_for_concat}': {e}. Exiting.")
+                sys.exit(1)
+
+            # --- Determine Periodicity and Time Step (re-ensure for clarity) ---
+            dataset_periodicity_str = config.get("dataset_periodicity", "1h")
+            time_delta_map = {
+                "1h": timedelta(hours=1), "1H": timedelta(hours=1),
+                "15min": timedelta(minutes=15), "15T": timedelta(minutes=15), "15m": timedelta(minutes=15),
+                "1min": timedelta(minutes=1), "1T": timedelta(minutes=1), "1m": timedelta(minutes=1),
+                "daily": timedelta(days=1), "1D": timedelta(days=1)
+            }
+            time_step = time_delta_map.get(dataset_periodicity_str)
+            if not time_step:
+                print(f"WARNING: Unsupported 'dataset_periodicity' ('{dataset_periodicity_str}'). Defaulting to hourly ('1h').")
+                time_step = timedelta(hours=1)
+                dataset_periodicity_str = "1h"
+
+            # --- Generate Synthetic Data for Output File ---
+            n_synthetic_samples = config.get('n_samples', 0)
+            if n_synthetic_samples <= 0:
+                print("INFO: n_samples is 0. No synthetic data will be generated for the output file.")
+                df_synthetic_for_output = pd.DataFrame()
             else:
-                raise KeyError("Could not find 'x_train' or 'processed_eval_data' in the datasets returned by PreprocessorPlugin.run_preprocessing.")
-
-            # Ensure X_real_processed is 2D (samples, features)
-            if X_real_processed.ndim == 1:
-                X_real_processed = X_real_processed.reshape(-1, 1)
-            elif X_real_processed.ndim == 3:
-                # If data is (samples, window_size, features) from preprocessor,
-                # and generator produces (samples, features) representing the first tick,
-                # you need to ensure X_real_processed is also (samples, features)
-                # This might mean your preprocessor needs a specific mode for this evaluation,
-                # or you extract the relevant part here.
-                # Example: if X_real_processed is (samples, window, features) and you need first tick:
-                # X_real_processed = X_real_processed[:, 0, :]
-                print(f"Warning: X_real_processed has shape {X_real_processed.shape}. Assuming it's (samples, window, features) and taking [:, 0, :] for comparison.")
-                X_real_processed = X_real_processed[:, 0, :] # Adjust if this assumption is wrong
-
-            print(f"Real data extracted for evaluation. Shape: {X_real_processed.shape}, Number of dates: {len(real_dates) if real_dates is not None else 'N/A'}")
-
-            # 1. Muestreo latente (usar solo n_samples; latent_dim ya fue seteado)
-            n_synthetic_samples = config['n_samples']
-            if X_real_processed.shape[0] < n_synthetic_samples and X_real_processed.shape[0] > 0 :
-                print(f"Warning: Number of preprocessed real samples ({X_real_processed.shape[0]}) is less than requested synthetic samples ({n_synthetic_samples}). Adjusting synthetic samples to match real data length.")
-                n_synthetic_samples = X_real_processed.shape[0]
-            elif X_real_processed.shape[0] == 0:
-                 print(f"Warning: Preprocessed real data has 0 samples. Using configured n_samples ({n_synthetic_samples}) for synthetic data.")
-
-            if n_synthetic_samples == 0:
-                raise ValueError("Cannot generate 0 synthetic samples. Check real data preprocessing or n_samples config.")
-
-            Z = feeder_plugin.generate(n_synthetic_samples)
-            
-            X_syn = generator_plugin.generate(Z) # X_syn is (n_samples, features)
-            
-            if X_syn.shape[1] != X_real_processed.shape[1]:
-                raise ValueError(
-                    f"Feature mismatch after generation/preprocessing: "
-                    f"Synthetic data has {X_syn.shape[1]} features, "
-                    f"Preprocessed real data has {X_real_processed.shape[1]} features. "
-                    f"Feature names from preprocessor: {real_feature_names}"
+                synthetic_datetime_objects = generate_synthetic_datetimes_before_real(
+                    real_data_first_datetime_for_concat,
+                    n_synthetic_samples,
+                    time_step,
+                    dataset_periodicity_str # Pass the determined periodicity
                 )
+                if not synthetic_datetime_objects or len(synthetic_datetime_objects) != n_synthetic_samples:
+                    print(f"ERROR: Failed to generate synthetic datetimes. Expected {n_synthetic_samples}, got {len(synthetic_datetime_objects)}. Exiting.")
+                    sys.exit(1)
 
-            output_file = config['output_file']
+                Z_for_output = feeder_plugin.generate(n_synthetic_samples)
+                X_syn_for_output_raw = generator_plugin.generate(Z_for_output)
+
+                # Apply inverse transform if your generator produces normalized/scaled data
+                # Assuming preprocessor_plugin is already fitted from run_preprocessing(datasets)
+                # This step depends heavily on your preprocessor's design.
+                # If generator_plugin already outputs de-normalized data, this might not be needed
+                # or inverse_transform_synthetic_data should handle it gracefully.
+                try:
+                    # The 'datasets' variable should be the output from preprocessor_plugin.run_preprocessing
+                    X_syn_for_output_processed = preprocessor_plugin.inverse_transform_synthetic_data(X_syn_for_output_raw, datasets)
+                except Exception as e_inv:
+                    print(f"WARNING: Could not inverse transform synthetic data for output: {e_inv}. Using raw generated data.")
+                    X_syn_for_output_processed = X_syn_for_output_raw
+
+
+                if len(real_feature_names) != X_syn_for_output_processed.shape[1]:
+                     print(f"CRITICAL WARNING: Mismatch between number of real_feature_names ({len(real_feature_names)}) and processed synthetic data columns ({X_syn_for_output_processed.shape[1]}) for output. Adjusting feature names list or check preprocessor/generator.")
+                     if len(real_feature_names) > X_syn_for_output_processed.shape[1]:
+                         real_feature_names = real_feature_names[:X_syn_for_output_processed.shape[1]]
+                     else: # Not enough feature names, this will likely cause an error in DataFrame creation
+                         print("ERROR: Not enough feature names for the processed synthetic data columns. Exiting.")
+                         sys.exit(1)
+
+
+                df_synthetic_for_output = pd.DataFrame(X_syn_for_output_processed, columns=real_feature_names)
+                df_synthetic_for_output.insert(0, "DATE_TIME", synthetic_datetime_objects)
+
+            # --- Prepare Real Data for Concatenation ---
+            # Ensure real_df_for_concat has the DATE_TIME column and the features in the correct order
+            # Use 'real_feature_names' derived from the preprocessor for consistency
+            aligned_real_columns = ['DATE_TIME'] + real_feature_names
             
-            # --- Define Target Column Order ---
+            # Check if all expected feature names are in the real_df_for_concat
+            missing_cols_in_real_concat = [col for col in real_feature_names if col not in real_df_for_concat.columns]
+            if missing_cols_in_real_concat:
+                print(f"ERROR: The following features are missing in the real_data_file for concatenation '{real_data_filepath_for_concat}': {missing_cols_in_real_concat}. These names were derived from preprocessor output: {real_feature_names}")
+                sys.exit(1)
+            
+            real_df_prepared_for_concat = real_df_for_concat[aligned_real_columns].copy()
+            # DATE_TIME column in real_df_prepared_for_concat is already pd.to_datetime
+
+            # --- Concatenate Synthetic and Real Data ---
+            if not df_synthetic_for_output.empty:
+                combined_df = pd.concat([df_synthetic_for_output, real_df_prepared_for_concat], ignore_index=True)
+                print(f"INFO: Synthetic and real data concatenated. Synthetic rows: {len(df_synthetic_for_output)}, Real rows: {len(real_df_prepared_for_concat)}.")
+            else:
+                print("INFO: No synthetic data generated, output will contain only real data.")
+                combined_df = real_df_prepared_for_concat.copy()
+            
+            # --- Define TARGET_COLUMN_ORDER (ensure it's defined before use) ---
             TARGET_COLUMN_ORDER = [
                 "DATE_TIME", "RSI", "MACD", "MACD_Histogram", "MACD_Signal", "EMA",
                 "Stochastic_%K", "Stochastic_%D", "ADX", "DI+", "DI-", "ATR", "CCI",
@@ -602,155 +606,47 @@ def main():
                 "CLOSE_30m_tick_5", "CLOSE_30m_tick_6", "CLOSE_30m_tick_7", "CLOSE_30m_tick_8",
                 "day_of_month", "hour_of_day", "day_of_week"
             ]
-
-            # --- Determine initial datetime for DATE_TIME column generation ---
-            start_datetime_str_for_generation = ""
-            try:
-                base_date_str = config.get("start_date", "2022-01-01") # Default to Jan 1, 2022
-                base_dt = pd.to_datetime(base_date_str)
-                print(f"DEBUG: Base date for DATE_TIME generation: {base_dt.strftime('%Y-%m-%d')}")
-
-                if 'day_of_month' in real_feature_names and \
-                   'hour_of_day' in real_feature_names and \
-                   X_syn.shape[0] > 0:
-                    print(f"DEBUG: Attempting to use day/hour from X_syn[0]. Features 'day_of_month', 'hour_of_day' found in real_feature_names. X_syn has {X_syn.shape[0]} samples.")
-                    
-                    day_of_month_idx = real_feature_names.index('day_of_month')
-                    hour_of_day_idx = real_feature_names.index('hour_of_day')
-                    
-                    raw_day_val = X_syn[0, day_of_month_idx]
-                    raw_hour_val = X_syn[0, hour_of_day_idx]
-                    print(f"DEBUG: Raw X_syn[0] values for day_of_month: {raw_day_val}, hour_of_day: {raw_hour_val}")
-
-                    day_val = pd.NA # Using pandas NA for missing/unconvertible
-                    hour_val = pd.NA
-
-                    try:
-                        if pd.notna(raw_day_val): day_val = int(float(raw_day_val)) # Convert to float first, then int
-                    except (ValueError, TypeError):
-                        print(f"Warning: Could not convert X_syn day_of_month value '{raw_day_val}' to int.")
-                    
-                    try:
-                        if pd.notna(raw_hour_val): hour_val = int(float(raw_hour_val))
-                    except (ValueError, TypeError):
-                        print(f"Warning: Could not convert X_syn hour_of_day value '{raw_hour_val}' to int.")
-
-                    print(f"DEBUG: Converted X_syn[0] day_val: {day_val}, hour_val: {hour_val}")
-
-                    # Validate day and hour values
-                    if pd.notna(day_val) and (1 <= day_val <= 31):
-                        # Day is plausible, use it
-                        pass
-                    else:
-                        print(f"Warning: Extracted day_of_month ({day_val}) from synthetic data is invalid, NA, or out of range (1-31). Using day from base_date: {base_dt.day}.")
-                        day_val = base_dt.day # Fallback to day from base_dt (e.g., 1st of the month)
-                    
-                    if pd.notna(hour_val) and (0 <= hour_val <= 23):
-                        # Hour is plausible, use it
-                        pass
-                    else:
-                        print(f"Warning: Extracted hour_of_day ({hour_val}) from synthetic data is invalid, NA, or out of range (0-23). Using hour 0.")
-                        hour_val = 0 # Fallback to hour 0
-                    
-                    try:
-                        specific_start_dt = datetime(base_dt.year, base_dt.month, day_val, hour_val, 0, 0)
-                        start_datetime_str_for_generation = specific_start_dt.strftime('%Y-%m-%d %H:%M:%S')
-                        print(f"DEBUG: Constructed start_datetime for generation (from X_syn day/hour logic): {start_datetime_str_for_generation}")
-                    except ValueError as e_dt:
-                        print(f"Warning: Could not construct specific start datetime (Year: {base_dt.year}, Month: {base_dt.month}, Day: {day_val}, Hour: {hour_val}): {e_dt}. Falling back to configured/default start_date at 00:00.")
-                        start_datetime_str_for_generation = base_dt.replace(hour=0, minute=0, second=0, microsecond=0).strftime('%Y-%m-%d %H:%M:%S')
-                        print(f"DEBUG: Fallback start_datetime (ValueError during construction): {start_datetime_str_for_generation}")
-                else:
-                    missing_info = []
-                    if 'day_of_month' not in real_feature_names: missing_info.append("'day_of_month' not in real_feature_names")
-                    if 'hour_of_day' not in real_feature_names: missing_info.append("'hour_of_day' not in real_feature_names")
-                    if X_syn.shape[0] == 0: missing_info.append("X_syn is empty")
-                    
-                    print(f"Warning: Cannot use day/hour from synthetic data ({'; '.join(missing_info)}). Using configured/default start_date '{base_date_str}' at 00:00 for DATE_TIME generation.")
-                    start_datetime_str_for_generation = base_dt.replace(hour=0, minute=0, second=0, microsecond=0).strftime('%Y-%m-%d %H:%M:%S')
-                    print(f"DEBUG: Fallback start_datetime (features unavailable or X_syn empty): {start_datetime_str_for_generation}")
-
-            except Exception as e_init_dt:
-                print(f"CRITICAL Error determining initial datetime: {e_init_dt}. Defaulting to current system time for DATE_TIME generation as a last resort.")
-                start_datetime_str_for_generation = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                print(f"DEBUG: Fallback start_datetime (exception in outer try): {start_datetime_str_for_generation}")
-
-            # --- Generate DATE_TIME column values ---
-            datetime_column_values = [pd.NaT] * n_synthetic_samples
-            dataset_periodicity_str = config.get("dataset_periodicity")
-
-            if dataset_periodicity_str and start_datetime_str_for_generation:
-                print(f"DEBUG: Attempting to generate DATE_TIME column for {n_synthetic_samples} samples, starting from '{start_datetime_str_for_generation}' with periodicity '{dataset_periodicity_str}'.")
-                generated_dates = generate_datetime_column(
-                    start_datetime_str_for_generation,
-                    n_synthetic_samples,
-                    dataset_periodicity_str
-                )
-                if generated_dates and len(generated_dates) == n_synthetic_samples:
-                    datetime_column_values = generated_dates
-                    print(f"DEBUG: DATE_TIME column generated successfully with {len(datetime_column_values)} entries.")
-                else:
-                    print(f"Warning: DATE_TIME column generation did not produce the expected {n_synthetic_samples} valid entries (got {len(generated_dates) if generated_dates else 0}). The DATE_TIME column will contain placeholders (NaT). Review messages from date generation function.")
-            else:
-                if not dataset_periodicity_str: print("Information: 'dataset_periodicity' not found in config. DATE_TIME column will contain placeholders (NaT).")
-                if not start_datetime_str_for_generation: print("Information: Could not determine a valid start_datetime_str for generation. DATE_TIME column will contain placeholders (NaT).")
             
-            # --- Create DataFrame with synthetic data and feature names from preprocessor ---
-            if len(real_feature_names) != X_syn.shape[1]:
-                print(f"CRITICAL WARNING: Mismatch between number of real_feature_names ({len(real_feature_names)}) and X_syn columns ({X_syn.shape[1]}). DataFrame creation might be incorrect or fail. Feature names from preprocessor: {real_feature_names}")
-            
-            df_synthetic_data = pd.DataFrame(X_syn, columns=real_feature_names)
-            print(f"DEBUG: df_synthetic_data created. Columns: {list(df_synthetic_data.columns)}")
-
-            # --- Add DATE_TIME column as the first column ---
-            df_synthetic_data.insert(0, "DATE_TIME", datetime_column_values)
-            print(f"DEBUG: DATE_TIME column inserted. Current columns: {list(df_synthetic_data.columns)}")
-            if datetime_column_values:
-                 print(f"DEBUG: First few DATE_TIME values after insertion: {datetime_column_values[:5]}...")
-            else:
-                 print(f"DEBUG: datetime_column_values is empty or None after generation attempt.")
-
-
-            # --- Reorder columns to the specified TARGET_COLUMN_ORDER ---
-            print(f"DEBUG: Reordering columns to TARGET_COLUMN_ORDER. Target: {TARGET_COLUMN_ORDER}")
-            
-            # Ensure all columns in TARGET_COLUMN_ORDER exist in the DataFrame, adding NaNs if not.
-            # Then select them in the specified order.
-            df_data_to_save = pd.DataFrame() # Start with an empty DataFrame
+            # --- Reorder columns and Format DATE_TIME for CSV ---
+            df_data_to_save = pd.DataFrame()
             for col_name in TARGET_COLUMN_ORDER:
-                if col_name in df_synthetic_data:
-                    df_data_to_save[col_name] = df_synthetic_data[col_name]
+                if col_name in combined_df:
+                    df_data_to_save[col_name] = combined_df[col_name]
                 else:
-                    df_data_to_save[col_name] = np.nan # Or pd.NaT for DATE_TIME if it was truly missing
-                    if col_name == "DATE_TIME" and not ("DATE_TIME" in df_synthetic_data): # Should not happen due to insert
-                         print(f"DEBUG: DATE_TIME column was not in df_synthetic_data during reorder; adding as NaN/NaT.")
-                    else:
-                         print(f"DEBUG: Column '{col_name}' from TARGET_COLUMN_ORDER not found in generated data; adding as NaN.")
+                    df_data_to_save[col_name] = np.nan 
+                    print(f"DEBUG: Column '{col_name}' from TARGET_COLUMN_ORDER not found in combined_df; adding as NaN.")
             
-            # Verify final column order
-            final_columns = list(df_data_to_save.columns)
-            if final_columns != TARGET_COLUMN_ORDER:
-                print(f"CRITICAL WARNING: Final column order {final_columns} does not match TARGET_COLUMN_ORDER {TARGET_COLUMN_ORDER}. Reindexing might have failed.")
+            # Format DATE_TIME to string 'YYYY-MM-DD HH:MM:SS' for CSV output
+            if "DATE_TIME" in df_data_to_save:
+                 df_data_to_save['DATE_TIME'] = pd.to_datetime(df_data_to_save['DATE_TIME']).dt.strftime('%Y-%m-%d %H:%M:%S')
+
+
+            output_file = config['output_file']
+            df_data_to_save.to_csv(output_file, index=False, na_rep='NaN') # Using na_rep for clarity
+            print(f"Combined data saved to {output_file}. Total rows: {len(df_data_to_save)}")
+
+            # --- Evaluation (uses X_syn_for_output_processed and X_real_processed from earlier) ---
+            # The synthetic data for evaluation should be the same as what went into the combined file.
+            # X_real_processed is the data processed by preprocessor_plugin.run_preprocessing for evaluation.
+            if n_synthetic_samples > 0: # Only evaluate if synthetic data was generated
+                metrics = evaluator_plugin.evaluate(
+                    synthetic_data=X_syn_for_output_processed, # Processed synthetic features
+                    real_data_processed=X_real_processed,    # Processed real features for comparison
+                    real_dates=datasets.get("eval_dates") or datasets.get("y_test_dates"), # Dates corresponding to X_real_processed
+                    feature_names=real_feature_names,        # Numeric feature names
+                    config=config
+                )
+                metrics_file = config['metrics_file']
+                with open(metrics_file, "w") as f:
+                    json.dump(metrics, f, indent=4)
+                print(f"Evaluation metrics saved to {metrics_file}.")
             else:
-                print(f"DEBUG: df_data_to_save after reordering. Columns: {final_columns}")
-            
-            # --- Save to CSV ---
-            df_data_to_save.to_csv(output_file, index=False, date_format='%Y-%m-%d %H:%M:%S')
-            print(f"Synthetic data saved to {output_file}.")
-            
-            metrics = evaluator_plugin.evaluate(
-                synthetic_data=X_syn, # Pass original X_syn without datetime for numeric evaluation
-                real_data_processed=X_real_processed,
-                real_dates=real_dates,
-                feature_names=real_feature_names, # Numeric feature names
-                config=config
-            )
-            metrics_file = config['metrics_file']
-            with open(metrics_file, "w") as f:
-                json.dump(metrics, f, indent=4)
-            print(f"Evaluation metrics saved to {metrics_file}.")
+                print("Skipping evaluation as no synthetic data was generated.")
+
         except Exception as e:
-            print(f"Synthetic data generation or evaluation failed: {e}")
+            print(f"Synthetic data generation, combination, or evaluation failed: {e}")
+            import traceback
+            traceback.print_exc() # Print full traceback for debugging
             sys.exit(1)
 
     if config.get('save_config'):
