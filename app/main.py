@@ -176,6 +176,11 @@ def main():
         config = merge_config(config, preprocessor_plugin.plugin_params, {}, file_config, cli_args, unknown_args_dict)
 
 
+    print("Merging configuration with CLI arguments and unknown args (first pass, no plugin params)...")
+    unknown_args_dict = process_unknown_args(unknown_args)
+    config = merge_config(config, {}, {}, {}, cli_args, unknown_args_dict)
+
+
     # --- Helper function to generate DATE_TIME column ---
     def generate_datetime_column(start_datetime_str: str, num_samples: int, periodicity_str: str) -> list:
         """
