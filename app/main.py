@@ -510,20 +510,52 @@ def main():
                 print(f"ERROR: Main real data file '{real_data_filepath_for_concat}' for concatenation not found. Exiting.")
                 sys.exit(1)
             try:
-                real_df_for_concat = pd.read_csv(real_data_filepath_for_concat)
-                if 'DATE_TIME' not in real_df_for_concat.columns:
-                    if real_df_for_concat.shape[1] > 0 and (pd.api.types.is_datetime64_any_dtype(real_df_for_concat.iloc[:, 0]) or real_df_for_concat.iloc[:, 0].astype(str).str.match(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?').all()):
-                        real_df_for_concat.rename(columns={real_df_for_concat.columns[0]: 'DATE_TIME'}, inplace=True)
+                # 1. Load FULL real data
+                real_df_for_concat_full = pd.read_csv(real_data_filepath_for_concat)
+                if real_df_for_concat_full.empty:
+                    print(f"ERROR: Real data file '{real_data_filepath_for_concat}' is empty. Cannot proceed. Exiting.")
+                    sys.exit(1)
+
+                # 2. Handle DATE_TIME column and sort for the FULL data
+                if 'DATE_TIME' not in real_df_for_concat_full.columns:
+                    if real_df_for_concat_full.shape[1] > 0 and \
+                       (pd.api.types.is_datetime64_any_dtype(real_df_for_concat_full.iloc[:, 0]) or \
+                        real_df_for_concat_full.iloc[:, 0].astype(str).str.match(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?').all()):
+                        real_df_for_concat_full.rename(columns={real_df_for_concat_full.columns[0]: 'DATE_TIME'}, inplace=True)
                     else:
                         print(f"ERROR: 'DATE_TIME' column not found in '{real_data_filepath_for_concat}'. Exiting.")
                         sys.exit(1)
-                real_df_for_concat['DATE_TIME'] = pd.to_datetime(real_df_for_concat['DATE_TIME'])
-                real_df_for_concat.sort_values('DATE_TIME', inplace=True)
-                real_data_first_datetime_for_concat = real_df_for_concat['DATE_TIME'].iloc[0]
+                real_df_for_concat_full['DATE_TIME'] = pd.to_datetime(real_df_for_concat_full['DATE_TIME'])
+                real_df_for_concat_full.sort_values('DATE_TIME', inplace=True)
                 
-                # Define feature names for the output CSV based on the loaded real_data_file
-                output_feature_names = [col for col in real_df_for_concat.columns if col != 'DATE_TIME']
-                print(f"DEBUG: output_feature_names (for CSV, from '{real_data_filepath_for_concat}'): {output_feature_names}")
+                # 3. Define output_feature_names from the FULL real data
+                output_feature_names = [col for col in real_df_for_concat_full.columns if col != 'DATE_TIME']
+                print(f"DEBUG: output_feature_names (for CSV, from full '{real_data_filepath_for_concat}'): {output_feature_names}")
+
+                # 4. Slice the real data for concatenation based on max_steps_train
+                real_df_for_concat = real_df_for_concat_full # Default to full if no slicing
+                max_steps_train_config = config.get("max_steps_train")
+                
+                if max_steps_train_config is not None:
+                    try:
+                        num_real_rows_to_keep = int(max_steps_train_config)
+                        if num_real_rows_to_keep > 0:
+                            if len(real_df_for_concat_full) > num_real_rows_to_keep:
+                                print(f"INFO: Slicing real data for concatenation to its last {num_real_rows_to_keep} rows (original real data length: {len(real_df_for_concat_full)}).")
+                                real_df_for_concat = real_df_for_concat_full.iloc[-num_real_rows_to_keep:].copy()
+                                real_df_for_concat.reset_index(drop=True, inplace=True)
+                            else:
+                                print(f"INFO: max_steps_train ({num_real_rows_to_keep}) is >= length of real data ({len(real_df_for_concat_full)}). Using all available real data for concatenation.")
+                        elif num_real_rows_to_keep <= 0:
+                            print(f"INFO: max_steps_train ({num_real_rows_to_keep}) is <= 0. Using all available real data for concatenation (no slicing).")
+                    except ValueError:
+                        print(f"WARNING: Could not convert max_steps_train ('{max_steps_train_config}') to int. Using all available real data for concatenation (no slicing).")
+                
+                if real_df_for_concat.empty: # Check after potential slicing
+                    print(f"ERROR: Real data for concatenation ('{real_data_filepath_for_concat}') is effectively empty after slicing. Cannot determine start datetime. Exiting.")
+                    sys.exit(1)
+                real_data_first_datetime_for_concat = real_df_for_concat['DATE_TIME'].iloc[0]
+                print(f"DEBUG: real_data_first_datetime_for_concat (for synthetic generation, from (potentially sliced) real data): {real_data_first_datetime_for_concat}")
 
             except Exception as e:
                 print(f"ERROR: Loading or processing real data for concatenation from '{real_data_filepath_for_concat}': {e}. Exiting.")
