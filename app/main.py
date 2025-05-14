@@ -43,6 +43,7 @@ def main():
     config: Dict[str, Any] = DEFAULT_VALUES.copy()
 
     file_config: Dict[str, Any] = {}
+    # Carga remota de configuración si se solicita
     if args.remote_load_config:
         try:
             file_config = remote_load_config(args.remote_load_config, args.username, args.password)
@@ -51,6 +52,7 @@ def main():
             print(f"Failed to load remote configuration: {e}")
             sys.exit(1)
 
+    # Carga local de configuración si se solicita
     if args.load_config:
         try:
             file_config = load_config(args.load_config)
@@ -59,6 +61,7 @@ def main():
             print(f"Failed to load local configuration: {e}")
             sys.exit(1)
 
+    # Primera fusión de la configuración (sin parámetros específicos de plugins)
     print("Merging configuration with CLI arguments and unknown args (first pass, no plugin params)...")
     unknown_args_dict = process_unknown_args(unknown_args)
     config = merge_config(config, {}, {}, file_config, cli_args, unknown_args_dict)
