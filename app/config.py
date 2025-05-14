@@ -28,10 +28,10 @@ DEFAULT_VALUES = {
     "use_wavelets": True,
     "use_multi_tapper": True,
 
-    "dataset_periodicity": "1h", # <--- ADD THIS LINE (Example: hourly)
+    "dataset_periodicity": "1h", 
 
      # Generation parameters
-    "n_samples": 6300,  # <--- CHANGE THIS to match X_real_processed.shape[0]
+    "n_samples": 6300,  
     "latent_dim": 16,
     "batch_size": 32,
     "decoder_model_file": "examples/results/phase_4_1/phase_4_1_cnn_small_decoder_model.h5.keras",
@@ -56,7 +56,7 @@ DEFAULT_VALUES = {
     "password": None,
 
     # Local config persistence
-    "load_config": "examples/config/phase_4_1/sdg_config.json",
+    "load_config": None,
     "save_config": "examples/results/phase_4_1/config_out.json",
     "save_log": "examples/results/phase_4_1/debug_out.json",
 
