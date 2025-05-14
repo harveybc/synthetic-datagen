@@ -550,7 +550,7 @@ def main():
                         if num_real_rows_to_keep > 0:
                             if len(real_df_for_concat_full) > num_real_rows_to_keep:
                                 print(f"INFO: Slicing real data for concatenation to its last {num_real_rows_to_keep} rows (original real data length: {len(real_df_for_concat_full)}).")
-                                real_df_for_concat = real_df_for_concat_full.iloc(-num_real_rows_to_keep:].copy()
+                                real_df_for_concat = real_df_for_concat_full.iloc[-num_real_rows_to_keep:].copy()
                                 real_df_for_concat.reset_index(drop=True, inplace=True)
                             else:
                                 print(f"INFO: max_steps_train ({num_real_rows_to_keep}) is >= length of real data ({len(real_df_for_concat_full)}). Using all available real data for concatenation.")
