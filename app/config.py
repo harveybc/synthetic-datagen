@@ -41,8 +41,8 @@ DEFAULT_VALUES = {
     "max_steps_test": 6300,
 
     # Output paths
-    "output_file": "examples/results/phase_4_1/normalized_d4_25200_synthetic_25200_prepended.csv",
-    "metrics_file": "examples/results/phase_4_1/normalized_d4_25200_synthetic_25200_metrics.json",
+    "output_file": "examples/results/phase_4_1/normalized_d4_25200_synthetic_50400_prepended.csv",
+    "metrics_file": "examples/results/phase_4_1/normalized_d4_25200_synthetic_50400_metrics.json",
 
     # Optimizer parameters
     "latent_dim_range": [8, 64],
