@@ -391,37 +391,50 @@ def main():
     # --- (The old generate_datetime_column function can be removed or kept if used elsewhere) ---
 
     # --- DECISIÓN DE EJECUCIÓN ---
-    if config.get('use_optimizer', False):
-        print("Running hyperparameter optimization with Optimizer Plugin...")
+    # -------------------------------------------------------------------------
+    # GAN TRAINING OR VAE‐GENERATE + EVALUATE
+    # -------------------------------------------------------------------------
+    if config.get('use_optimizer', False) and \
+       getattr(optimizer_plugin, "__class__", None).__name__ == "GANTrainerPlugin":
+        print("▶ Running GAN training via Optimizer Plugin...")
         try:
-            optimal_params = optimizer_plugin.optimize(
-                feeder_plugin,
-                generator_plugin,
-                evaluator_plugin, # Pass the evaluator instance
-                preprocessor_plugin, # Pass the preprocessor instance
-                config
+            optimizer_plugin.optimize(
+                feeder=feeder_plugin,
+                generator=generator_plugin,
+                evaluator=evaluator_plugin,
+                preprocessor=preprocessor_plugin,
+                config=config
             )
-            optimizer_output_file = config.get(
-                "optimizer_output_file",
-                "examples/results/phase_4_1/optimizer_output.json"
-            )
-            with open(optimizer_output_file, "w") as f:
-                json.dump(optimal_params, f, indent=4)
-            print(f"Optimized parameters saved to {optimizer_output_file}.")
-            config.update(optimal_params) # Update main config with optimal params
-            # Re-set params for plugins if they were optimized
-            feeder_plugin.set_params(**config)
-            generator_plugin.set_params(**config)
-            # Evaluator and Preprocessor might not have optimizable params, but good practice if they could
-            evaluator_plugin.set_params(**config)
-            preprocessor_plugin.set_params(**config)
+            print("✔︎ GAN training completed.")
 
+            # Swap in the trained generator for downstream generation
+            trained_gen = optimizer_plugin.get_trained_generator()
+            generator_plugin.update_model(trained_gen)
+            print("✔︎ Generator plugin updated with GAN‐trained weights.")
         except Exception as e:
-            print(f"Hyperparameter optimization failed: {e}")
+            print(f"❌ GAN training failed: {e}")
             sys.exit(1)
+
+        print("▶ Proceeding to synthetic data generation and evaluation…")
     else:
-        print("Skipping hyperparameter optimization.")
-        print("Generating synthetic data and evaluating...")
+        if config.get('use_optimizer', False):
+            print("▶ Running hyperparameter optimization with Optimizer Plugin…")
+            try:
+                optimal_params = optimizer_plugin.optimize(
+                    feeder_plugin,
+                    generator_plugin,
+                    evaluator_plugin,
+                    preprocessor_plugin,
+                    config
+                )
+                print("✔︎ Hyperparameter optimization completed.")
+                sys.exit(0)
+            except Exception as e:
+                print(f"❌ Hyperparameter optimization failed: {e}")
+                sys.exit(1)
+        else:
+            print("Skipping hyperparameter optimization.")
+            print("▶ Generating synthetic data and evaluating…")
 
         try:
             # 0. Preprocess real data for evaluation using the loaded PreprocessorPlugin
@@ -664,7 +677,6 @@ def main():
                         print("WARNING: 'CLOSE' is required for output, but 'BC-BO' or 'OPEN' (or both) are missing from generated features. 'CLOSE' cannot be calculated.")
                 # --- END PATCH ---
 
-                #// ...existing code...
                 # Now, eval_feature_names and df_synthetic_raw_full_preprocessed.columns are consistent,
                 # and X_syn_raw_preprocessed_space (if modified) matches this new structure.
 
