@@ -72,8 +72,8 @@ setup(
             "default_evaluator=sdg_plugins.evaluator_plugin:EvaluatorPlugin",
         ],
         "optimizer.plugins": [
-            "default_optimizer = optimizer.plugins.default:DefaultOptimizer",
-            "gan_trainer      = optimizer.plugins.gan_trainer:GANTrainerPlugin",
+            "default_optimizer = sdg_plugins.optimizer_plugin:OptimizerPlugin",
+            "gan_trainer      = sdg_plugins.gan_plugin:GANTrainerPlugin",
         ],
     },
 
