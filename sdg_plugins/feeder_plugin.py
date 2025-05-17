@@ -16,6 +16,7 @@ Interfaz:
 import numpy as np
 from typing import Dict, Any, List
 from scipy.stats import gaussian_kde, norm, rankdata, spearmanr # For KDE sampling and Copula
+import pandas as pd # Added for datetime operations
 
 # TensorFlow import will be attempted if 'from_encoder' method is used.
 
@@ -27,9 +28,16 @@ class FeederPlugin:
         "encoder_sampling_technique": "direct", # Options for "from_encoder": "direct", "kde", "copula"
         "encoder_model_file": None,       # Path to the Keras encoder model file
         "real_data_file": None,           # Path to the .npy file containing real data (X_real) for the encoder
-        "copula_kde_bw_method": None      # Bandwidth method for marginal KDEs in copula. Examples: 'scott' (default), 'silverman', or a scalar float.
+        "copula_kde_bw_method": None,      # Bandwidth method for marginal KDEs in copula. Examples: 'scott' (default), 'silverman', or a scalar float.
+        "datetime_col_name": "DATETIME",  # Name of the datetime column in real_data_file (if it's a structured array or DataFrame loaded)
+        "fundamental_var_names": ["SP500", "VIX"], # Names of fundamental variable columns in real_data_file
+        "max_day_of_month": 31, # Max day for dom_sin/dom_cos encoding
     }
-    plugin_debug_vars = ["latent_dim", "random_seed", "sampling_method", "encoder_sampling_technique", "encoder_model_file", "real_data_file", "copula_kde_bw_method"]
+    plugin_debug_vars = [
+        "latent_dim", "random_seed", "sampling_method", 
+        "encoder_sampling_technique", "encoder_model_file", "real_data_file", 
+        "copula_kde_bw_method", "datetime_col_name", "fundamental_var_names"
+    ]
 
     def __init__(self, config: Dict[str, Any]):
         if config is None:
@@ -112,10 +120,14 @@ class FeederPlugin:
         encoder_path = self.params.get("encoder_model_file")
         data_path = self.params.get("real_data_file")
         technique = self.params.get("encoder_sampling_technique")
-        copula_bw_method = self.params.get("copula_kde_bw_method") # Get the new parameter
+        copula_bw_method = self.params.get("copula_kde_bw_method")
+        datetime_col = self.params.get("datetime_col_name")
+        fundamental_cols = self.params.get("fundamental_var_names")
 
         # Invalidate previous state before loading new
         self._invalidate_encoder_state()
+        self._real_datetimes = None
+        self._real_fundamentals = None
 
         if not encoder_path or not data_path:
             if self.params.get("sampling_method") == "from_encoder":
@@ -272,7 +284,7 @@ class FeederPlugin:
     def add_debug_info(self, debug_info: Dict[str, Any]):
         debug_info.update(self.get_debug_info())
 
-    def generate(self, n_samples: int) -> np.ndarray:
+    def generate(self, n_samples: int, datetimes_for_conditioning: Optional[pd.Series] = None) -> Dict[str, np.ndarray]:
         latent_dim = self.params.get("latent_dim")
         method = self.params.get("sampling_method")
         technique = self.params.get("encoder_sampling_technique")
@@ -411,4 +423,772 @@ class FeederPlugin:
         else:
             raise ValueError(f"FeederPlugin: Unknown sampling_method '{method}'.")
             
-        return Z
+        # Generate time encodings and current fundamentals
+        time_encodings = np.empty((n_samples, 6)) # 2 for hour, 2 for dow, 2 for dom
+        current_fundamentals = np.empty((n_samples, len(self.params.get("fundamental_var_names", []))))
+        actual_datetimes_used = pd.Series([pd.NaT] * n_samples, dtype='datetime64[ns]')
+
+
+        if datetimes_for_conditioning is not None:
+            if len(datetimes_for_conditioning) != n_samples:
+                raise ValueError("Length of datetimes_for_conditioning must match n_samples.")
+            actual_datetimes_used = pd.Series(datetimes_for_conditioning)
+            time_encodings = self._generate_cyclic_time_encodings(actual_datetimes_used)
+            
+            # Fetch current fundamentals corresponding to these datetimes
+            # This requires self._real_datetimes and self._real_fundamentals to be populated
+            # and aligned, which is a complex data loading part.
+            # Placeholder for fundamental fetching:
+            if self._real_datetimes is not None and self._real_fundamentals is not None:
+                # Match datetimes_for_conditioning with self._real_datetimes and get fundamentals
+                # This is a simplified lookup, real implementation might need merging/indexing
+                selected_fundamentals_list = []
+                for dt in actual_datetimes_used:
+                    idx = self._real_datetimes[self._real_datetimes == dt].index
+                    if not idx.empty:
+                        selected_fundamentals_list.append(self._real_fundamentals[idx[0]])
+                    else:
+                        # Handle missing fundamental data, e.g., with NaNs or mean imputation
+                        selected_fundamentals_list.append([np.nan] * current_fundamentals.shape[1])
+                current_fundamentals = np.array(selected_fundamentals_list)
+
+            else:
+                # If real fundamentals aren't loaded, fill with NaNs or default
+                current_fundamentals.fill(np.nan)
+                if n_samples > 0:
+                    print("FeederPlugin: Warning - datetimes_for_conditioning provided, but real fundamentals not loaded. Returning NaNs for fundamentals.")
+        
+        elif method == "from_encoder" and self._empirical_z_means is not None and self._real_datetimes is not None:
+            # If using encoder and real datetimes are available, use a sample of those
+            # for time encodings and fundamentals, aligning with the sampled Z.
+            # This assumes Z samples correspond to the empirical data indices.
+            num_empirical = self._empirical_z_means.shape[0]
+            if num_empirical > 0:
+                indices = np.random.choice(num_empirical, size=n_samples, replace=True)
+                actual_datetimes_used = self._real_datetimes.iloc[indices].reset_index(drop=True)
+                time_encodings = self._generate_cyclic_time_encodings(actual_datetimes_used)
+                if self._real_fundamentals is not None:
+                    current_fundamentals = self._real_fundamentals[indices]
+                else:
+                    current_fundamentals.fill(np.nan)
+            else: # No empirical data to sample from
+                time_encodings.fill(np.nan)
+                current_fundamentals.fill(np.nan)
+
+        else: # standard_normal or no specific datetimes
+            time_encodings.fill(np.nan) # Or generate based on a start_date + frequency
+            current_fundamentals.fill(np.nan)
+            if n_samples > 0:
+                print("FeederPlugin: Warning - No datetimes_for_conditioning provided and not in 'from_encoder' mode with loaded real datetimes. Time encodings and fundamentals will be NaN.")
+
+        return {
+            "Z": Z,
+            "time_encodings": time_encodings,
+            "current_fundamentals": current_fundamentals,
+            "datetimes": actual_datetimes_used # Return the datetimes used for conditioning
+        }
+
+    def _generate_cyclic_time_encodings(self, datetimes: pd.Series) -> np.ndarray:
+        """Generates cyclic encodings for hour, day_of_week, day_of_month."""
+        if not isinstance(datetimes, pd.Series):
+            datetimes = pd.Series(datetimes)
+
+        max_dom = self.params.get("max_day_of_month", 31)
+
+        hour = datetimes.dt.hour
+        dow = datetimes.dt.dayofweek # Monday=0, Sunday=6
+        dom = datetimes.dt.day
+
+        hour_sin = np.sin(2 * np.pi * hour / 24.0)
+        hour_cos = np.cos(2 * np.pi * hour / 24.0)
+        dow_sin = np.sin(2 * np.pi * dow / 7.0)
+        dow_cos = np.cos(2 * np.pi * dow / 7.0)
+        dom_sin = np.sin(2 * np.pi * dom / max_dom) # Use max_dom
+        dom_cos = np.cos(2 * np.pi * dom / max_dom) # Use max_dom
+        
+        return np.stack([hour_sin, hour_cos, dow_sin, dow_cos, dom_sin, dom_cos], axis=-1)
+
+    def generate(self, n_samples: int, datetimes_for_conditioning: Optional[pd.Series] = None) -> Dict[str, np.ndarray]:
+        latent_dim = self.params.get("latent_dim")
+        method = self.params.get("sampling_method")
+        technique = self.params.get("encoder_sampling_technique")
+
+        if not isinstance(latent_dim, int) or latent_dim <= 0:
+            # Allow latent_dim = 0 if z_mean/z_log_var are still produced with some fixed dimension by encoder
+            # However, the problem context implies latent_dim > 0.
+            # For safety, let's assume latent_dim must be positive for meaningful Z.
+             if self.params.get("sampling_method") != "standard_normal" and latent_dim == 0 and \
+               (self._empirical_z_means is not None and self._empirical_z_means.shape[1] > 0):
+                 # If encoder produces fixed-dim z_mean/z_log_var even if config latent_dim is 0
+                 # This is an edge case, usually latent_dim in config should match encoder output.
+                 pass # Allow if empirical data defines dimensions
+             elif latent_dim <=0:
+                  raise ValueError("FeederPlugin: 'latent_dim' must be a positive integer.")
+
+
+        if method == "from_encoder":
+            # ... (loading logic as before) ...
+            # Ensure data is loaded if needed (this logic can be simplified a bit)
+            is_copula_ready = technique == "copula" and self._copula_spearman_corr is not None and self._marginal_kdes
+            is_kde_ready = technique == "kde" and self._joint_kde is not None
+            is_direct_ready = self._empirical_z_means is not None # Direct only needs empirical data
+
+            needs_load_processing = False
+            if not is_direct_ready: # If basic empirical data isn't there, all techniques fail
+                needs_load_processing = True
+            elif technique == "copula" and not is_copula_ready:
+                needs_load_processing = True
+            elif technique == "kde" and not is_kde_ready:
+                needs_load_processing = True
+            
+            if needs_load_processing:
+                if self.params.get("encoder_model_file") and self.params.get("real_data_file"):
+                    print("FeederPlugin: Empirical data/structures not loaded or incomplete, attempting to load/process now in generate().")
+                    try:
+                        self._load_and_process_for_encoder_mode()
+                        # After loading, re-check readiness
+                        is_copula_ready = technique == "copula" and self._copula_spearman_corr is not None and self._marginal_kdes
+                        is_kde_ready = technique == "kde" and self._joint_kde is not None
+                        is_direct_ready = self._empirical_z_means is not None
+                    except Exception as e:
+                         raise RuntimeError(f"FeederPlugin: Failed to load/process for 'from_encoder' mode in generate(): {e}")
+                
+                if not is_direct_ready: # Still no empirical data after attempt
+                    raise RuntimeError("FeederPlugin: 'from_encoder' selected, but empirical z_mean/z_log_var could not be loaded.")
+                if technique == "copula" and not is_copula_ready:
+                     print("FeederPlugin: Warning (generate) - Copula technique selected but Copula structures not fitted. Falling back to 'direct' sampling.")
+                if technique == "kde" and not is_kde_ready:
+                     print("FeederPlugin: Warning (generate) - KDE technique selected but KDE not fitted. Falling back to 'direct' sampling.")
+
+            sampled_z_means = None
+            sampled_z_log_vars = None
+            
+            # Determine actual latent_dim from empirical data if available and config latent_dim might be misleading
+            current_latent_dim = self._empirical_z_means.shape[1] if self._empirical_z_means is not None else latent_dim
+            if current_latent_dim == 0 and latent_dim > 0 : # Mismatch, prefer configured if positive
+                current_latent_dim = latent_dim
+            elif current_latent_dim == 0 and latent_dim == 0:
+                 # This case means no latent variables to sample, Z would be empty or problematic.
+                 # The VAE should likely not produce 0-dim latent variables if it's meant to generate.
+                 # For now, let's assume current_latent_dim will be > 0 if we reach sampling.
+                 if n_samples > 0: # only raise if we actually need to generate samples
+                    raise ValueError("FeederPlugin: Latent dimension is zero, cannot generate samples.")
+                 else: # n_samples is 0
+                    return np.empty((0,0))
+
+
+            total_dims_for_sampling = 2 * current_latent_dim # Based on z_mean and z_log_var
+
+            if technique == "copula" and is_copula_ready:
+                print(f"FeederPlugin: Sampling {n_samples} (z_mean, z_log_var) pairs using Gaussian Copula...")
+                try:
+                    # Ensure mean vector matches dimensions of correlation matrix
+                    mean_vec = np.zeros(self._copula_spearman_corr.shape[0])
+                    mvn_samples = np.random.multivariate_normal(mean_vec, self._copula_spearman_corr, size=n_samples)
+                except np.linalg.LinAlgError:
+                    # This should ideally be less frequent if _find_nearest_psd works well.
+                    print(f"FeederPlugin: Warning (Copula Sampling) - LinAlgError with Spearman correlation matrix. "
+                          "This might indicate issues even after PSD correction. Attempting fallback regularization.")
+                    reg_corr = self._copula_spearman_corr + np.eye(self._copula_spearman_corr.shape[0]) * 1e-6
+                    reg_corr = (reg_corr + reg_corr.T) / 2.0 # Ensure symmetry
+                    try:
+                        mvn_samples = np.random.multivariate_normal(mean_vec, reg_corr, size=n_samples)
+                    except Exception as e_reg:
+                        raise RuntimeError(f"FeederPlugin: Error (Copula Sampling) - Failed to sample from MVN even after fallback regularization: {e_reg}")
+                
+                uniform_samples = norm.cdf(mvn_samples)
+                original_scale_samples = np.empty_like(uniform_samples)
+                for i in range(total_dims_for_sampling): # Iterate up to actual dims of copula_spearman_corr
+                    original_scale_samples[:, i] = self._marginal_kdes[i].ppf(uniform_samples[:, i])
+                
+                sampled_z_means = original_scale_samples[:, :current_latent_dim]
+                sampled_z_log_vars = original_scale_samples[:, current_latent_dim:total_dims_for_sampling] # Ensure correct slicing
+                print("FeederPlugin: Gaussian Copula sampling complete.")
+
+            elif technique == "kde" and is_kde_ready:
+                # ... (KDE sampling as before, ensure dimensions match current_latent_dim) ...
+                print(f"FeederPlugin: Sampling {n_samples} (z_mean, z_log_var) pairs using joint KDE...")
+                kde_samples_transposed = self._joint_kde.resample(size=n_samples)
+                kde_samples = kde_samples_transposed.T
+                sampled_z_means = kde_samples[:, :current_latent_dim]
+                sampled_z_log_vars = kde_samples[:, current_latent_dim:total_dims_for_sampling]
+                print("FeederPlugin: Joint KDE sampling complete.")
+            
+            else: # Default to 'direct' or fallback
+                # ... (direct sampling as before, ensure dimensions match current_latent_dim) ...
+                if technique in ["kde", "copula"] and is_direct_ready: 
+                    print(f"FeederPlugin: Warning - Technique '{technique}' selected but structures not fully available/ready. Falling back to 'direct' sampling.")
+                elif not is_direct_ready: # Should have been caught by earlier checks
+                     raise RuntimeError("FeederPlugin: Cannot perform 'direct' sampling as empirical data is unavailable.")
+
+                num_available_empirical = self._empirical_z_means.shape[0]
+                # ... (rest of direct sampling logic) ...
+                indices = np.random.choice(num_available_empirical, size=n_samples, replace=True)
+                sampled_z_means = self._empirical_z_means[indices]
+                sampled_z_log_vars = self._empirical_z_log_vars[indices]
+
+
+            if current_latent_dim > 0 :
+                epsilon = np.random.normal(loc=0.0, scale=1.0, size=(n_samples, current_latent_dim))
+                Z = sampled_z_means + np.exp(0.5 * sampled_z_log_vars) * epsilon
+            elif n_samples > 0: # current_latent_dim is 0 but trying to generate samples
+                # This case should ideally be prevented by VAE design or earlier checks.
+                # If z_mean/z_log_var are empty, Z should also be conceptually empty or 0-dim.
+                print("FeederPlugin: Warning - current_latent_dim is 0. Generating empty Z array for non-zero n_samples.")
+                Z = np.empty((n_samples, 0)) # Or handle as error
+            else: # n_samples is 0
+                Z = np.empty((0,0))
+
+        elif method == "standard_normal":
+            if latent_dim <= 0:
+                 raise ValueError("FeederPlugin: 'latent_dim' must be positive for 'standard_normal' sampling.")
+            Z = np.random.normal(loc=0.0, scale=1.0, size=(n_samples, latent_dim))
+        
+        else:
+            raise ValueError(f"FeederPlugin: Unknown sampling_method '{method}'.")
+            
+        # Generate time encodings and current fundamentals
+        time_encodings = np.empty((n_samples, 6)) # 2 for hour, 2 for dow, 2 for dom
+        current_fundamentals = np.empty((n_samples, len(self.params.get("fundamental_var_names", []))))
+        actual_datetimes_used = pd.Series([pd.NaT] * n_samples, dtype='datetime64[ns]')
+
+
+        if datetimes_for_conditioning is not None:
+            if len(datetimes_for_conditioning) != n_samples:
+                raise ValueError("Length of datetimes_for_conditioning must match n_samples.")
+            actual_datetimes_used = pd.Series(datetimes_for_conditioning)
+            time_encodings = self._generate_cyclic_time_encodings(actual_datetimes_used)
+            
+            # Fetch current fundamentals corresponding to these datetimes
+            # This requires self._real_datetimes and self._real_fundamentals to be populated
+            # and aligned, which is a complex data loading part.
+            # Placeholder for fundamental fetching:
+            if self._real_datetimes is not None and self._real_fundamentals is not None:
+                # Match datetimes_for_conditioning with self._real_datetimes and get fundamentals
+                # This is a simplified lookup, real implementation might need merging/indexing
+                selected_fundamentals_list = []
+                for dt in actual_datetimes_used:
+                    idx = self._real_datetimes[self._real_datetimes == dt].index
+                    if not idx.empty:
+                        selected_fundamentals_list.append(self._real_fundamentals[idx[0]])
+                    else:
+                        # Handle missing fundamental data, e.g., with NaNs or mean imputation
+                        selected_fundamentals_list.append([np.nan] * current_fundamentals.shape[1])
+                current_fundamentals = np.array(selected_fundamentals_list)
+
+            else:
+                # If real fundamentals aren't loaded, fill with NaNs or default
+                current_fundamentals.fill(np.nan)
+                if n_samples > 0:
+                    print("FeederPlugin: Warning - datetimes_for_conditioning provided, but real fundamentals not loaded. Returning NaNs for fundamentals.")
+        
+        elif method == "from_encoder" and self._empirical_z_means is not None and self._real_datetimes is not None:
+            # If using encoder and real datetimes are available, use a sample of those
+            # for time encodings and fundamentals, aligning with the sampled Z.
+            # This assumes Z samples correspond to the empirical data indices.
+            num_empirical = self._empirical_z_means.shape[0]
+            if num_empirical > 0:
+                indices = np.random.choice(num_empirical, size=n_samples, replace=True)
+                actual_datetimes_used = self._real_datetimes.iloc[indices].reset_index(drop=True)
+                time_encodings = self._generate_cyclic_time_encodings(actual_datetimes_used)
+                if self._real_fundamentals is not None:
+                    current_fundamentals = self._real_fundamentals[indices]
+                else:
+                    current_fundamentals.fill(np.nan)
+            else: # No empirical data to sample from
+                time_encodings.fill(np.nan)
+                current_fundamentals.fill(np.nan)
+
+        else: # standard_normal or no specific datetimes
+            time_encodings.fill(np.nan) # Or generate based on a start_date + frequency
+            current_fundamentals.fill(np.nan)
+            if n_samples > 0:
+                print("FeederPlugin: Warning - No datetimes_for_conditioning provided and not in 'from_encoder' mode with loaded real datetimes. Time encodings and fundamentals will be NaN.")
+
+        return {
+            "Z": Z,
+            "time_encodings": time_encodings,
+            "current_fundamentals": current_fundamentals,
+            "datetimes": actual_datetimes_used # Return the datetimes used for conditioning
+        }
+
+    def _generate_cyclic_time_encodings(self, datetimes: pd.Series) -> np.ndarray:
+        """Generates cyclic encodings for hour, day_of_week, day_of_month."""
+        if not isinstance(datetimes, pd.Series):
+            datetimes = pd.Series(datetimes)
+
+        max_dom = self.params.get("max_day_of_month", 31)
+
+        hour = datetimes.dt.hour
+        dow = datetimes.dt.dayofweek # Monday=0, Sunday=6
+        dom = datetimes.dt.day
+
+        hour_sin = np.sin(2 * np.pi * hour / 24.0)
+        hour_cos = np.cos(2 * np.pi * hour / 24.0)
+        dow_sin = np.sin(2 * np.pi * dow / 7.0)
+        dow_cos = np.cos(2 * np.pi * dow / 7.0)
+        dom_sin = np.sin(2 * np.pi * dom / max_dom) # Use max_dom
+        dom_cos = np.cos(2 * np.pi * dom / max_dom) # Use max_dom
+        
+        return np.stack([hour_sin, hour_cos, dow_sin, dow_cos, dom_sin, dom_cos], axis=-1)
+
+    def generate(self, n_samples: int, datetimes_for_conditioning: Optional[pd.Series] = None) -> Dict[str, np.ndarray]:
+        latent_dim = self.params.get("latent_dim")
+        method = self.params.get("sampling_method")
+        technique = self.params.get("encoder_sampling_technique")
+
+        if not isinstance(latent_dim, int) or latent_dim <= 0:
+            # Allow latent_dim = 0 if z_mean/z_log_var are still produced with some fixed dimension by encoder
+            # However, the problem context implies latent_dim > 0.
+            # For safety, let's assume latent_dim must be positive for meaningful Z.
+             if self.params.get("sampling_method") != "standard_normal" and latent_dim == 0 and \
+               (self._empirical_z_means is not None and self._empirical_z_means.shape[1] > 0):
+                 # If encoder produces fixed-dim z_mean/z_log_var even if config latent_dim is 0
+                 # This is an edge case, usually latent_dim in config should match encoder output.
+                 pass # Allow if empirical data defines dimensions
+             elif latent_dim <=0:
+                  raise ValueError("FeederPlugin: 'latent_dim' must be a positive integer.")
+
+
+        if method == "from_encoder":
+            # ... (loading logic as before) ...
+            # Ensure data is loaded if needed (this logic can be simplified a bit)
+            is_copula_ready = technique == "copula" and self._copula_spearman_corr is not None and self._marginal_kdes
+            is_kde_ready = technique == "kde" and self._joint_kde is not None
+            is_direct_ready = self._empirical_z_means is not None # Direct only needs empirical data
+
+            needs_load_processing = False
+            if not is_direct_ready: # If basic empirical data isn't there, all techniques fail
+                needs_load_processing = True
+            elif technique == "copula" and not is_copula_ready:
+                needs_load_processing = True
+            elif technique == "kde" and not is_kde_ready:
+                needs_load_processing = True
+            
+            if needs_load_processing:
+                if self.params.get("encoder_model_file") and self.params.get("real_data_file"):
+                    print("FeederPlugin: Empirical data/structures not loaded or incomplete, attempting to load/process now in generate().")
+                    try:
+                        self._load_and_process_for_encoder_mode()
+                        # After loading, re-check readiness
+                        is_copula_ready = technique == "copula" and self._copula_spearman_corr is not None and self._marginal_kdes
+                        is_kde_ready = technique == "kde" and self._joint_kde is not None
+                        is_direct_ready = self._empirical_z_means is not None
+                    except Exception as e:
+                         raise RuntimeError(f"FeederPlugin: Failed to load/process for 'from_encoder' mode in generate(): {e}")
+                
+                if not is_direct_ready: # Still no empirical data after attempt
+                    raise RuntimeError("FeederPlugin: 'from_encoder' selected, but empirical z_mean/z_log_var could not be loaded.")
+                if technique == "copula" and not is_copula_ready:
+                     print("FeederPlugin: Warning (generate) - Copula technique selected but Copula structures not fitted. Falling back to 'direct' sampling.")
+                if technique == "kde" and not is_kde_ready:
+                     print("FeederPlugin: Warning (generate) - KDE technique selected but KDE not fitted. Falling back to 'direct' sampling.")
+
+            sampled_z_means = None
+            sampled_z_log_vars = None
+            
+            # Determine actual latent_dim from empirical data if available and config latent_dim might be misleading
+            current_latent_dim = self._empirical_z_means.shape[1] if self._empirical_z_means is not None else latent_dim
+            if current_latent_dim == 0 and latent_dim > 0 : # Mismatch, prefer configured if positive
+                current_latent_dim = latent_dim
+            elif current_latent_dim == 0 and latent_dim == 0:
+                 # This case means no latent variables to sample, Z would be empty or problematic.
+                 # The VAE should likely not produce 0-dim latent variables if it's meant to generate.
+                 # For now, let's assume current_latent_dim will be > 0 if we reach sampling.
+                 if n_samples > 0: # only raise if we actually need to generate samples
+                    raise ValueError("FeederPlugin: Latent dimension is zero, cannot generate samples.")
+                 else: # n_samples is 0
+                    return np.empty((0,0))
+
+
+            total_dims_for_sampling = 2 * current_latent_dim # Based on z_mean and z_log_var
+
+            if technique == "copula" and is_copula_ready:
+                print(f"FeederPlugin: Sampling {n_samples} (z_mean, z_log_var) pairs using Gaussian Copula...")
+                try:
+                    # Ensure mean vector matches dimensions of correlation matrix
+                    mean_vec = np.zeros(self._copula_spearman_corr.shape[0])
+                    mvn_samples = np.random.multivariate_normal(mean_vec, self._copula_spearman_corr, size=n_samples)
+                except np.linalg.LinAlgError:
+                    # This should ideally be less frequent if _find_nearest_psd works well.
+                    print(f"FeederPlugin: Warning (Copula Sampling) - LinAlgError with Spearman correlation matrix. "
+                          "This might indicate issues even after PSD correction. Attempting fallback regularization.")
+                    reg_corr = self._copula_spearman_corr + np.eye(self._copula_spearman_corr.shape[0]) * 1e-6
+                    reg_corr = (reg_corr + reg_corr.T) / 2.0 # Ensure symmetry
+                    try:
+                        mvn_samples = np.random.multivariate_normal(mean_vec, reg_corr, size=n_samples)
+                    except Exception as e_reg:
+                        raise RuntimeError(f"FeederPlugin: Error (Copula Sampling) - Failed to sample from MVN even after fallback regularization: {e_reg}")
+                
+                uniform_samples = norm.cdf(mvn_samples)
+                original_scale_samples = np.empty_like(uniform_samples)
+                for i in range(total_dims_for_sampling): # Iterate up to actual dims of copula_spearman_corr
+                    original_scale_samples[:, i] = self._marginal_kdes[i].ppf(uniform_samples[:, i])
+                
+                sampled_z_means = original_scale_samples[:, :current_latent_dim]
+                sampled_z_log_vars = original_scale_samples[:, current_latent_dim:total_dims_for_sampling] # Ensure correct slicing
+                print("FeederPlugin: Gaussian Copula sampling complete.")
+
+            elif technique == "kde" and is_kde_ready:
+                # ... (KDE sampling as before, ensure dimensions match current_latent_dim) ...
+                print(f"FeederPlugin: Sampling {n_samples} (z_mean, z_log_var) pairs using joint KDE...")
+                kde_samples_transposed = self._joint_kde.resample(size=n_samples)
+                kde_samples = kde_samples_transposed.T
+                sampled_z_means = kde_samples[:, :current_latent_dim]
+                sampled_z_log_vars = kde_samples[:, current_latent_dim:total_dims_for_sampling]
+                print("FeederPlugin: Joint KDE sampling complete.")
+            
+            else: # Default to 'direct' or fallback
+                # ... (direct sampling as before, ensure dimensions match current_latent_dim) ...
+                if technique in ["kde", "copula"] and is_direct_ready: 
+                    print(f"FeederPlugin: Warning - Technique '{technique}' selected but structures not fully available/ready. Falling back to 'direct' sampling.")
+                elif not is_direct_ready: # Should have been caught by earlier checks
+                     raise RuntimeError("FeederPlugin: Cannot perform 'direct' sampling as empirical data is unavailable.")
+
+                num_available_empirical = self._empirical_z_means.shape[0]
+                # ... (rest of direct sampling logic) ...
+                indices = np.random.choice(num_available_empirical, size=n_samples, replace=True)
+                sampled_z_means = self._empirical_z_means[indices]
+                sampled_z_log_vars = self._empirical_z_log_vars[indices]
+
+
+            if current_latent_dim > 0 :
+                epsilon = np.random.normal(loc=0.0, scale=1.0, size=(n_samples, current_latent_dim))
+                Z = sampled_z_means + np.exp(0.5 * sampled_z_log_vars) * epsilon
+            elif n_samples > 0: # current_latent_dim is 0 but trying to generate samples
+                # This case should ideally be prevented by VAE design or earlier checks.
+                # If z_mean/z_log_var are empty, Z should also be conceptually empty or 0-dim.
+                print("FeederPlugin: Warning - current_latent_dim is 0. Generating empty Z array for non-zero n_samples.")
+                Z = np.empty((n_samples, 0)) # Or handle as error
+            else: # n_samples is 0
+                Z = np.empty((0,0))
+
+        elif method == "standard_normal":
+            if latent_dim <= 0:
+                 raise ValueError("FeederPlugin: 'latent_dim' must be positive for 'standard_normal' sampling.")
+            Z = np.random.normal(loc=0.0, scale=1.0, size=(n_samples, latent_dim))
+        
+        else:
+            raise ValueError(f"FeederPlugin: Unknown sampling_method '{method}'.")
+            
+        # Generate time encodings and current fundamentals
+        time_encodings = np.empty((n_samples, 6)) # 2 for hour, 2 for dow, 2 for dom
+        current_fundamentals = np.empty((n_samples, len(self.params.get("fundamental_var_names", []))))
+        actual_datetimes_used = pd.Series([pd.NaT] * n_samples, dtype='datetime64[ns]')
+
+
+        if datetimes_for_conditioning is not None:
+            if len(datetimes_for_conditioning) != n_samples:
+                raise ValueError("Length of datetimes_for_conditioning must match n_samples.")
+            actual_datetimes_used = pd.Series(datetimes_for_conditioning)
+            time_encodings = self._generate_cyclic_time_encodings(actual_datetimes_used)
+            
+            # Fetch current fundamentals corresponding to these datetimes
+            # This requires self._real_datetimes and self._real_fundamentals to be populated
+            # and aligned, which is a complex data loading part.
+            # Placeholder for fundamental fetching:
+            if self._real_datetimes is not None and self._real_fundamentals is not None:
+                # Match datetimes_for_conditioning with self._real_datetimes and get fundamentals
+                # This is a simplified lookup, real implementation might need merging/indexing
+                selected_fundamentals_list = []
+                for dt in actual_datetimes_used:
+                    idx = self._real_datetimes[self._real_datetimes == dt].index
+                    if not idx.empty:
+                        selected_fundamentals_list.append(self._real_fundamentals[idx[0]])
+                    else:
+                        # Handle missing fundamental data, e.g., with NaNs or mean imputation
+                        selected_fundamentals_list.append([np.nan] * current_fundamentals.shape[1])
+                current_fundamentals = np.array(selected_fundamentals_list)
+
+            else:
+                # If real fundamentals aren't loaded, fill with NaNs or default
+                current_fundamentals.fill(np.nan)
+                if n_samples > 0:
+                    print("FeederPlugin: Warning - datetimes_for_conditioning provided, but real fundamentals not loaded. Returning NaNs for fundamentals.")
+        
+        elif method == "from_encoder" and self._empirical_z_means is not None and self._real_datetimes is not None:
+            # If using encoder and real datetimes are available, use a sample of those
+            # for time encodings and fundamentals, aligning with the sampled Z.
+            # This assumes Z samples correspond to the empirical data indices.
+            num_empirical = self._empirical_z_means.shape[0]
+            if num_empirical > 0:
+                indices = np.random.choice(num_empirical, size=n_samples, replace=True)
+                actual_datetimes_used = self._real_datetimes.iloc[indices].reset_index(drop=True)
+                time_encodings = self._generate_cyclic_time_encodings(actual_datetimes_used)
+                if self._real_fundamentals is not None:
+                    current_fundamentals = self._real_fundamentals[indices]
+                else:
+                    current_fundamentals.fill(np.nan)
+            else: # No empirical data to sample from
+                time_encodings.fill(np.nan)
+                current_fundamentals.fill(np.nan)
+
+        else: # standard_normal or no specific datetimes
+            time_encodings.fill(np.nan) # Or generate based on a start_date + frequency
+            current_fundamentals.fill(np.nan)
+            if n_samples > 0:
+                print("FeederPlugin: Warning - No datetimes_for_conditioning provided and not in 'from_encoder' mode with loaded real datetimes. Time encodings and fundamentals will be NaN.")
+
+        return {
+            "Z": Z,
+            "time_encodings": time_encodings,
+            "current_fundamentals": current_fundamentals,
+            "datetimes": actual_datetimes_used # Return the datetimes used for conditioning
+        }
+
+    def set_params(self, **kwargs):
+        old_method = self.params.get("sampling_method")
+        old_encoder_file = self.params.get("encoder_model_file")
+        old_data_file = self.params.get("real_data_file")
+        old_technique = self.params.get("encoder_sampling_technique")
+        old_copula_bw_method = self.params.get("copula_kde_bw_method") # Store old value of the new param
+
+        for key, value in kwargs.items():
+            if key in self.plugin_params:
+                self.params[key] = value
+        
+        new_method = self.params.get("sampling_method")
+        new_encoder_file = self.params.get("encoder_model_file")
+        new_data_file = self.params.get("real_data_file")
+        new_technique = self.params.get("encoder_sampling_technique")
+        new_copula_bw_method = self.params.get("copula_kde_bw_method") # Get new value of the new param
+
+        # Determine if re-initialization is needed
+        reinitialize = False
+        if new_method == "from_encoder":
+            if (old_method != new_method or 
+                old_encoder_file != new_encoder_file or 
+                old_data_file != new_data_file):
+                reinitialize = True
+            elif new_technique != old_technique: # Technique changed
+                reinitialize = True
+            # If technique is copula and bw_method changed, or if copula structures are missing
+            elif new_technique == "copula" and \
+                 (old_copula_bw_method != new_copula_bw_method or \
+                  self._copula_spearman_corr is None or \
+                  not self._marginal_kdes):
+                reinitialize = True
+            elif new_technique == "kde" and self._joint_kde is None: # KDE selected but not fitted
+                reinitialize = True
+        
+        if reinitialize:
+            if new_encoder_file and new_data_file: 
+                try:
+                    self._load_and_process_for_encoder_mode()
+                except Exception as e:
+                    print(f"FeederPlugin: Error during re-initialization for 'from_encoder' mode in set_params: {e}")
+                    self._invalidate_encoder_state() # Ensure clean state on error
+            else: 
+                self._invalidate_encoder_state() # Not enough info to initialize
+        elif old_method == "from_encoder" and new_method != "from_encoder": 
+            self._invalidate_encoder_state() # Switched away from encoder mode
+
+    def get_debug_info(self) -> Dict[str, Any]:
+        return {var: self.params.get(var) for var in self.plugin_debug_vars}
+
+    def add_debug_info(self, debug_info: Dict[str, Any]):
+        debug_info.update(self.get_debug_info())
+
+    def generate(self, n_samples: int, datetimes_for_conditioning: Optional[pd.Series] = None) -> Dict[str, np.ndarray]:
+        latent_dim = self.params.get("latent_dim")
+        method = self.params.get("sampling_method")
+        technique = self.params.get("encoder_sampling_technique")
+
+        if not isinstance(latent_dim, int) or latent_dim <= 0:
+            # Allow latent_dim = 0 if z_mean/z_log_var are still produced with some fixed dimension by encoder
+            # However, the problem context implies latent_dim > 0.
+            # For safety, let's assume latent_dim must be positive for meaningful Z.
+             if self.params.get("sampling_method") != "standard_normal" and latent_dim == 0 and \
+               (self._empirical_z_means is not None and self._empirical_z_means.shape[1] > 0):
+                 # If encoder produces fixed-dim z_mean/z_log_var even if config latent_dim is 0
+                 # This is an edge case, usually latent_dim in config should match encoder output.
+                 pass # Allow if empirical data defines dimensions
+             elif latent_dim <=0:
+                  raise ValueError("FeederPlugin: 'latent_dim' must be a positive integer.")
+
+
+        if method == "from_encoder":
+            # ... (loading logic as before) ...
+            # Ensure data is loaded if needed (this logic can be simplified a bit)
+            is_copula_ready = technique == "copula" and self._copula_spearman_corr is not None and self._marginal_kdes
+            is_kde_ready = technique == "kde" and self._joint_kde is not None
+            is_direct_ready = self._empirical_z_means is not None # Direct only needs empirical data
+
+            needs_load_processing = False
+            if not is_direct_ready: # If basic empirical data isn't there, all techniques fail
+                needs_load_processing = True
+            elif technique == "copula" and not is_copula_ready:
+                needs_load_processing = True
+            elif technique == "kde" and not is_kde_ready:
+                needs_load_processing = True
+            
+            if needs_load_processing:
+                if self.params.get("encoder_model_file") and self.params.get("real_data_file"):
+                    print("FeederPlugin: Empirical data/structures not loaded or incomplete, attempting to load/process now in generate().")
+                    try:
+                        self._load_and_process_for_encoder_mode()
+                        # After loading, re-check readiness
+                        is_copula_ready = technique == "copula" and self._copula_spearman_corr is not None and self._marginal_kdes
+                        is_kde_ready = technique == "kde" and self._joint_kde is not None
+                        is_direct_ready = self._empirical_z_means is not None
+                    except Exception as e:
+                         raise RuntimeError(f"FeederPlugin: Failed to load/process for 'from_encoder' mode in generate(): {e}")
+                
+                if not is_direct_ready: # Still no empirical data after attempt
+                    raise RuntimeError("FeederPlugin: 'from_encoder' selected, but empirical z_mean/z_log_var could not be loaded.")
+                if technique == "copula" and not is_copula_ready:
+                     print("FeederPlugin: Warning (generate) - Copula technique selected but Copula structures not fitted. Falling back to 'direct' sampling.")
+                if technique == "kde" and not is_kde_ready:
+                     print("FeederPlugin: Warning (generate) - KDE technique selected but KDE not fitted. Falling back to 'direct' sampling.")
+
+            sampled_z_means = None
+            sampled_z_log_vars = None
+            
+            # Determine actual latent_dim from empirical data if available and config latent_dim might be misleading
+            current_latent_dim = self._empirical_z_means.shape[1] if self._empirical_z_means is not None else latent_dim
+            if current_latent_dim == 0 and latent_dim > 0 : # Mismatch, prefer configured if positive
+                current_latent_dim = latent_dim
+            elif current_latent_dim == 0 and latent_dim == 0:
+                 # This case means no latent variables to sample, Z would be empty or problematic.
+                 # The VAE should likely not produce 0-dim latent variables if it's meant to generate.
+                 # For now, let's assume current_latent_dim will be > 0 if we reach sampling.
+                 if n_samples > 0: # only raise if we actually need to generate samples
+                    raise ValueError("FeederPlugin: Latent dimension is zero, cannot generate samples.")
+                 else: # n_samples is 0
+                    return np.empty((0,0))
+
+
+            total_dims_for_sampling = 2 * current_latent_dim # Based on z_mean and z_log_var
+
+            if technique == "copula" and is_copula_ready:
+                print(f"FeederPlugin: Sampling {n_samples} (z_mean, z_log_var) pairs using Gaussian Copula...")
+                try:
+                    # Ensure mean vector matches dimensions of correlation matrix
+                    mean_vec = np.zeros(self._copula_spearman_corr.shape[0])
+                    mvn_samples = np.random.multivariate_normal(mean_vec, self._copula_spearman_corr, size=n_samples)
+                except np.linalg.LinAlgError:
+                    # This should ideally be less frequent if _find_nearest_psd works well.
+                    print(f"FeederPlugin: Warning (Copula Sampling) - LinAlgError with Spearman correlation matrix. "
+                          "This might indicate issues even after PSD correction. Attempting fallback regularization.")
+                    reg_corr = self._copula_spearman_corr + np.eye(self._copula_spearman_corr.shape[0]) * 1e-6
+                    reg_corr = (reg_corr + reg_corr.T) / 2.0 # Ensure symmetry
+                    try:
+                        mvn_samples = np.random.multivariate_normal(mean_vec, reg_corr, size=n_samples)
+                    except Exception as e_reg:
+                        raise RuntimeError(f"FeederPlugin: Error (Copula Sampling) - Failed to sample from MVN even after fallback regularization: {e_reg}")
+                
+                uniform_samples = norm.cdf(mvn_samples)
+                original_scale_samples = np.empty_like(uniform_samples)
+                for i in range(total_dims_for_sampling): # Iterate up to actual dims of copula_spearman_corr
+                    original_scale_samples[:, i] = self._marginal_kdes[i].ppf(uniform_samples[:, i])
+                
+                sampled_z_means = original_scale_samples[:, :current_latent_dim]
+                sampled_z_log_vars = original_scale_samples[:, current_latent_dim:total_dims_for_sampling] # Ensure correct slicing
+                print("FeederPlugin: Gaussian Copula sampling complete.")
+
+            elif technique == "kde" and is_kde_ready:
+                # ... (KDE sampling as before, ensure dimensions match current_latent_dim) ...
+                print(f"FeederPlugin: Sampling {n_samples} (z_mean, z_log_var) pairs using joint KDE...")
+                kde_samples_transposed = self._joint_kde.resample(size=n_samples)
+                kde_samples = kde_samples_transposed.T
+                sampled_z_means = kde_samples[:, :current_latent_dim]
+                sampled_z_log_vars = kde_samples[:, current_latent_dim:total_dims_for_sampling]
+                print("FeederPlugin: Joint KDE sampling complete.")
+            
+            else: # Default to 'direct' or fallback
+                # ... (direct sampling as before, ensure dimensions match current_latent_dim) ...
+                if technique in ["kde", "copula"] and is_direct_ready: 
+                    print(f"FeederPlugin: Warning - Technique '{technique}' selected but structures not fully available/ready. Falling back to 'direct' sampling.")
+                elif not is_direct_ready: # Should have been caught by earlier checks
+                     raise RuntimeError("FeederPlugin: Cannot perform 'direct' sampling as empirical data is unavailable.")
+
+                num_available_empirical = self._empirical_z_means.shape[0]
+                # ... (rest of direct sampling logic) ...
+                indices = np.random.choice(num_available_empirical, size=n_samples, replace=True)
+                sampled_z_means = self._empirical_z_means[indices]
+                sampled_z_log_vars = self._empirical_z_log_vars[indices]
+
+
+            if current_latent_dim > 0 :
+                epsilon = np.random.normal(loc=0.0, scale=1.0, size=(n_samples, current_latent_dim))
+                Z = sampled_z_means + np.exp(0.5 * sampled_z_log_vars) * epsilon
+            elif n_samples > 0: # current_latent_dim is 0 but trying to generate samples
+                # This case should ideally be prevented by VAE design or earlier checks.
+                # If z_mean/z_log_var are empty, Z should also be conceptually empty or 0-dim.
+                print("FeederPlugin: Warning - current_latent_dim is 0. Generating empty Z array for non-zero n_samples.")
+                Z = np.empty((n_samples, 0)) # Or handle as error
+            else: # n_samples is 0
+                Z = np.empty((0,0))
+
+        elif method == "standard_normal":
+            if latent_dim <= 0:
+                 raise ValueError("FeederPlugin: 'latent_dim' must be positive for 'standard_normal' sampling.")
+            Z = np.random.normal(loc=0.0, scale=1.0, size=(n_samples, latent_dim))
+        
+        else:
+            raise ValueError(f"FeederPlugin: Unknown sampling_method '{method}'.")
+            
+        # Generate time encodings and current fundamentals
+        time_encodings = np.empty((n_samples, 6)) # 2 for hour, 2 for dow, 2 for dom
+        current_fundamentals = np.empty((n_samples, len(self.params.get("fundamental_var_names", []))))
+        actual_datetimes_used = pd.Series([pd.NaT] * n_samples, dtype='datetime64[ns]')
+
+
+        if datetimes_for_conditioning is not None:
+            if len(datetimes_for_conditioning) != n_samples:
+                raise ValueError("Length of datetimes_for_conditioning must match n_samples.")
+            actual_datetimes_used = pd.Series(datetimes_for_conditioning)
+            time_encodings = self._generate_cyclic_time_encodings(actual_datetimes_used)
+            
+            # Fetch current fundamentals corresponding to these datetimes
+            # This requires self._real_datetimes and self._real_fundamentals to be populated
+            # and aligned, which is a complex data loading part.
+            # Placeholder for fundamental fetching:
+            if self._real_datetimes is not None and self._real_fundamentals is not None:
+                # Match datetimes_for_conditioning with self._real_datetimes and get fundamentals
+                # This is a simplified lookup, real implementation might need merging/indexing
+                selected_fundamentals_list = []
+                for dt in actual_datetimes_used:
+                    idx = self._real_datetimes[self._real_datetimes == dt].index
+                    if not idx.empty:
+                        selected_fundamentals_list.append(self._real_fundamentals[idx[0]])
+                    else:
+                        # Handle missing fundamental data, e.g., with NaNs or mean imputation
+                        selected_fundamentals_list.append([np.nan] * current_fundamentals.shape[1])
+                current_fundamentals = np.array(selected_fundamentals_list)
+
+            else:
+                # If real fundamentals aren't loaded, fill with NaNs or default
+                current_fundamentals.fill(np.nan)
+                if n_samples > 0:
+                    print("FeederPlugin: Warning - datetimes_for_conditioning provided, but real fundamentals not loaded. Returning NaNs for fundamentals.")
+        
+        elif method == "from_encoder" and self._empirical_z_means is not None and self._real_datetimes is not None:
+            # If using encoder and real datetimes are available, use a sample of those
+            # for time encodings and fundamentals, aligning with the sampled Z.
+            # This assumes Z samples correspond to the empirical data indices.
+            num_empirical = self._empirical_z_means.shape[0]
+            if num_empirical > 0:
+                indices = np.random.choice(num_empirical, size=n_samples, replace=True)
+                actual_datetimes_used = self._real_datetimes.iloc[indices].reset_index(drop=True)
+                time_encodings = self._generate_cyclic_time_encodings(actual_datetimes_used)
+                if self._real_fundamentals is not None:
+                    current_fundamentals = self._real_fundamentals[indices]
+                else:
+                    current_fundamentals.fill(np.nan)
+            else: # No empirical data to sample from
+                time_encodings.fill(np.nan)
+                current_fundamentals.fill(np.nan)
+
+        else: # standard_normal or no specific datetimes
+            time_encodings.fill(np.nan) # Or generate based on a start_date + frequency
+            current_fundamentals.fill(np.nan)
+            if n_samples > 0:
+                print("FeederPlugin: Warning - No datetimes_for_conditioning provided and not in 'from_encoder' mode with loaded real datetimes. Time encodings and fundamentals will be NaN.")
+
+        return {
+            "Z": Z,
+            "time_encodings": time_encodings,
+            "current_fundamentals": current_fundamentals,
+            "datetimes": actual_datetimes_used # Return the datetimes used for conditioning
+        }
