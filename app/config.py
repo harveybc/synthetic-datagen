@@ -34,15 +34,15 @@ DEFAULT_VALUES = {
     "n_samples": 6300,  
     "latent_dim": 16,
     "batch_size": 32,
-    "decoder_model_file": "examples/results/phase_4_1/phase_4_1_cnn_small_decoder_model.h5.keras",
-    "encoder_model_file": "examples/results/phase_4_1/phase_4_1_cnn_small_encoder_model.h5.keras",
+    "decoder_model_file": "examples/results/phase_4_2/phase_4_2_cnn_small_decoder_model.h5.keras",
+    "encoder_model_file": "examples/results/phase_4_2/phase_4_2_cnn_small_encoder_model.h5.keras",
     "max_steps_train": 6300,
     "max_steps_val": 6300,
     "max_steps_test": 6300,
 
     # Output paths
-    "output_file": "examples/results/phase_4_1/normalized_d4_25200_synthetic_50400_prepended.csv",
-    "metrics_file": "examples/results/phase_4_1/normalized_d4_25200_synthetic_50400_metrics.json",
+    "output_file": "examples/results/phase_4_2/normalized_d4_25200_synthetic_50400_prepended.csv",
+    "metrics_file": "examples/results/phase_4_2/normalized_d4_25200_synthetic_50400_metrics.json",
 
     # Optimizer parameters
     "latent_dim_range": [8, 64],
@@ -57,8 +57,8 @@ DEFAULT_VALUES = {
 
     # Local config persistence
     "load_config": None,
-    "save_config": "examples/results/phase_4_1/config_out.json",
-    "save_log": "examples/results/phase_4_1/debug_out.json",
+    "save_config": "examples/results/phase_4_2/config_out.json",
+    "save_log": "examples/results/phase_4_2/debug_out.json",
 
     # CLI behavior
     "quiet_mode": False,
