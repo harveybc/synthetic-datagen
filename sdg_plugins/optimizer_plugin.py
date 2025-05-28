@@ -203,10 +203,36 @@ class OptimizerPlugin:
             Tuple[float]
                 Single-element tuple with fitness (lower is better).
             """
+            # Log the individual and hyper_keys for debugging the IndexError
+            logger.debug(f"eval_individual: Received ind (len {len(ind)}): {ind}")
+            logger.debug(f"eval_individual: Using hyper_keys (len {len(hyper_keys)}): {hyper_keys}")
+
+            if len(ind) != len(hyper_keys):
+                logger.error(
+                    f"CRITICAL MISMATCH in eval_individual: len(ind)={len(ind)} but len(hyper_keys)={len(hyper_keys)}. "
+                    f"Individual: {ind}, HyperKeys: {hyper_keys}. This will cause IndexError."
+                )
+                # Depending on how you want to handle this, you might return a very bad fitness
+                # or let the IndexError occur to halt and investigate.
+                # For now, let it proceed to hit the error if mismatch is the cause,
+                # as the logging will provide the necessary info.
+                # If you want to prevent the crash and penalize:
+                # return (float('inf'),)
+
+
             # Map individual to dict of hyperparameters
             hp_for_eval: Dict[str, Union[int, float]] = {}
-            for i, key in enumerate(hyper_keys):
-                val = ind[i]
+            for i, key in enumerate(hyper_keys): # This loop iterates len(hyper_keys) times
+                try:
+                    val = ind[i] # This is line 209 where the error occurs
+                except IndexError as e:
+                    logger.error(
+                        f"IndexError in eval_individual: i={i}, key='{key}', len(ind)={len(ind)}, ind={ind}, len(hyper_keys)={len(hyper_keys)}, hyper_keys={hyper_keys}"
+                    )
+                    # Re-raise the error after logging, or return bad fitness
+                    # return (float('inf'),) # Option to penalize and continue
+                    raise e # Option to halt
+
                 # DEAP might provide floats even for int attributes if not careful with registration
                 if key in int_params:
                     hp_for_eval[key] = int(round(val))
