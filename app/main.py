@@ -191,14 +191,16 @@ def main():
             # Keras input names might have ":0" suffix, so check startswith or exact match after split
             input_layer_name = input_tensor.name.split(':')[0]
             if input_layer_name == latent_input_name_from_config:
-                shape_tuple = input_tensor.shape.as_list() # e.g., [None, 16]
-                if len(shape_tuple) >= 2 and shape_tuple[-1] is not None:
-                    inferred_latent_dim = shape_tuple[-1]
+                # input_tensor.shape might be a tuple (e.g., (None, 16)) or a TensorShape.
+                # Convert to list to handle both cases for accessing elements.
+                shape_list = list(input_tensor.shape) 
+                if len(shape_list) >= 2 and shape_list[-1] is not None:
+                    inferred_latent_dim = shape_list[-1]
                     latent_input_found = True
-                    print(f"DEBUG main.py: Found latent input '{latent_input_name_from_config}' with shape {shape_tuple}. Inferred latent_dim: {inferred_latent_dim}")
+                    print(f"DEBUG main.py: Found latent input '{latent_input_name_from_config}' with original shape {input_tensor.shape} (processed as list: {shape_list}). Inferred latent_dim: {inferred_latent_dim}")
                     break
                 else:
-                    print(f"DEBUG main.py: Latent input '{latent_input_name_from_config}' found, but shape {shape_tuple} is not as expected for dim inference.")
+                    print(f"DEBUG main.py: Latent input '{latent_input_name_from_config}' found, but original shape {input_tensor.shape} (processed as list: {shape_list}) is not as expected for dim inference.")
         
         if not latent_input_found:
             raise RuntimeError(f"Could not find input layer named '{latent_input_name_from_config}' in decoder model. Available inputs: {decoder_input_names}")
