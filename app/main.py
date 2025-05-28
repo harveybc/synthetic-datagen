@@ -629,13 +629,13 @@ def main():
 
         if "x_validation" in datasets and datasets["x_validation"] is not None:
             real_data_for_eval_key = "x_validation"
-            real_datetimes_for_eval_key = "validation_datetimes"
+            real_datetimes_for_eval_key = "x_val_dates" # CORRECTED KEY
         elif "x_test" in datasets and datasets["x_test"] is not None:
             real_data_for_eval_key = "x_test"
-            real_datetimes_for_eval_key = "test_datetimes"
+            real_datetimes_for_eval_key = "x_test_dates" # CORRECTED KEY
         elif "x_train" in datasets and datasets["x_train"] is not None: # Fallback to train if others not present
             real_data_for_eval_key = "x_train"
-            real_datetimes_for_eval_key = "train_datetimes"
+            real_datetimes_for_eval_key = "x_train_dates" # CORRECTED KEY
         
         if not real_data_for_eval_key:
             raise ValueError("No suitable real data (x_validation, x_test, or x_train) found in preprocessor output for evaluation.")
@@ -647,7 +647,15 @@ def main():
         elif isinstance(X_real_eval_source, pd.DataFrame) and X_real_eval_source.index.inferred_type == 'datetime64':
              datetimes_eval_source = pd.Series(X_real_eval_source.index)
         else:
-            raise ValueError(f"Could not find or infer datetimes for the evaluation data source '{real_data_for_eval_key}'.")
+            # Add more debug info to the error message
+            available_datetime_keys = [k for k in datasets.keys() if "date" in k.lower()]
+            raise ValueError(
+                f"Could not find or infer datetimes for the evaluation data source '{real_data_for_eval_key}'. "
+                f"Attempted key: '{real_datetimes_for_eval_key}'. "
+                f"Available dataset keys possibly related to datetimes: {available_datetime_keys}. "
+                f"Is '{real_datetimes_for_eval_key}' present and not None in datasets? "
+                f"Is X_real_eval_source a DataFrame with a datetime index?"
+            )
 
         if isinstance(X_real_eval_source, pd.DataFrame):
             X_real_eval_source_np = X_real_eval_source.values
