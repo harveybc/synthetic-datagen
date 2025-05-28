@@ -94,10 +94,10 @@ DEFAULT_VALUES = {
         "adx_length": 14, "atr_length": 14, "cci_length": 14,
         "willr_length": 14, "mom_length": 14, "roc_length": 14
     },
-    "generator_decoder_input_name_latent": "input_latent_z",
-    "generator_decoder_input_name_window": "input_x_window",
-    "generator_decoder_input_name_conditions": "input_conditions_t",
-    "generator_decoder_input_name_context": "input_context_h",
+    "generator_decoder_input_name_latent": "decoder_input_z_seq", # CORRECTED
+    "generator_decoder_input_name_window": "input_x_window", # UNCHANGED - No clear match in model, may cause next error
+    "generator_decoder_input_name_conditions": "decoder_input_conditions", # CORRECTED
+    "generator_decoder_input_name_context": "decoder_input_h_context", # CORRECTED
 
     # --- Parameters for main.py generation control ---
     "start_datetime": None, # e.g., "2023-01-01 00:00:00" or None to use eval data start
