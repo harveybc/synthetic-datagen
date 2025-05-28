@@ -171,6 +171,17 @@ class OptimizerPlugin:
         toolbox = base.Toolbox()
 
         # Attribute generator: float or int based on bounds
+        # Ensure hyper_keys is not empty before proceeding
+        if not hyper_keys:
+            logger.error("CRITICAL: hyper_keys is empty. Cannot register attributes for DEAP. Check 'hyperparameter_bounds'.")
+            # This should ideally prevent the optimizer from even starting if no params to tune.
+            # For now, this will likely lead to an error later if not caught,
+            # but the IndexError in eval_individual would be preceded by this.
+            # Consider raising an error here:
+            # raise ValueError("hyperparameter_bounds is empty or misconfigured, no keys to optimize.")
+            pass # Allow to proceed for now to see if other errors manifest, but this is a problem.
+
+
         for key, low, up in zip(hyper_keys, low_bounds, up_bounds):
             if key in int_params:
                  toolbox.register(f"attr_{key}", random.randint, int(low), int(up))
@@ -179,11 +190,21 @@ class OptimizerPlugin:
 
 
         # Individual and population registration
+        # Convert the generator expression to a tuple
+        attribute_functions = tuple(toolbox.__getattribute__(f"attr_{key}") for key in hyper_keys)
+        
+        if not attribute_functions:
+            logger.error("CRITICAL: No attribute functions generated for DEAP individual. Check hyper_keys and toolbox registration.")
+            # This would also lead to empty individuals.
+            # raise ValueError("Failed to create attribute functions for DEAP individual.")
+            pass
+
+
         toolbox.register(
             "individual",
             tools.initCycle,
             creator.Individual,
-            (toolbox.__getattribute__(f"attr_{key}") for key in hyper_keys),
+            attribute_functions # Pass the tuple of functions
             n=1,
         )
         toolbox.register("population", tools.initRepeat, list, toolbox.individual)
