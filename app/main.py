@@ -9,15 +9,12 @@ Punto de entrada de la aplicación de predicción de EUR/USD. Este script orques
     - El guardado de la configuración resultante de forma local y/o remota.
 """
 
-import sys
-import json
-import pandas as pd
-from typing import Any, Dict, List
-import numpy as np
-import os
-import tempfile
-from datetime import datetime, timedelta
-import traceback # MOVED HERE - NOW AT GLOBAL SCOPE
+import os # Ensure os is imported
+import sys # Ensure sys is imported
+import traceback # Ensure traceback is imported
+import json # Ensure json is imported
+import pandas as pd # Ensure pandas is imported
+import numpy as np # Ensure numpy is imported
 
 # --- MONKEY PATCH for numpy.NaN ---
 # Applied because pandas_ta 0.3.14b0 (or a dependency) seems to use
@@ -989,12 +986,12 @@ def main():
 # --- ADD SCRIPT EXECUTION BLOCK ---
 if __name__ == "__main__":
     # Ensure necessary imports for the script are at the top level of main.py
-    import pandas as pd
-    import numpy as np
-    import os
-    import sys
-    import traceback
-    import json
+    # import pandas as pd # Already imported globally
+    # import numpy as np # Already imported globally
+    # import os # Already imported globally
+    # import sys # Already imported globally
+    # import traceback # Already imported globally
+    # import json # Already imported globally
     from datetime import datetime, timedelta
     # ... other necessary global imports for main ...
 

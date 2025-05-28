@@ -618,7 +618,7 @@ class GeneratorPlugin:
                             if pd.notnull(denormalized_ti_val):
                                 normalized_ti_val = self._normalize_value(denormalized_ti_val, ti_name)
                                 current_tick_assembled_features[self.feature_to_idx[ti_name]] = normalized_ti_val
-                            else # TI is NaN
+                            else: # TI is NaN
                                 # Try to use previous window's value for this TI
                                 prev_val_norm = current_input_feature_window[-1, self.feature_to_idx[ti_name]]
                                 if pd.notnull(prev_val_norm):
