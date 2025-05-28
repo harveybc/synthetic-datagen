@@ -204,7 +204,7 @@ class OptimizerPlugin:
             "individual",
             tools.initCycle,
             creator.Individual,
-            attribute_functions # Pass the tuple of functions
+            attribute_functions, # Pass the tuple of functions
             n=1,
         )
         toolbox.register("population", tools.initRepeat, list, toolbox.individual)
