@@ -17,6 +17,8 @@ from typing import Dict, Any, List, Optional
 from tensorflow.keras.models import load_model, Model
 import pandas as pd # Add pandas
 import pandas_ta as ta # Add pandas-ta
+import os # For os.path.exists
+import zipfile # For checking .keras file format (zip)
 
 
 class GeneratorPlugin:
@@ -62,63 +64,94 @@ class GeneratorPlugin:
 
         :param config: Diccionario con al menos 'sequential_model_file' y opcionalmente 'batch_size_inference', 'history_k', 'num_base_features', 'num_fundamental_features'.
         :raises ValueError: si no se proporciona 'sequential_model_file'.
+        :raises IOError: si el modelo no se puede cargar.
         """
         if config is None:
             raise ValueError("Se requiere el diccionario de configuración ('config').")
-        # Copia parámetros por defecto y aplica la configuración
+        
         self.params = self.plugin_params.copy()
-        self.set_params(**config)
+        # Initialize self.sequential_model and self.model to None before set_params
+        self.sequential_model: Optional[Model] = None
+        self.model: Optional[Model] = None
+        
+        self.set_params(**config) # This will call _load_model_from_path
 
-        model_path = self.params.get("sequential_model_file")
-        if not model_path:
-            raise ValueError("El parámetro 'sequential_model_file' debe especificar la ruta al modelo generador secuencial.")
+        model_path = self.params.get("sequential_model_file") # Already checked by set_params if path is provided
+        if not model_path: # Should have been caught by _load_model_from_path if it was None/empty
+             raise ValueError("El parámetro 'sequential_model_file' debe especificar la ruta al modelo generador secuencial y no puede estar vacío después de la configuración.")
+        if self.sequential_model is None:
+            # This means _load_model_from_path was called with a valid path but failed to load the model.
+            # _load_model_from_path should have raised an IOError.
+            # This is a fallback check.
+            raise IOError(f"Modelo secuencial no se pudo cargar desde {model_path} durante la inicialización, o la ruta no se proporcionó correctamente.")
 
         if not self.params.get("full_feature_names_ordered"):
             raise ValueError("El parámetro 'full_feature_names_ordered' es obligatorio.")
         if not self.params.get("decoder_output_feature_names"):
             raise ValueError("El parámetro 'decoder_output_feature_names' es obligatorio.")
-
-        try:
-            self.sequential_model: Model = load_model(model_path, compile=False)
-            print(f"GeneratorPlugin: Modelo decoder cargado desde {model_path}")
-        except Exception as e:
-            raise IOError(f"Error al cargar el modelo secuencial desde {model_path}. Detalle del error: {e}")
         
-        self.model = self.sequential_model
-
         self.feature_to_idx = {name: i for i, name in enumerate(self.params["full_feature_names_ordered"])}
         self.num_all_features = len(self.params["full_feature_names_ordered"])
         self._validate_feature_name_consistency()
 
-    def _validate_feature_name_consistency(self):
-        """Validates that all configured feature name lists are consistent with full_feature_names_ordered."""
-        full_set = set(self.params["full_feature_names_ordered"])
+    def _load_model_from_path(self, model_path: str):
+        """
+        Carga el modelo Keras desde la ruta especificada y actualiza self.sequential_model y self.model.
+        """
+        if not model_path:
+            # This case should ideally be handled before calling, or raise an error if a path is always expected.
+            # For now, if path is empty, we assume no model is to be loaded or it's an error state.
+            self.sequential_model = None
+            self.model = None
+            print("GeneratorPlugin: Advertencia - Se intentó cargar el modelo con una ruta vacía.")
+            # Depending on requirements, you might want to raise ValueError here.
+            # For now, to match previous logic where set_params could be called to clear model,
+            # we allow setting to None if path is None.
+            # However, __init__ will fail if sequential_model is None after set_params.
+            return
+
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"GeneratorPlugin: Archivo de modelo Keras no encontrado en la ruta: {model_path}")
+
+        print(f"GeneratorPlugin: Intentando cargar modelo Keras desde: {model_path}")
+
+        # Verificar si el archivo es un ZIP válido (formato .keras)
+        if model_path.endswith(".keras"):
+            try:
+                with zipfile.ZipFile(model_path, 'r') as zf:
+                    # Podrías añadir más verificaciones aquí, ej. zf.testzip() o buscar archivos específicos
+                    pass # Simple check: if it opens, it's likely a zip
+                print(f"GeneratorPlugin: El archivo '{model_path}' parece ser un archivo ZIP válido (esperado para formato .keras).")
+            except zipfile.BadZipFile:
+                print(f"GeneratorPlugin: ERROR CRÍTICO - El archivo '{model_path}' NO es un archivo ZIP válido. "
+                      "Esto es inesperado para un archivo .keras y probablemente causará un fallo en la carga.")
+                # No levantar error aquí todavía, dejar que load_model intente y falle con su propio error.
+            except Exception as e_zip:
+                print(f"GeneratorPlugin: Advertencia - Error al verificar el formato ZIP para '{model_path}': {e_zip}")
         
-        name_lists_to_check = [
-            "decoder_output_feature_names", "ohlc_feature_names", "ti_feature_names",
-            "date_conditional_feature_names", "feeder_conditional_feature_names"
-        ]
-        for key in name_lists_to_check:
-            sub_list = self.params.get(key, [])
-            if not sub_list and key in ["decoder_output_feature_names", "ohlc_feature_names", "ti_feature_names"]: # These should not be empty
-                 print(f"GeneratorPlugin Warning: Feature list '{key}' is empty in config. This might lead to errors if features are expected.")
-            for feature_name in sub_list:
-                if feature_name not in full_set:
-                    raise ValueError(f"Feature '{feature_name}' en '{key}' no se encuentra en 'full_feature_names_ordered'.")
-        
-        if "DATE_TIME" not in full_set: # DATE_TIME is used as a placeholder column
-            raise ValueError("'DATE_TIME' must be included in 'full_feature_names_ordered'.")
-        if not self.params["ohlc_feature_names"] or len(self.params["ohlc_feature_names"]) != 4:
-            raise ValueError("'ohlc_feature_names' must be a list of 4 names (e.g., OPEN, HIGH, LOW, CLOSE).")
+        try:
+            loaded_model: Model = load_model(model_path, compile=False)
+            self.sequential_model = loaded_model
+            self.model = loaded_model # Mantener el alias
+            print(f"GeneratorPlugin: Modelo Keras cargado exitosamente desde {model_path}")
+            # print(self.sequential_model.summary()) # Descomentar para depurar la estructura del modelo
+        except Exception as e:
+            error_message = f"Error al cargar el modelo Keras desde '{model_path}'. Tipo de error: {type(e).__name__}, Mensaje: {e}"
+            print(f"GeneratorPlugin: {error_message}")
+            if "HDF5" in str(e) and model_path.endswith(".keras"):
+                print("GeneratorPlugin: DETALLE CRÍTICO - Se encontró un error HDF5 al cargar un archivo .keras. "
+                      "Esto sugiere un problema de versión de Keras/TensorFlow, un archivo corrupto, "
+                      "o que el archivo fue guardado como .h5 pero renombrado a .keras.")
+            self.sequential_model = None # Asegurar que el modelo es None si la carga falla
+            self.model = None
+            raise IOError(error_message) # Re-lanzar como IOError para consistencia
 
 
     def set_params(self, **kwargs):
         """
         Actualiza parámetros del plugin.
-
         :param kwargs: pares clave-valor para actualizar plugin_params.
         """
-        # Store old values that trigger model/data reprocessing if changed
         old_model_file = self.params.get("sequential_model_file")
         old_full_feature_names = self.params.get("full_feature_names_ordered")
 
@@ -127,16 +160,15 @@ class GeneratorPlugin:
                 self.params[key] = value
         
         new_model_file = self.params.get("sequential_model_file")
-        if new_model_file != old_model_file:
-            if new_model_file:
-                try:
-                    self.sequential_model = load_model(new_model_file, compile=False)
-                    self.model = self.sequential_model
-                    print(f"GeneratorPlugin: Modelo decoder recargado desde {new_model_file}")
-                except Exception as e:
-                    raise IOError(f"Error al recargar el modelo secuencial desde {new_model_file}. Detalle del error: {e}")
-            else:
-                raise ValueError("No se puede establecer 'sequential_model_file' a una ruta vacía durante set_params.")
+
+        # Cargar o recargar el modelo si la ruta cambió o si no estaba cargado y ahora hay una ruta
+        if new_model_file != old_model_file or (new_model_file and self.sequential_model is None):
+            self._load_model_from_path(new_model_file) # Llama al helper centralizado
+        elif not new_model_file and old_model_file: # Si la nueva ruta es None/vacía y antes había una
+            print("GeneratorPlugin: La ruta del modelo se ha borrado. Limpiando el modelo cargado.")
+            self.sequential_model = None
+            self.model = None
+
 
         if self.params.get("full_feature_names_ordered") != old_full_feature_names or \
            any(key in kwargs for key in ["decoder_output_feature_names", "ohlc_feature_names", 
