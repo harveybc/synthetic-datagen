@@ -11,12 +11,24 @@ Punto de entrada de la aplicación de predicción de EUR/USD. Este script orques
 
 import sys
 import json
-import pandas as pd
-from typing import Any, Dict, List # Added List
-import numpy as np
-import os # For path operations and temp file removal
-import tempfile # For creating temporary files
-from datetime import datetime, timedelta # Ensure these are imported
+import pandas as pd # pandas might be imported here or later
+from typing import Any, Dict, List
+import numpy as np # Import numpy as np is conventional
+import os
+import tempfile
+from datetime import datetime, timedelta
+
+# --- MONKEY PATCH for numpy.NaN ---
+# Applied because pandas_ta 0.3.14b0 (or a dependency) seems to use
+# the deprecated np.NaN with NumPy 2.x.
+if hasattr(np, '__version__') and int(np.__version__.split('.')[0]) >= 2: # Check if NumPy is version 2.x or higher
+    if not hasattr(np, 'NaN'):
+        print("INFO: Monkey patching numpy: Assigning np.NaN = np.nan for compatibility.")
+        np.NaN = np.nan
+    elif np.NaN is not np.nan: # If NaN exists but is not the same object as nan (less likely for np 2.x)
+        print("INFO: Monkey patching numpy: np.NaN exists but is not np.nan. Re-assigning.")
+        np.NaN = np.nan
+# --- END MONKEY PATCH ---
 
 from app.config_handler import (
     load_config,
