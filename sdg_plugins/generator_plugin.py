@@ -15,9 +15,8 @@ Interfaz:
 import numpy as np
 from typing import Dict, Any, List, Optional
 from tensorflow.keras.models import load_model, Model
-import tensorflow as tf # Ensure TensorFlow is imported
-# import tensorflow.keras as keras # This alias can sometimes be tricky. We'll use tf.keras directly.
-import pandas as pd # Add pandas
+import tensorflow as tf 
+import pandas as pd
 import pandas_ta as ta # Add pandas-ta
 import os # For os.path.exists
 import zipfile # For checking .keras file format (zip)
@@ -102,6 +101,7 @@ class GeneratorPlugin:
     def _load_model_from_path(self, model_path: str):
         """
         Carga el modelo Keras desde la ruta especificada y actualiza self.sequential_model y self.model.
+        Intenta usar Keras 3 set_safe_mode y Keras 2 enable/disable_unsafe_deserialization.
         """
         if not model_path:
             # This case should ideally be handled before calling, or raise an error if a path is always expected.
@@ -134,30 +134,60 @@ class GeneratorPlugin:
             except Exception as e_zip:
                 print(f"GeneratorPlugin: Advertencia - Error al verificar el formato ZIP para '{model_path}': {e_zip}")
         
+        original_safe_mode_setting = None # For Keras 3 style
+        deserialization_method_used = None # To track which method was used
+
         try:
-            # Enable unsafe deserialization for Lambda layers using tf.keras.config
-            print("GeneratorPlugin: Enabling Keras unsafe deserialization for model loading via tf.keras.config.")
-            tf.keras.config.enable_unsafe_deserialization()
-            
+            # Attempt Keras 3 style safe_mode setting
+            if hasattr(tf.keras.config, 'set_safe_mode') and hasattr(tf.keras.config, 'safe_mode'):
+                print("GeneratorPlugin: Attempting to use Keras 3 style safe_mode for deserialization.")
+                original_safe_mode_setting = tf.keras.config.safe_mode()
+                tf.keras.config.set_safe_mode(False)
+                deserialization_method_used = "keras3_safe_mode"
+                print(f"GeneratorPlugin: Keras 3 safe_mode set to False. Original was: {original_safe_mode_setting}")
+            # Fallback to Keras 2 style if Keras 3 methods are not present
+            elif hasattr(tf.keras.config, 'enable_unsafe_deserialization'):
+                print("GeneratorPlugin: Attempting to use Keras 2 style enable_unsafe_deserialization.")
+                tf.keras.config.enable_unsafe_deserialization()
+                deserialization_method_used = "keras2_unsafe_deserialization"
+                print("GeneratorPlugin: Keras 2 unsafe deserialization enabled.")
+            else:
+                print("GeneratorPlugin: Warning - Could not find a known method to control Keras unsafe deserialization.")
+                # Proceed without changing settings, load_model might fail if unsafe operations are needed.
+
             loaded_model: Model = load_model(model_path, compile=False)
             
-            # Disable unsafe deserialization after loading using tf.keras.config
-            print("GeneratorPlugin: Disabling Keras unsafe deserialization via tf.keras.config.")
-            tf.keras.config.disable_unsafe_deserialization()
+            # Revert deserialization settings
+            if deserialization_method_used == "keras3_safe_mode":
+                if original_safe_mode_setting is not None:
+                    tf.keras.config.set_safe_mode(original_safe_mode_setting)
+                    print(f"GeneratorPlugin: Keras 3 safe_mode restored to: {original_safe_mode_setting}")
+            elif deserialization_method_used == "keras2_unsafe_deserialization":
+                if hasattr(tf.keras.config, 'disable_unsafe_deserialization'):
+                    tf.keras.config.disable_unsafe_deserialization()
+                    print("GeneratorPlugin: Keras 2 unsafe deserialization disabled.")
+                else:
+                    # This case should ideally not be hit if enable_unsafe_deserialization existed
+                    print("GeneratorPlugin: Warning - Keras 2 disable_unsafe_deserialization method not found after enabling.")
+
 
             self.sequential_model = loaded_model
             self.model = loaded_model # Mantener el alias
             print(f"GeneratorPlugin: Modelo Keras cargado exitosamente desde {model_path}")
             # print(self.sequential_model.summary()) # Descomentar para depurar la estructura del modelo
         except Exception as e:
-            # Ensure unsafe deserialization is disabled in case of an error during/after load_model
-            # using tf.keras.config
+            # Attempt to revert deserialization settings even in case of an error
             try:
-                tf.keras.config.disable_unsafe_deserialization()
-                print("GeneratorPlugin: Keras unsafe deserialization disabled via tf.keras.config due to error or completion.")
-            except Exception as e_config:
-                print(f"GeneratorPlugin: Warning - Failed to disable unsafe deserialization during error handling: {e_config}")
-
+                if deserialization_method_used == "keras3_safe_mode":
+                    if original_safe_mode_setting is not None:
+                        tf.keras.config.set_safe_mode(original_safe_mode_setting)
+                        print(f"GeneratorPlugin: Keras 3 safe_mode restored to {original_safe_mode_setting} during error handling.")
+                elif deserialization_method_used == "keras2_unsafe_deserialization":
+                    if hasattr(tf.keras.config, 'disable_unsafe_deserialization'):
+                        tf.keras.config.disable_unsafe_deserialization()
+                        print("GeneratorPlugin: Keras 2 unsafe deserialization disabled during error handling.")
+            except Exception as e_config_restore:
+                print(f"GeneratorPlugin: Warning - Failed to revert deserialization settings during error handling: {e_config_restore}")
 
             error_message = f"Error al cargar el modelo Keras desde '{model_path}'. Tipo de error: {type(e).__name__}, Mensaje: {e}"
             print(f"GeneratorPlugin: {error_message}")
