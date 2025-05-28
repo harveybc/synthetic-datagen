@@ -140,7 +140,7 @@ DEFAULT_VALUES = {
     "quiet_mode": False,
     "datetime_col_name": "DATE_TIME",
     "target_column_order": [],
-    "num_base_features_generated": 6,
-    "preprocessor_plugin": "stl_preprocessor",
-    "gan_training_mode": False
+    "num_base_features_generated": 6, # Example, adjust if necessary
+    "preprocessor_plugin": "stl_preprocessor", # Example, adjust if necessary
+    "gan_training_mode": False # Example, adjust if necessary
 }
