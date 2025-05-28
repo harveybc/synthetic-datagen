@@ -42,16 +42,31 @@ print(f"CONDA_PREFIX: {os.environ.get('CONDA_PREFIX')}")
 print(f"PATH: {os.environ.get('PATH')}")
 print("--- End Python Environment Variables ---")
 
+print("--- Checking NumPy version before pandas_ta import ---")
+try:
+    import numpy
+    print(f"Successfully imported numpy. Version: {numpy.__version__}")
+    print(f"Numpy location: {numpy.__file__}")
+    # Try accessing np.NaN to see if this specific part fails early
+    try:
+        _ = numpy.NaN
+        print("numpy.NaN is accessible.")
+    except AttributeError as e_nan:
+        print(f"Error accessing numpy.NaN: {e_nan}")
+except ImportError as e_np:
+    print(f"Failed to import numpy: {e_np}")
+except Exception as e_np_other:
+    print(f"An unexpected error occurred while importing numpy: {e_np_other}")
+print("--- End NumPy version check ---")
+
 print("--- Attempting to import pandas_ta directly in main.py ---")
 try:
     import pandas_ta
-    print("Successfully imported pandas_ta in main.py")
-    print(f"pandas_ta version: {pandas_ta.version}")
-    print(f"pandas_ta location: {pandas_ta.__file__}")
-except ImportError as e:
-    print(f"Failed to import pandas_ta in main.py: {e}")
-except Exception as e:
-    print(f"An unexpected error occurred while importing pandas_ta in main.py: {e}")
+    print("✔︎ pandas_ta imported successfully.")
+except ImportError as e_pta:
+    print(f"❌ Failed to import pandas_ta: {e_pta}")
+except Exception as e_pta_other:
+    print(f"An unexpected error occurred while importing pandas_ta: {e_pta_other}")
 print("--- End pandas_ta import attempt ---")
 
 # Assume these are defined in your config or constants file and loaded into `config`
