@@ -113,31 +113,51 @@ def main():
         generator_plugin.set_params(**config)
 
         # --- Inferir latent_dim desde el decoder y actualizar feeder_plugin ---
-        decoder_model = getattr(generator_plugin, "model", None)
+        decoder_model = getattr(generator_plugin, "sequential_model", None) # Changed attribute name
         if decoder_model is None:
-            raise RuntimeError("GeneratorPlugin must expose attribute 'model'.")
+            # Try "model" as a fallback if "sequential_model" is not found
+            decoder_model = getattr(generator_plugin, "model", None)
+            if decoder_model is None:
+                raise RuntimeError("GeneratorPlugin must expose attribute 'sequential_model' or 'model'.")
+            else:
+                print("DEBUG main.py: Found decoder model under attribute 'model'.")
+        else:
+            print("DEBUG main.py: Found decoder model under attribute 'sequential_model'.")
+
         
-        print(f"DEBUG main.py: Raw decoder_model.input_shape: {decoder_model.input_shape}") # Add this line to see the shape
+        # Ensure Keras model inputs are inspectable
+        if not hasattr(decoder_model, 'inputs') or not decoder_model.inputs:
+            raise RuntimeError(f"Decoder model '{type(decoder_model).__name__}' does not have inspectable 'inputs' attribute or it's empty.")
 
-        input_shape = decoder_model.input_shape
-        if not (isinstance(input_shape, tuple) and len(input_shape) >= 1):
-            raise RuntimeError(f"Unexpected decoder_model.input_shape: {input_shape}. Expected a tuple.")
-
-        # Assuming the actual latent dimension is the last element of the shape.
-        # Handles shapes like (None, latent_dim) or (None, ..., latent_dim)
-        inferred_latent_val = input_shape[-1]
+        decoder_inputs = decoder_model.inputs # List of Keras Tensors
+        decoder_input_names = [inp.name.split(':')[0] for inp in decoder_inputs] # Get base names like 'input_latent_z'
         
-        # If the last dimension is None (e.g. for variable length sequences, not typical for latent_dim itself),
-        # and there's a preceding dimension, try using that.
-        if inferred_latent_val is None and len(input_shape) > 1:
-            print(f"WARNING main.py: Last element of input_shape {input_shape} is None. Attempting to use second to last.")
-            inferred_latent_val = input_shape[-2] 
+        latent_input_name_from_config = generator_plugin.params.get("decoder_input_name_latent")
+        if not latent_input_name_from_config:
+            raise ValueError("GeneratorPlugin config missing 'decoder_input_name_latent'.")
 
-        if inferred_latent_val is None:
-            raise RuntimeError(f"Could not determine a valid inferred latent dimension from shape: {input_shape}")
+        inferred_latent_dim = None
+        latent_input_found = False
+        for i, input_tensor in enumerate(decoder_inputs):
+            # Keras input names might have ":0" suffix, so check startswith or exact match after split
+            input_layer_name = input_tensor.name.split(':')[0]
+            if input_layer_name == latent_input_name_from_config:
+                shape_tuple = input_tensor.shape.as_list() # e.g., [None, 16]
+                if len(shape_tuple) >= 2 and shape_tuple[-1] is not None:
+                    inferred_latent_dim = shape_tuple[-1]
+                    latent_input_found = True
+                    print(f"DEBUG main.py: Found latent input '{latent_input_name_from_config}' with shape {shape_tuple}. Inferred latent_dim: {inferred_latent_dim}")
+                    break
+                else:
+                    print(f"DEBUG main.py: Latent input '{latent_input_name_from_config}' found, but shape {shape_tuple} is not as expected for dim inference.")
+        
+        if not latent_input_found:
+            raise RuntimeError(f"Could not find input layer named '{latent_input_name_from_config}' in decoder model. Available inputs: {decoder_input_names}")
+        if inferred_latent_dim is None:
+            raise RuntimeError(f"Could not determine a valid inferred latent dimension for '{latent_input_name_from_config}'.")
 
-        print(f"DEBUG main.py: Inferred latent_dim value: {inferred_latent_val} from shape: {input_shape}")
-        feeder_plugin.set_params(latent_dim=int(inferred_latent_val))
+        print(f"DEBUG main.py: Setting FeederPlugin latent_dim to: {inferred_latent_dim}")
+        feeder_plugin.set_params(latent_dim=int(inferred_latent_dim))
         # -------------------------------------------------------------------------------
     except Exception as e:
         print(f"Failed to load or initialize Generator Plugin '{plugin_name}': {e}")
@@ -606,192 +626,150 @@ def main():
 
             except Exception as e:
                 print(f"❌ Preprocessing or evaluation setup failed: {e}")
+                import traceback
+                traceback.print_exc()
                 sys.exit(1)
 
             # --- SEQUENTIAL SYNTHETIC DATA GENERATION ---
-            print("▶ Starting sequential synthetic data generation...")
+            print("▶ Starting conditional sequential synthetic data generation...")
             try:
-                sequence_length_T = config.get('sequence_length_T', len(datetimes_eval_source))
-                if sequence_length_T > len(datetimes_eval_source):
-                    print(f"WARNING: Requested sequence_length_T ({sequence_length_T}) is greater than available evaluation datetimes ({len(datetimes_eval_source)}). Clamping to available length.")
-                    sequence_length_T = len(datetimes_eval_source)
+                # Determine the number of ticks to generate
+                # Option 1: From config (e.g., for generating a fixed number of new samples)
+                # Option 2: Match the length of the evaluation data segment
+                num_synthetic_samples_to_generate = config.get('num_synthetic_samples_to_generate', len(datetimes_eval_source))
                 
+                if num_synthetic_samples_to_generate <= 0:
+                     raise ValueError("num_synthetic_samples_to_generate must be positive.")
+
+                # Generate target datetimes for the synthetic sequence
+                start_datetime_str = config.get('start_datetime', datetimes_eval_source.iloc[0].strftime('%Y-%m-%d %H:%M:%S') if not datetimes_eval_source.empty else datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                periodicity_str = config.get('dataset_periodicity', '1h') # Default to hourly if not specified
+                
+                # Use the robust generate_datetime_column to get string datetimes first
+                target_datetimes_str_list = generate_datetime_column(
+                    start_datetime_str=start_datetime_str,
+                    num_samples=num_synthetic_samples_to_generate,
+                    periodicity_str=periodicity_str
+                )
+                # Convert to pandas Series of Timestamps for the FeederPlugin
+                target_datetimes_for_generation = pd.Series(pd.to_datetime(target_datetimes_str_list))
+                
+                sequence_length_T = len(target_datetimes_for_generation)
                 if sequence_length_T == 0:
-                    raise ValueError("Cannot generate sequence of length 0. Check 'sequence_length_T' config or available evaluation data.")
-
-                target_datetimes_for_generation = datetimes_eval_source.iloc[:sequence_length_T]
-
-                # Prepare initial history (example: using zeros or a segment of real data)
-                # This needs careful consideration based on your specific use case.
-                history_k = generator_plugin.params.get("history_k", 10)
-                num_base_features = generator_plugin.params.get("num_base_features", 6) # From GeneratorPlugin params
-                num_fundamental_features = generator_plugin.params.get("num_fundamental_features", 2) # From GeneratorPlugin params
-
-                initial_history_base = np.zeros((history_k, num_base_features))
-                initial_history_fundamentals = np.zeros((history_k, num_fundamental_features))
+                    raise ValueError("Cannot generate sequence of length 0. Check datetime generation parameters.")
                 
-                # Optionally, populate initial_history from the end of training data or start of real_eval_source
-                # Example: if X_real_train_processed is available and has same feature structure
-                # initial_history_base = X_real_train_processed[-history_k:, :num_base_features]
-                # initial_history_fundamentals = X_real_train_processed[-history_k:, num_base_features:num_base_features+num_fundamental_features]
-                print(f"Using initial_history_base shape: {initial_history_base.shape}, initial_history_fundamentals shape: {initial_history_fundamentals.shape}")
+                print(f"Targeting {sequence_length_T} synthetic samples, starting from {target_datetimes_for_generation.iloc[0]} with periodicity {periodicity_str}.")
 
-                feeder_outputs_for_sequence: List[Dict[str, np.ndarray]] = []
+                # Prepare initial full feature window for the GeneratorPlugin
+                decoder_input_window_size = generator_plugin.params.get("decoder_input_window_size")
+                full_feature_names = generator_plugin.params.get("full_feature_names_ordered", [])
+                if not full_feature_names:
+                    raise ValueError("GeneratorPlugin 'full_feature_names_ordered' is not configured.")
+                num_all_features = len(full_feature_names)
+
+                initial_full_feature_window = np.zeros((decoder_input_window_size, num_all_features), dtype=np.float32)
+                # Optional: Populate initial_full_feature_window from a segment of real, scaled data.
+                # This would require loading and scaling a piece of data that matches the `full_feature_names_ordered`
+                # and taking the last `decoder_input_window_size` rows.
+                # For example:
+                # real_initial_segment_df = pd.read_csv(config.get("path_to_real_initial_segment_csv"))
+                # real_initial_segment_df = real_initial_segment_df[full_feature_names] # Ensure order and selection
+                # ... apply scaling ...
+                # initial_full_feature_window = real_initial_segment_df.iloc[-decoder_input_window_size:].values
+                print(f"Using initial_full_feature_window of zeros with shape: {initial_full_feature_window.shape}")
+
+                # Call FeederPlugin to get Z, conditional_data, context_h for each step
                 print(f"Generating feeder outputs for {sequence_length_T} steps...")
-                for t_idx in range(sequence_length_T):
-                    current_dt_for_step = target_datetimes_for_generation.iloc[t_idx]
-                    # Feeder expects n_samples and optional datetimes_for_conditioning (as pd.Series)
-                    feeder_step_output = feeder_plugin.generate(
-                        n_samples=1, # Generating one step at a time for the sequence
-                        datetimes_for_conditioning=pd.Series([current_dt_for_step])
-                    )
-                    feeder_outputs_for_sequence.append(feeder_step_output)
+                feeder_outputs_sequence = feeder_plugin.generate(
+                    n_ticks_to_generate=sequence_length_T,
+                    target_datetimes=target_datetimes_for_generation # Pass the pandas Series of Timestamps
+                )
                 
-                print("Generating synthetic base sequence via GeneratorPlugin...")
-                # GeneratorPlugin's generate method is now sequential
-                generated_base_sequence_batch = generator_plugin.generate(
-                    feeder_outputs_sequence=feeder_outputs_for_sequence,
+                if not feeder_outputs_sequence or len(feeder_outputs_sequence) != sequence_length_T:
+                    raise RuntimeError(f"FeederPlugin did not return the expected number of outputs. Expected {sequence_length_T}, got {len(feeder_outputs_sequence) if feeder_outputs_sequence else 0}.")
+
+                print("Generating full synthetic sequence via GeneratorPlugin...")
+                # GeneratorPlugin's generate method now handles all feature generation including TIs
+                generated_full_sequence_batch = generator_plugin.generate(
+                    feeder_outputs_sequence=feeder_outputs_sequence,
                     sequence_length_T=sequence_length_T,
-                    initial_history_base=initial_history_base,
-                    initial_history_fundamentals=initial_history_fundamentals
-                ) # Expected output shape: (1, sequence_length_T, num_base_features)
+                    initial_full_feature_window=initial_full_feature_window
+                ) # Expected output shape: (1, sequence_length_T, num_all_features)
 
-                if not (isinstance(generated_base_sequence_batch, np.ndarray) and generated_base_sequence_batch.ndim == 3):
-                    raise ValueError(f"GeneratorPlugin output has unexpected shape or type: {generated_base_sequence_batch.shape if isinstance(generated_base_sequence_batch, np.ndarray) else type(generated_base_sequence_batch)}")
+                if not (isinstance(generated_full_sequence_batch, np.ndarray) and generated_full_sequence_batch.ndim == 3):
+                    raise ValueError(f"GeneratorPlugin output has unexpected shape or type: {generated_full_sequence_batch.shape if isinstance(generated_full_sequence_batch, np.ndarray) else type(generated_full_sequence_batch)}")
 
-                generated_base_sequence_np = generated_base_sequence_batch[0] # Shape: (sequence_length_T, num_base_features)
-                print(f"Generated synthetic base sequence with shape: {generated_base_sequence_np.shape}")
+                X_syn_processed_np = generated_full_sequence_batch[0] # Shape: (sequence_length_T, num_all_features)
+                print(f"Generated full synthetic sequence with shape: {X_syn_processed_np.shape}")
 
-                # --- Calculate Technical Indicators on Generated Base Sequence ---
-                # Define base feature names based on TARGET_COLUMN_ORDER and num_base_features
-                # These names must match what pandas_ta expects (e.g., 'high', 'low', 'open', 'close', 'volume')
-                # For simplicity, assume the first `num_base_features` in `eval_feature_names` (excluding date)
-                # correspond to the generated base features. This needs to be robust.
-                
-                target_column_order_from_config = config.get("target_column_order", eval_feature_names)
-                datetime_col_name_from_config = config.get("datetime_col_name", "DATETIME")
-                
-                # Assuming the first N columns of eval_feature_names (if it's ordered like target_column_order)
-                # are the base features. Or, use a predefined list.
-                # For pandas-ta, column names like 'open', 'high', 'low', 'close' are often expected.
-                # This mapping needs to be accurate.
-                
-                # Example: if your generator outputs H, L, O, C, C-O, H-L
-                # and your eval_feature_names from preprocessor are ['High', 'Low', 'Open', 'Close', 'Close_Open', 'High_Low', 'RSI_14', ...]
-                base_feature_names_for_df = eval_feature_names[:num_base_features]
-                
-                generated_df = pd.DataFrame(generated_base_sequence_np, columns=base_feature_names_for_df)
-                
-                # Standardize column names for pandas_ta if necessary (e.g., to lowercase 'high', 'low', 'open', 'close')
-                # This is a common requirement for pandas_ta.
-                generated_df_for_ta = generated_df.copy()
-                rename_map = {col: col.lower() for col in generated_df_for_ta.columns if col.lower() in ['high', 'low', 'open', 'close', 'volume']}
-                generated_df_for_ta.rename(columns=rename_map, inplace=True)
-
-                synthetic_ti_features_list = []
-                synthetic_ti_names = []
-
-                if PANDAS_TA_AVAILABLE:
-                    print("Calculating technical indicators on synthetic data using pandas_ta...")
-                    # Example TIs (customize as per your 11 indicators and their params)
-                    # Ensure generated_df_for_ta has 'high', 'low', 'open', 'close' columns if these TIs need them.
-                    if all(col in generated_df_for_ta.columns for col in ['high', 'low', 'close']):
-                        generated_df_for_ta.ta.rsi(length=14, append=True) # Appends 'RSI_14'
-                        generated_df_for_ta.ta.macd(append=True) # Appends 'MACD_12_26_9', 'MACDh_12_26_9', 'MACDs_12_26_9'
-                        # Add other pandas_ta indicators here, e.g., EMA, Bollinger Bands
-                        # generated_df_for_ta.ta.ema(length=20, append=True)
-                        # generated_df_for_ta.ta.bbands(length=20, append=True) # Appends BBL_20_2.0, BBM_20_2.0, BBU_20_2.0, BBB_20_2.0, BBP_20_2.0
-                        
-                        # Collect TI features that were appended by pandas_ta
-                        # The names are typically like 'RSI_14', 'MACD_12_26_9', etc.
-                        # Identify newly added columns by pandas-ta
-                        original_ta_cols = set(rename_map.values()) # cols fed to TA
-                        current_ta_cols = set(generated_df_for_ta.columns)
-                        newly_added_ti_cols = list(current_ta_cols - original_ta_cols)
-                        
-                        for ti_col_name in newly_added_ti_cols:
-                            synthetic_ti_features_list.append(generated_df_for_ta[ti_col_name].values.reshape(-1,1))
-                            synthetic_ti_names.append(ti_col_name.upper()) # Store in uppercase to match typical eval_feature_names
-                        print(f"Calculated TIs: {synthetic_ti_names}")
-                    else:
-                        print("WARNING: Not all required columns (high, low, close) found in generated data for pandas_ta. Skipping TI calculation.")
-                else:
-                    print("Skipping technical indicator calculation as pandas_ta is not available.")
-
-                # Combine generated base sequence with calculated TIs
-                if synthetic_ti_features_list:
-                    synthetic_ti_features_np = np.concatenate(synthetic_ti_features_list, axis=1)
-                    X_syn_processed = np.concatenate((generated_base_sequence_np, synthetic_ti_features_np), axis=1)
-                    # Update eval_feature_names to include these new TIs
-                    # This assumes the original eval_feature_names from preprocessor already contains
-                    # placeholders or actual values for these TIs in the correct order.
-                    # For simplicity, we'll construct a new list of feature names for the synthetic data.
-                    current_synthetic_feature_names = base_feature_names_for_df + synthetic_ti_names
-                else:
-                    X_syn_processed = generated_base_sequence_np
-                    current_synthetic_feature_names = base_feature_names_for_df
-                
-                print(f"Processed synthetic data X_syn_processed shape: {X_syn_processed.shape}")
-
-                # --- Placeholder for High-Frequency Window Extraction (Section 5.4) ---
-                # If HF data is derived from the hourly generated sequence, it would happen here.
-                # This would involve taking the `generated_base_sequence_np` (specifically the close prices),
-                # and applying logic to "hallucinate" or model 15-min/30-min movements.
-                # This is a complex step and might require another model or sophisticated interpolation.
-                # If done, X_syn_processed and current_synthetic_feature_names would be further augmented.
-                print("Placeholder: High-frequency window extraction would occur here if implemented.")
-
+                # --- Technical Indicator calculation is now INSIDE GeneratorPlugin ---
+                # The X_syn_processed_np already contains all features, incluyendo TIs.
 
                 # --- Prepare Real Data Segment for Evaluation ---
-                # Ensure the real data segment matches the structure of X_syn_processed (base + TIs + HF)
+                # Ensure the real data segment matches the structure of X_syn_processed
                 # The `X_real_eval_source_np` should ideally already contain all these features
                 # as processed by `PreprocessorPlugin`.
                 
-                # We need to select the portion of X_real_eval_source_np that aligns with sequence_length_T
-                X_real_eval_segment_np = X_real_eval_source_np[:sequence_length_T, :]
+                # We need to select the portion of X_real_eval_source_np que se alinea con sequence_length_T
+                # If generating more synthetic samples than available real evaluation data, clamp real data length.
+                num_real_eval_samples_available = X_real_eval_source_np.shape[0]
+                eval_segment_length = min(sequence_length_T, num_real_eval_samples_available)
                 
-                # Ensure feature names for evaluation align with both synthetic and real data structures
-                # `eval_feature_names` (from preprocessor) should be the superset of all features.
-                # We need to ensure `current_synthetic_feature_names` maps correctly to a subset of `eval_feature_names`
-                # and that `X_syn_processed` and `X_real_eval_segment_np` are aligned column-wise for evaluation.
+                if sequence_length_T > num_real_eval_samples_available:
+                    print(f"WARNING: Number of generated synthetic samples ({sequence_length_T}) exceeds available real evaluation samples ({num_real_eval_samples_available}). Evaluation will use the first {eval_segment_length} samples of both.")
+                
+                X_real_eval_segment_np = X_real_eval_source_np[:eval_segment_length, :]
+                # Also slice the synthetic data if it was longer than available real data for eval
+                X_syn_processed_for_eval_np = X_syn_processed_np[:eval_segment_length, :]
 
-                # For robust evaluation, ensure both arrays have the same number of features
-                # and that `eval_feature_names` corresponds to these features.
-                # If TIs were calculated for synthetic, the real data must also have them in the same order.
+
+                # Feature names for synthetic data come from GeneratorPlugin's config
+                synthetic_feature_names = generator_plugin.params.get("full_feature_names_ordered")
+                if not synthetic_feature_names or len(synthetic_feature_names) != X_syn_processed_for_eval_np.shape[1]:
+                    raise ValueError("Mismatch between 'full_feature_names_ordered' in GeneratorPlugin and generated data columns.")
+
+                # `eval_feature_names` (from preprocessor) is the reference for real data columns
+                # and for selecting/ordering columns for evaluation.
                 
-                # Let's assume `eval_feature_names` from preprocessor is the ground truth order.
-                # We need to make sure `X_syn_processed` columns are reordered/selected to match `eval_feature_names`
-                # if `current_synthetic_feature_names` differs in order or content.
-                
-                # This is a simplified alignment:
-                # It assumes `current_synthetic_feature_names` are a subset of `eval_feature_names`
-                # and that the real data `X_real_eval_segment_np` already has all `eval_feature_names` columns.
-                
-                final_synthetic_data_for_eval = pd.DataFrame(X_syn_processed, columns=current_synthetic_feature_names)
-                final_real_data_for_eval_df = pd.DataFrame(X_real_eval_segment_np, columns=eval_feature_names) # From preprocessor
+                final_synthetic_data_for_eval_df = pd.DataFrame(X_syn_processed_for_eval_np, columns=synthetic_feature_names)
+                final_real_data_for_eval_df = pd.DataFrame(X_real_eval_segment_np, columns=eval_feature_names)
 
                 # Align columns of synthetic data to match the order and selection of eval_feature_names from real data
-                # Only keep columns present in both and order synthetic like real
-                common_features = [feat_name for feat_name in eval_feature_names if feat_name in final_synthetic_data_for_eval.columns]
+                common_features = [feat_name for feat_name in eval_feature_names if feat_name in final_synthetic_data_for_eval_df.columns]
                 
                 if not common_features:
                     raise ValueError("No common features found between generated synthetic data and real evaluation feature names. Check feature naming and TI calculation.")
 
-                final_synthetic_data_for_eval_aligned = final_synthetic_data_for_eval[common_features]
-                final_real_data_for_eval_aligned = final_real_data_for_eval_df[common_features]
+                final_synthetic_data_for_eval_aligned_df = final_synthetic_data_for_eval_df[common_features]
+                final_real_data_for_eval_aligned_df = final_real_data_for_eval_df[common_features]
                 aligned_eval_feature_names = common_features
 
-                print(f"Shape of final synthetic data for eval: {final_synthetic_data_for_eval_aligned.shape}")
-                print(f"Shape of final real data for eval: {final_real_data_for_eval_aligned.shape}")
-                print(f"Number of features for evaluation: {len(aligned_eval_feature_names)}. Names: {aligned_eval_feature_names[:10]}...")
+                print(f"Shape of final synthetic data for eval: {final_synthetic_data_for_eval_aligned_df.shape}")
+                print(f"Shape of final real data for eval: {final_real_data_for_eval_aligned_df.shape}")
+                print(f"Number of features for evaluation: {len(aligned_eval_feature_names)}. Names (first 10): {aligned_eval_feature_names[:10]}...")
+
+                # --- Save the generated (aligned) synthetic data ---
+                synthetic_data_output_file = config.get("synthetic_data_output_file", "examples/results/generated_synthetic_data.csv")
+                os.makedirs(os.path.dirname(synthetic_data_output_file), exist_ok=True)
+                
+                # Create a DataFrame to save, including the DATE_TIME column
+                # Use the target_datetimes_for_generation, sliced to match eval_segment_length
+                datetimes_for_output_df = target_datetimes_for_generation.iloc[:eval_segment_length].reset_index(drop=True)
+                
+                # Ensure the DataFrame for saving has the DATE_TIME column first
+                output_df_with_datetime = final_synthetic_data_for_eval_aligned_df.copy()
+                output_df_with_datetime.insert(0, config.get("datetime_col_name", "DATE_TIME"), datetimes_for_output_df)
+                
+                output_df_with_datetime.to_csv(synthetic_data_output_file, index=False)
+                print(f"✔︎ Generated (aligned) synthetic data saved to {synthetic_data_output_file}")
 
 
                 # 3. Evaluate synthetic data using the EvaluatorPlugin
                 print("Evaluating synthetic data via EvaluatorPlugin...")
                 metrics = evaluator_plugin.evaluate(
-                    synthetic_data_sequence=final_synthetic_data_for_eval_aligned.values, # Pass as numpy array
-                    real_data_sequence=final_real_data_for_eval_aligned.values,           # Pass as numpy array
-                    feature_names=aligned_eval_feature_names, # Use the aligned feature names
+                    synthetic_data_sequence=final_synthetic_data_for_eval_aligned_df.values,
+                    real_data_sequence=final_real_data_for_eval_aligned_df.values,
+                    feature_names=aligned_eval_feature_names,
                     config=config 
                 )
                 print("✔︎ Evaluation completed.")
