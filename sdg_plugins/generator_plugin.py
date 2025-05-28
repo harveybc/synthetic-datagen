@@ -545,10 +545,10 @@ class GeneratorPlugin:
             # decoder_input_x_window_t_expanded = np.expand_dims(current_input_feature_window, axis=0)
 
             decoder_inputs = {
-                self.params["generator_decoder_input_name_latent"]: zt,
+                self.params["decoder_input_name_latent"]: zt,
                 # self.params["generator_decoder_input_name_window"]: decoder_input_x_window_t_expanded, # REMOVED THIS LINE
-                self.params["generator_decoder_input_name_conditions"]: conditional_data_t,
-                self.params["generator_decoder_input_name_context"]: context_h_t
+                self.params["decoder_input_name_conditions"]: conditional_data_t,
+                self.params["decoder_input_name_context"]: context_h_t
             }
             
             # DEBUG PRINT (Optional but recommended for verification)
