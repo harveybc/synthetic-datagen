@@ -52,7 +52,7 @@ DEFAULT_VALUES = {
     "feeder_copula_kde_bw_method": None,
 
     # --- Parameters for GeneratorPlugin ---
-    "generator_sequential_model_file": "examples/results/phase_4_2/phase_4_2_cnn_small_decoder_model.h5.keras", # Path to Keras decoder
+    "generator_sequential_model_file": "examples/results/phase_4_2/phase_4_2_cnn_small_decoder_model.keras", # Path to Keras decoder
     "generator_decoder_input_window_size": 144,
     "generator_normalization_params_file": "examples/data/phase_3/phase_3_debug_out.json", # Path to min/max JSON
     "generator_full_feature_names_ordered": [
