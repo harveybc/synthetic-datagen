@@ -522,7 +522,7 @@ def main():
                 feeder_plugin,
                 generator_plugin,
                 evaluator_plugin,
-                preprocessor_plugin,
+                # preprocessor_plugin, # REMOVE THIS ARGUMENT
                 config
             )
             print("✔︎ Hyperparameter optimization completed.")
