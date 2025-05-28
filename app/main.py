@@ -662,21 +662,77 @@ def main():
 
                 # Prepare initial full feature window for the GeneratorPlugin
                 decoder_input_window_size = generator_plugin.params.get("decoder_input_window_size")
-                full_feature_names = generator_plugin.params.get("full_feature_names_ordered", [])
-                if not full_feature_names:
-                    raise ValueError("GeneratorPlugin 'full_feature_names_ordered' is not configured.")
-                num_all_features = len(full_feature_names)
+                generator_req_feature_names = generator_plugin.params.get("full_feature_names_ordered", [])
+                if not generator_req_feature_names:
+                    raise ValueError("GeneratorPlugin's 'full_feature_names_ordered' is empty in config.")
+                num_all_features_gen = len(generator_req_feature_names)
 
-                initial_full_feature_window = np.zeros((decoder_input_window_size, num_all_features), dtype=np.float32)
-                # Optional: Populate initial_full_feature_window from a segment of real, scaled data.
-                # This would require loading and scaling a piece of data that matches the `full_feature_names_ordered`
-                # and taking the last `decoder_input_window_size` rows.
-                # For example:
-                # real_initial_segment_df = pd.read_csv(config.get("path_to_real_initial_segment_csv"))
-                # real_initial_segment_df = real_initial_segment_df[full_feature_names] # Ensure order and selection
-                # ... apply scaling ...
-                # initial_full_feature_window = real_initial_segment_df.iloc[-decoder_input_window_size:].values
-                print(f"Using initial_full_feature_window of zeros with shape: {initial_full_feature_window.shape}")
+                initial_full_feature_window = np.zeros((decoder_input_window_size, num_all_features_gen), dtype=np.float32) # Default
+                
+                if X_real_eval_source_np is not None and X_real_eval_source_np.shape[0] >= decoder_input_window_size:
+                    print(f"Attempting to populate initial_full_feature_window from preprocessed real data ('{real_data_for_eval_key}').")
+                    # Create a DataFrame from the real data source to easily select and reorder columns
+                    # Ensure eval_feature_names matches the columns of X_real_eval_source_np
+                    if len(eval_feature_names) != X_real_eval_source_np.shape[1]:
+                        print(f"GeneratorPlugin Warning: Mismatch between length of eval_feature_names ({len(eval_feature_names)}) "
+                              f"and number of columns in X_real_eval_source_np ({X_real_eval_source_np.shape[1]}). "
+                              f"Cannot reliably create DataFrame for initial window. Using zeros.")
+                    else:
+                        real_data_df_for_init = pd.DataFrame(X_real_eval_source_np, columns=eval_feature_names)
+                        
+                        missing_features_in_source = [name for name in generator_req_feature_names if name not in real_data_df_for_init.columns]
+                        if missing_features_in_source:
+                            print(f"GeneratorPlugin Warning: The following features required for 'initial_full_feature_window' "
+                                  f"are missing in the preprocessed data source ('{real_data_for_eval_key}'): {missing_features_in_source}. "
+                                  f"These features will be zero-filled in the initial window.")
+                            for mf in missing_features_in_source:
+                                real_data_df_for_init[mf] = 0.0 # Add missing columns with zeros
+                        
+                        try:
+                            # Select and reorder columns according to generator_req_feature_names
+                            # Ensure 'DATE_TIME' is handled correctly if it's numeric or needs to be dropped/converted for the window
+                            # The generator_req_feature_names should list all features including a numeric DATE_TIME if used by the model window
+                            
+                            # If 'DATE_TIME' is in generator_req_feature_names, it's assumed to be a numeric feature here.
+                            # If it's not meant to be part of the numeric window for the Keras model, it should be excluded from
+                            # generator_req_feature_names or handled appropriately.
+                            
+                            aligned_df_for_init = real_data_df_for_init[generator_req_feature_names]
+                            
+                            # Take the last 'decoder_input_window_size' rows
+                            initial_segment_np = aligned_df_for_init.iloc[-decoder_input_window_size:].values.astype(np.float32)
+                            
+                            if initial_segment_np.shape == initial_full_feature_window.shape:
+                                initial_full_feature_window = initial_segment_np
+                                print(f"Successfully populated initial_full_feature_window from real data. Shape: {initial_full_feature_window.shape}")
+                            else:
+                                print(f"GeneratorPlugin Warning: Shape mismatch after preparing initial segment from real data. "
+                                      f"Expected {initial_full_feature_window.shape}, got {initial_segment_np.shape}. Using zeros.")
+                        except KeyError as e:
+                            print(f"GeneratorPlugin Warning: KeyError when aligning features for initial_full_feature_window: {e}. "
+                                  f"This likely means some features in 'generator_full_feature_names_ordered' were not found in "
+                                  f"preprocessed data source columns ('{eval_feature_names}'). Using zeros for initial window.")
+                        except Exception as e:
+                            print(f"GeneratorPlugin Warning: Unexpected error preparing initial_full_feature_window from real data: {e}. Using zeros.")
+                else:
+                    if X_real_eval_source_np is None:
+                        print("GeneratorPlugin Warning: Preprocessed real data (X_real_eval_source_np) is None. Using zeros for initial_full_feature_window.")
+                    else: # X_real_eval_source_np.shape[0] < decoder_input_window_size
+                        print(f"GeneratorPlugin Warning: Not enough rows in preprocessed real data "
+                              f"({X_real_eval_source_np.shape[0]}) to fill initial_full_feature_window "
+                              f"of size {decoder_input_window_size}. Using zeros.")
+                
+                # Final check on DATE_TIME column if it's part of the feature set for the generator's window
+                if 'DATE_TIME' in generator_req_feature_names:
+                    dt_idx = generator_req_feature_names.index('DATE_TIME')
+                    # Ensure this column is numeric. If it was populated from real data, PreprocessorPlugin should have handled it.
+                    # If it's still zeros, that's fine. If it came from real data and isn't numeric, it's an issue.
+                    if not np.issubdtype(initial_full_feature_window[:, dt_idx].dtype, np.number):
+                        print(f"GeneratorPlugin Warning: 'DATE_TIME' column (index {dt_idx}) in initial_full_feature_window is not numeric (dtype: {initial_full_feature_window[:, dt_idx].dtype}). Replacing with zeros.")
+                        initial_full_feature_window[:, dt_idx] = 0.0
+
+
+                print(f"Using initial_full_feature_window with shape: {initial_full_feature_window.shape}. Sum of first row: {np.sum(initial_full_feature_window[0]) if initial_full_feature_window.size > 0 else 'N/A'}")
 
                 # Call FeederPlugin to get Z, conditional_data, context_h for each step
                 print(f"Generating feeder outputs for {sequence_length_T} steps...")
