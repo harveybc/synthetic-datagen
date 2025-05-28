@@ -14,13 +14,13 @@ DEFAULT_VALUES = {
     "optimizer": "default_optimizer",
 
     # Data for evaluation
-    "real_data_file": "examples/data/phase_3/normalized_d4.csv",
-    "x_train_file": "examples/data/phase_3/normalized_d4.csv",
-    "y_train_file": "examples/data/phase_3/normalized_d4.csv",
-    "x_validation_file": "examples/data/phase_3/normalized_d5.csv",
-    "y_validation_file": "examples/data/phase_3/normalized_d5.csv",
-    "x_test_file": "examples/data/phase_3/normalized_d6.csv",
-    "y_test_file": "examples/data/phase_3/normalized_d6.csv",
+    "real_data_file": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/data/phase_3/normalized_d4.csv",
+    "x_train_file": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/data/phase_3/normalized_d4.csv",
+    "y_train_file": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/data/phase_3/normalized_d4.csv",
+    "x_validation_file": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/data/phase_3/normalized_d5.csv",
+    "y_validation_file": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/data/phase_3/normalized_d5.csv",
+    "x_test_file": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/data/phase_3/normalized_d6.csv",
+    "y_test_file": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/data/phase_3/normalized_d6.csv",
     "target_column": "CLOSE",
     "stl_period":24,
     "predicted_horizons": [24,48,72,96,120,144],
@@ -40,7 +40,7 @@ DEFAULT_VALUES = {
     # Ensure latent_shape is used here if it's a primary config for Feeder
     "feeder_sampling_method": "standard_normal", # "standard_normal", "from_encoder"
     "feeder_encoder_sampling_technique": "direct", # "direct", "kde", "copula"
-    "encoder_model_file": "examples/results/phase_4_2/phase_4_2_cnn_small_encoder_model.h5.keras", # Used by Feeder if method is "from_encoder"
+    "encoder_model_file": "examples/results/phase_4_2/phase_4_2_cnn_small_encoder_model.keras", # Used by Feeder if method is "from_encoder"
     "feeder_feature_columns_for_encoder": [], # List of col names from feeder_real_data_file for VAE encoder input
     "feeder_real_data_file_has_header": True,
     "feeder_datetime_col_in_real_data": "DATE_TIME",
@@ -54,7 +54,7 @@ DEFAULT_VALUES = {
     "feeder_copula_kde_bw_method": None,
 
     # --- Parameters for GeneratorPlugin ---
-    "generator_sequential_model_file": "examples/results/phase_4_2/phase_4_2_cvae_decoder_model.keras", # Path to the pre-trained decoder model
+    "generator_sequential_model_file": "examples/results/phase_4_2/phase_4_2_cnn_small_decoder_model.keras", # CORRECTED FILENAME
     "generator_decoder_input_window_size": 144, 
     "generator_full_feature_names_ordered": [], 
     "generator_decoder_output_feature_names": [], 
@@ -74,7 +74,7 @@ DEFAULT_VALUES = {
         "adx_length": 14, "atr_length": 14, "cci_length": 14, 
         "willr_length": 14, "mom_length": 14, "roc_length": 14
     },
-    "generator_normalization_params_file": "examples/data/phase_3/phase_3_debug_out.json",
+    "generator_normalization_params_file": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/data/phase_3/phase_3_debug_out.json",
     
     "generator_decoder_input_name_latent": "decoder_input_z_seq",       # CORRECTED
     "generator_decoder_input_name_window": "input_x_window",          # This will be removed from inputs to decoder (see Step 2)
@@ -90,9 +90,9 @@ DEFAULT_VALUES = {
      "max_steps_test": 6300,
 
      # Output paths
-    "output_file": "examples/results/phase_4_2/normalized_d4_25200_synthetic_50400_prepended.csv", # Retained for compatibility if old workflow parts use it
-    "synthetic_data_output_file": "examples/results/phase_4_2/generated_full_synthetic_data.csv", # For the new generator output
-     "metrics_file": "examples/results/phase_4_2/normalized_d4_25200_synthetic_50400_metrics.json",
+    "output_file": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/results/phase_4_2/normalized_d4_25200_synthetic_50400_prepended.csv",
+    "synthetic_data_output_file": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/results/phase_4_2/generated_full_synthetic_data.csv",
+    "metrics_file": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/results/phase_4_2/normalized_d4_25200_synthetic_50400_metrics.json",
 
     # Optimizer parameters
     "latent_dim_range": [8, 64],
@@ -107,8 +107,8 @@ DEFAULT_VALUES = {
 
     # Local config persistence
     "load_config": None,
-    "save_config": "examples/results/phase_4_2/config_out.json",
-    "save_log": "examples/results/phase_4_2/debug_out.json",
+    "save_config": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/results/phase_4_2/config_out.json",
+    "save_log": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/results/phase_4_2/debug_out.json",
     "quiet_mode": False,
     "run_hyperparameter_optimization": True, # ADD THIS LINE
 }
