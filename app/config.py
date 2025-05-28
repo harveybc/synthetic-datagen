@@ -21,7 +21,7 @@ DEFAULT_VALUES = {
     "y_validation_file": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/data/phase_3/normalized_d5.csv",
     "x_test_file": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/data/phase_3/normalized_d6.csv",
     "y_test_file": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/data/phase_3/normalized_d6.csv",
-    "target_column": "CLOSE",
+    "target_column": "CLOSE", 
     "stl_period":24,
     "predicted_horizons": [24,48,72,96,120,144],
     "use_stl": True,
@@ -31,17 +31,15 @@ DEFAULT_VALUES = {
     "dataset_periodicity": "1h", 
 
      # Generation parameters
-    "n_samples": 6300,  # Retained for compatibility, but main.py now uses num_synthetic_samples_to_generate
-    # "latent_dim": 16, # FeederPlugin's latent_dim, main.py might override it based on decoder
-    "latent_shape": [18, 32], # NEW: (sequence_length, features) for FeederPlugin's Z output. Based on error: (18, 32)
-    "batch_size": 32, # May not be directly used by new sequential generator logic
+    "n_samples": 6300,
+    "latent_shape": [18, 32], 
+    "batch_size": 32, 
     
     # --- Parameters for FeederPlugin ---
-    # Ensure latent_shape is used here if it's a primary config for Feeder
-    "feeder_sampling_method": "standard_normal", # "standard_normal", "from_encoder"
-    "feeder_encoder_sampling_technique": "direct", # "direct", "kde", "copula"
-    "encoder_model_file": "examples/results/phase_4_2/phase_4_2_cnn_small_encoder_model.keras", # Used by Feeder if method is "from_encoder"
-    "feeder_feature_columns_for_encoder": [], # List of col names from feeder_real_data_file for VAE encoder input
+    "feeder_sampling_method": "standard_normal", 
+    "feeder_encoder_sampling_technique": "direct", 
+    "encoder_model_file": "examples/results/phase_4_2/phase_4_2_cnn_small_encoder_model.keras", 
+    "feeder_feature_columns_for_encoder": [], 
     "feeder_real_data_file_has_header": True,
     "feeder_datetime_col_in_real_data": "DATE_TIME",
     "feeder_date_features_for_conditioning": ["day_of_month", "hour_of_day", "day_of_week"],
@@ -49,15 +47,33 @@ DEFAULT_VALUES = {
     "feeder_max_day_of_month": 31,
     "feeder_max_hour_of_day": 23,
     "feeder_max_day_of_week": 6,
-    "feeder_context_vector_dim": 16, # Example, should match decoder's context input if used
+    "feeder_context_vector_dim": 64, 
     "feeder_context_vector_strategy": "zeros",
     "feeder_copula_kde_bw_method": None,
 
     # --- Parameters for GeneratorPlugin ---
-    "generator_sequential_model_file": "examples/results/phase_4_2/phase_4_2_cnn_small_decoder_model.keras", # CORRECTED FILENAME
+    "generator_sequential_model_file": "examples/results/phase_4_2/phase_4_2_cnn_small_decoder_model.keras",
     "generator_decoder_input_window_size": 144, 
-    "generator_full_feature_names_ordered": [], 
-    "generator_decoder_output_feature_names": [], 
+    "generator_full_feature_names_ordered": [
+        # YOU MUST REPLACE THIS EXAMPLE WITH YOUR ACTUAL FULL FEATURE LIST IN ORDER
+        "OPEN", "HIGH", "LOW", "CLOSE",
+        "RSI", "MACD", "MACD_Histogram", "MACD_Signal", "EMA",
+        "Stochastic_%K", "Stochastic_%D", "ADX", "DI+", "DI-", "ATR", "CCI", "WilliamsR", "Momentum", "ROC",
+        "day_of_month", "hour_of_day", "day_of_week",
+        "S&P500_Close", "vix_close",
+        "log_return", "stl_trend", "stl_seasonal", "stl_resid",
+        "wav_approx_L2", "wav_detail_L1", "wav_detail_L2",
+        "mtm_band_0", "mtm_band_1", "mtm_band_2", "mtm_band_3",
+        "BC-BO", "BH-BL", "BH-BO", "BO-BL",
+        "CLOSE_15m_tick_1", "CLOSE_15m_tick_2", "CLOSE_15m_tick_3", "CLOSE_15m_tick_4",
+        "CLOSE_15m_tick_5", "CLOSE_15m_tick_6", "CLOSE_15m_tick_7", "CLOSE_15m_tick_8",
+        "CLOSE_30m_tick_1", "CLOSE_30m_tick_2", "CLOSE_30m_tick_3", "CLOSE_30m_tick_4",
+        "CLOSE_30m_tick_5", "CLOSE_30m_tick_6", "CLOSE_30m_tick_7", "CLOSE_30m_tick_8"
+    ], 
+    "generator_decoder_output_feature_names": [
+        # YOU MUST REPLACE THIS EXAMPLE WITH FEATURES DIRECTLY OUTPUT BY YOUR DECODER
+         "OPEN", "HIGH", "LOW", "CLOSE" 
+    ], 
     "generator_ohlc_feature_names": ["OPEN", "HIGH", "LOW", "CLOSE"],
     "generator_ti_feature_names": [ 
         "RSI", "MACD", "MACD_Histogram", "MACD_Signal", "EMA",
@@ -75,40 +91,49 @@ DEFAULT_VALUES = {
         "willr_length": 14, "mom_length": 14, "roc_length": 14
     },
     "generator_normalization_params_file": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/data/phase_3/phase_3_debug_out.json",
-    
-    "generator_decoder_input_name_latent": "decoder_input_z_seq",       # CORRECTED
-    "generator_decoder_input_name_window": "input_x_window",          # This will be removed from inputs to decoder (see Step 2)
-    "generator_decoder_input_name_conditions": "decoder_input_conditions", # CORRECTED
-    "generator_decoder_input_name_context": "decoder_input_h_context",   # CORRECTED
+    "generator_decoder_input_name_latent": "decoder_input_z_seq",       
+    "generator_decoder_input_name_window": "input_x_window",          
+    "generator_decoder_input_name_conditions": "decoder_input_conditions", 
+    "generator_decoder_input_name_context": "decoder_input_h_context",   
+    "context_vector_dim": 64, 
 
-    # --- Parameters for main.py generation control ---
-    "start_datetime": None, # e.g., "2023-01-01 00:00:00" or None to use eval data start
-    "num_synthetic_samples_to_generate": 0, # 0 to match length of evaluation data segment
+    # --- Parameters for EvaluatorPlugin ---
+    "evaluator_metrics": ["mmd", "acf", "wasserstein", "kstest", "discriminative_score", "predictive_score", "visual"],
+    "evaluator_mmd_gamma": None, 
+    "evaluator_acf_nlags": 20,
+    "evaluator_predictive_model_type": "LSTM", 
+    "evaluator_predictive_epochs": 10,
+    "evaluator_predictive_batch_size": 32,
+    "evaluator_plot_max_features": 10, 
+    "evaluator_plot_max_lags_acf": 50, 
 
-     "max_steps_train": 6300,
-     "max_steps_val": 6300,
-     "max_steps_test": 6300,
+    # --- Parameters for OptimizerPlugin ---
+    "hyperparameter_optimization_mode": False, 
+    "run_hyperparameter_optimization": True, 
+    "population_size": 10,
+    "n_generations": 5,
+    "cxpb": 0.6,
+    "mutpb": 0.3,
+    "hyperparameter_bounds": {
+        "latent_dim": (8, 64), 
+        "batch_size": (16, 128), 
+    },
+    "optimizer_n_samples_per_eval": 1000, 
+    "optimizer_start_datetime": None, 
 
-     # Output paths
+    # General execution parameters
+    "random_seed": 42,
+    "num_synthetic_samples_to_generate": 0, 
+    "start_datetime": None, 
     "output_file": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/results/phase_4_2/normalized_d4_25200_synthetic_50400_prepended.csv",
     "synthetic_data_output_file": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/results/phase_4_2/generated_full_synthetic_data.csv",
     "metrics_file": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/results/phase_4_2/normalized_d4_25200_synthetic_50400_metrics.json",
-
-    # Optimizer parameters
-    "latent_dim_range": [8, 64],
-    "iterations": 10,
-
-    # Remote config & logging
-    "remote_log": None,
-    "remote_load_config": None,
-    "remote_save_config": None,
-    "username": None,
-    "password": None,
-
-    # Local config persistence
-    "load_config": None,
     "save_config": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/results/phase_4_2/config_out.json",
     "save_log": "/home/harveybc/Documents/GitHub/synthetic-datagen/examples/results/phase_4_2/debug_out.json",
     "quiet_mode": False,
-    "run_hyperparameter_optimization": True, # ADD THIS LINE
+    "datetime_col_name": "DATE_TIME",
+    "target_column_order": [],
+    "num_base_features_generated": 6,
+    "preprocessor_plugin": "stl_preprocessor",
+    "gan_training_mode": False
 }
