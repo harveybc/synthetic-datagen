@@ -24,7 +24,6 @@ import zipfile # For checking .keras file format (zip)
 class GeneratorPlugin:
     # Parámetros configurables por defecto
     plugin_params = {
-        "sequential_model_file": None,  # Ruta al modelo generador secuencial Keras (decoder)
         "decoder_input_window_size": 144, # Window size expected by the decoder's x_window input
         "full_feature_names_ordered": [], # List of all 45 feature names in order from normalized_d2.csv
         "decoder_output_feature_names": [], # Features directly output by the Keras decoder model
