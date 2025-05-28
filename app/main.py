@@ -162,9 +162,8 @@ def main():
         generator_plugin.set_params(**config)
 
         # --- Inferir latent_dim desde el decoder y actualizar feeder_plugin ---
-        decoder_model = getattr(generator_plugin, "sequential_model", None) # Changed attribute name
+        decoder_model = getattr(generator_plugin, "sequential_model", None) 
         if decoder_model is None:
-            # Try "model" as a fallback if "sequential_model" is not found
             decoder_model = getattr(generator_plugin, "model", None)
             if decoder_model is None:
                 raise RuntimeError("GeneratorPlugin must expose attribute 'sequential_model' or 'model'.")
@@ -172,46 +171,45 @@ def main():
                 print("DEBUG main.py: Found decoder model under attribute 'model'.")
         else:
             print("DEBUG main.py: Found decoder model under attribute 'sequential_model'.")
-
         
-        # Ensure Keras model inputs are inspectable
         if not hasattr(decoder_model, 'inputs') or not decoder_model.inputs:
             raise RuntimeError(f"Decoder model '{type(decoder_model).__name__}' does not have inspectable 'inputs' attribute or it's empty.")
 
-        decoder_inputs = decoder_model.inputs # List of Keras Tensors
-        decoder_input_names = [inp.name.split(':')[0] for inp in decoder_inputs] # Get base names like 'input_latent_z'
+        decoder_inputs = decoder_model.inputs 
+        decoder_input_names = [inp.name.split(':')[0] for inp in decoder_inputs] 
         
         latent_input_name_from_config = generator_plugin.params.get("decoder_input_name_latent")
         if not latent_input_name_from_config:
             raise ValueError("GeneratorPlugin config missing 'decoder_input_name_latent'.")
 
-        inferred_latent_dim = None
+        inferred_latent_shape = None # Will be a tuple (seq_len, features)
         latent_input_found = False
         for i, input_tensor in enumerate(decoder_inputs):
-            # Keras input names might have ":0" suffix, so check startswith or exact match after split
             input_layer_name = input_tensor.name.split(':')[0]
             if input_layer_name == latent_input_name_from_config:
-                # input_tensor.shape might be a tuple (e.g., (None, 16)) or a TensorShape.
-                # Convert to list to handle both cases for accessing elements.
-                shape_list = list(input_tensor.shape) 
-                if len(shape_list) >= 2 and shape_list[-1] is not None:
-                    inferred_latent_dim = shape_list[-1]
+                shape_list = list(input_tensor.shape) # e.g. [None, 18, 32]
+                if len(shape_list) == 3 and shape_list[1] is not None and shape_list[2] is not None:
+                    inferred_latent_shape = (shape_list[1], shape_list[2]) # (seq_len, features)
                     latent_input_found = True
-                    print(f"DEBUG main.py: Found latent input '{latent_input_name_from_config}' with original shape {input_tensor.shape} (processed as list: {shape_list}). Inferred latent_dim: {inferred_latent_dim}")
+                    print(f"DEBUG main.py: Found latent input '{latent_input_name_from_config}' with original shape {input_tensor.shape}. Inferred latent_shape: {inferred_latent_shape}")
                     break
                 else:
-                    print(f"DEBUG main.py: Latent input '{latent_input_name_from_config}' found, but original shape {input_tensor.shape} (processed as list: {shape_list}) is not as expected for dim inference.")
+                    print(f"DEBUG main.py: Latent input '{latent_input_name_from_config}' found, but original shape {input_tensor.shape} (list: {shape_list}) is not 3D with defined sequence length and features for shape inference.")
         
         if not latent_input_found:
             raise RuntimeError(f"Could not find input layer named '{latent_input_name_from_config}' in decoder model. Available inputs: {decoder_input_names}")
-        if inferred_latent_dim is None:
-            raise RuntimeError(f"Could not determine a valid inferred latent dimension for '{latent_input_name_from_config}'.")
+        if inferred_latent_shape is None:
+            raise RuntimeError(f"Could not determine a valid inferred latent shape for '{latent_input_name_from_config}'. Expected 3D shape like (None, seq_len, features).")
 
-        print(f"DEBUG main.py: Setting FeederPlugin latent_dim to: {inferred_latent_dim}")
-        feeder_plugin.set_params(latent_dim=int(inferred_latent_dim))
-        # -------------------------------------------------------------------------------
+        print(f"DEBUG main.py: Setting FeederPlugin latent_shape to: {inferred_latent_shape}")
+        # Pass the tuple (seq_len, features)
+        feeder_plugin.set_params(latent_shape=list(inferred_latent_shape)) # Pass as list as per FeederPlugin's type hints/usage
+        # Update the main config as well, so OptimizerPlugin sees the correct base if it doesn't tune it
+        config['latent_shape'] = list(inferred_latent_shape)
+        # If optimizer tunes 'latent_dim' (feature part), FeederPlugin's set_params will handle it.
     except Exception as e:
         print(f"Failed to load or initialize Generator Plugin '{plugin_name}': {e}")
+        traceback.print_exc() # Add traceback for better debugging
         sys.exit(1)
 
     # Selección del plugin Evaluator

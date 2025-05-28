@@ -526,23 +526,26 @@ class GeneratorPlugin:
 
         for t in range(sequence_length_T):
             feeder_step_output = feeder_outputs_sequence[t]
-            zt = feeder_step_output["Z"]                           
+            zt_original = feeder_step_output["Z"] # Shape (latent_seq_len, latent_features)
             
-            # conditional_data_t must be prepared by FeederPlugin to match CVAE's input_conditions_t layer
-            # It should contain scaled date features (day_of_month, hour_of_day, day_of_week) 
-            # and scaled fundamental features (S&P500_Close, vix_close) in the correct order.
-            conditional_data_t = feeder_step_output["conditional_data"] # Shape (1, num_total_conditions)
+            # Expand zt to (1, latent_seq_len, latent_features) for batch input
+            if zt_original.ndim == 2:
+                zt = np.expand_dims(zt_original, axis=0)
+            elif zt_original.ndim == 3 and zt_original.shape[0] == 1: # Already has batch dim
+                zt = zt_original
+            else:
+                raise ValueError(f"Unexpected shape for zt from Feeder: {zt_original.shape}. Expected 2D (seq_len, features) or 3D (1, seq_len, features).")
+            
+            conditional_data_t = feeder_step_output["conditional_data"] 
             if conditional_data_t.ndim == 1: conditional_data_t = np.expand_dims(conditional_data_t, axis=0)
 
-            # context_h_t must be prepared by FeederPlugin to match CVAE's input_context_h layer
-            context_h_t = feeder_step_output.get("context_h", np.zeros((1,1))) # Default if not provided
+            context_h_t = feeder_step_output.get("context_h", np.zeros((1,1))) 
             if context_h_t.ndim == 1: context_h_t = np.expand_dims(context_h_t, axis=0)
-
 
             decoder_input_x_window_t_expanded = np.expand_dims(current_input_feature_window, axis=0)
 
             decoder_inputs = {
-                self.params["decoder_input_name_latent"]: zt,
+                self.params["decoder_input_name_latent"]: zt, # Now should be (1, seq_len, features)
                 self.params["decoder_input_name_window"]: decoder_input_x_window_t_expanded,
                 self.params["decoder_input_name_conditions"]: conditional_data_t,
                 self.params["decoder_input_name_context"]: context_h_t

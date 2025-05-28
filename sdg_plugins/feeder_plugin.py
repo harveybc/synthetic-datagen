@@ -22,7 +22,7 @@ import pandas as pd # Added for datetime operations
 
 class FeederPlugin:
     plugin_params = {
-        "latent_dim": 16,
+        "latent_shape": [18, 32], # Default shape (sequence_length, features)
         "random_seed": None,
         "sampling_method": "standard_normal", # Options: "standard_normal", "from_encoder"
         "encoder_sampling_technique": "direct", # Options for "from_encoder": "direct", "kde", "copula"
@@ -41,7 +41,7 @@ class FeederPlugin:
         "copula_kde_bw_method": None,
     }
     plugin_debug_vars = [
-        "latent_dim", "random_seed", "sampling_method", 
+        "latent_shape", "random_seed", "sampling_method", 
         "encoder_sampling_technique", "encoder_model_file", "real_data_file", 
         "feature_columns_for_encoder", "datetime_col_in_real_data",
         "date_feature_names_for_conditioning", "fundamental_feature_names_for_conditioning",
@@ -54,17 +54,17 @@ class FeederPlugin:
             raise ValueError("La configuración ('config') es requerida.")
         self.params = self.plugin_params.copy()
         
-        # Initialize encoder state attributes to ensure they exist even if not fully populated yet
+        # Initialize encoder state attributes
         self._encoder = None
-        self._empirical_z_means = None 
-        self._empirical_z_log_vars = None
+        self._empirical_z_means: Optional[np.ndarray] = None 
+        self._empirical_z_log_vars: Optional[np.ndarray] = None
         self._joint_kde = None 
         self._marginal_kdes: List[gaussian_kde] = [] 
         self._copula_spearman_corr = None 
         self._real_datetimes_pd_series: Optional[pd.Series] = None
         self._real_fundamental_features_df_scaled: Optional[pd.DataFrame] = None
 
-        self.set_params(**config) # This will now handle all necessary loading
+        self.set_params(**config) 
 
         if self.params.get("random_seed") is not None:
             np.random.seed(self.params["random_seed"])
@@ -124,9 +124,8 @@ class FeederPlugin:
 
     def _load_and_process_for_encoder_mode(self):
         """
-        Loads encoder (if sampling_method='from_encoder'), processes real data CSV to extract
-        datetimes, fundamental features (assumed scaled), and features for the encoder.
-        Fits KDE/Copula structures if needed for Z sampling.
+        Loads encoder, processes real data, and fits structures for Z sampling.
+        Handles 3D latent spaces from the encoder.
         """
         encoder_path = self.params.get("encoder_model_file")
         data_path = self.params.get("real_data_file")
@@ -192,94 +191,59 @@ class FeederPlugin:
                 raise RuntimeError(f"FeederPlugin: Failed to load encoder model from '{encoder_path}'. Error: {e}")
 
             try:
-                # Select only the specified columns for the encoder input
                 real_data_for_encoder = df_real_data_full[encoder_feature_cols].astype(np.float32).values
-                if real_data_for_encoder.ndim == 1: # If only one feature column selected
+                if real_data_for_encoder.ndim == 1: 
                     real_data_for_encoder = real_data_for_encoder.reshape(-1,1)
 
                 print(f"FeederPlugin: Predicting with encoder using data of shape {real_data_for_encoder.shape}")
                 encoded_outputs = self._encoder.predict(real_data_for_encoder)
-                if not (isinstance(encoded_outputs, list) and len(encoded_outputs) >= 2): # Encoder might output more than z_mean, z_log_var
+                if not (isinstance(encoded_outputs, list) and len(encoded_outputs) >= 2):
                     raise ValueError("FeederPlugin: Encoder output must be a list of at least two elements [z_mean, z_log_var, ...].")
                 
                 z_mean_array, z_log_var_array = encoded_outputs[0], encoded_outputs[1]
 
-                # Store also context vectors if encoder provides them and strategy is to sample them
-                # if self.params.get("context_vector_strategy") == "sample_from_real_context" and len(encoded_outputs) >= 4:
-                #    self._real_context_vectors_h_means = encoded_outputs[2]
-                #    self._real_context_vectors_h_log_vars = encoded_outputs[3]
+                # Ensure z_mean_array and z_log_var_array are 3D
+                if z_mean_array.ndim != 3 or z_log_var_array.ndim != 3:
+                    raise ValueError(
+                        f"FeederPlugin: Encoder 'z_mean' and 'z_log_var' must be 3D (samples, seq_len, features). "
+                        f"Got z_mean shape: {z_mean_array.shape}, z_log_var shape: {z_log_var_array.shape}"
+                    )
 
-
-                if z_mean_array.shape[1] != self.params.get("latent_dim"):
-                    current_latent_dim_from_encoder = z_mean_array.shape[1]
-                    # Optionally, update self.params["latent_dim"] or just use the encoder's dim internally
-                    print(f"FeederPlugin: Warning - Encoder z_mean latent dim ({current_latent_dim_from_encoder}) "
-                          f"mismatches configured 'latent_dim' ({self.params.get('latent_dim')}). Using encoder's dimension for Z sampling.")
-                    # self.params["latent_dim"] = current_latent_dim_from_encoder # Or handle this mismatch as error
+                expected_latent_shape = tuple(self.params.get("latent_shape", [0,0])) # (seq_len, features)
+                if (z_mean_array.shape[1] != expected_latent_shape[0] or
+                    z_mean_array.shape[2] != expected_latent_shape[1]):
+                    current_encoder_shape = (z_mean_array.shape[1], z_mean_array.shape[2])
+                    print(f"FeederPlugin: Warning - Encoder latent shape {current_encoder_shape} "
+                          f"mismatches configured 'latent_shape' {expected_latent_shape}. "
+                          f"Using encoder's shape: {current_encoder_shape} for Z sampling.")
+                    self.params["latent_shape"] = list(current_encoder_shape)
                 
                 if z_log_var_array.shape != z_mean_array.shape:
                     raise ValueError("FeederPlugin: z_mean and z_log_var shapes mismatch from encoder.")
 
-                self._empirical_z_means = z_mean_array
-                self._empirical_z_log_vars = z_log_var_array
+                self._empirical_z_means = z_mean_array # Should be (num_samples, seq_len, features)
+                self._empirical_z_log_vars = z_log_var_array # Should be (num_samples, seq_len, features)
                 
-                joint_empirical_data = np.hstack((self._empirical_z_means, self._empirical_z_log_vars))
-                num_samples, total_dims = joint_empirical_data.shape
+                num_samples = self._empirical_z_means.shape[0]
 
                 if num_samples <= 1:
-                    print("FeederPlugin: Warning - Not enough empirical samples (<2) from encoder to fit KDE or Copula. 'direct' sampling will be used if those techniques are selected.")
+                    print("FeederPlugin: Warning - Not enough empirical samples (<2) from encoder. 'direct' sampling will be used.")
                     return 
 
-                if technique == "kde":
-                    if num_samples < 2 * total_dims : 
-                        print(f"FeederPlugin: Warning (KDE) - Low sample count ({num_samples}) vs dim ({total_dims}). KDE might be unstable.")
-                    print(f"FeederPlugin: Fitting joint KDE on {num_samples} samples of dimension {total_dims}...")
-                    self._joint_kde = gaussian_kde(joint_empirical_data.T)
-                    print("FeederPlugin: Joint KDE fitting complete.")
-                
-                elif technique == "copula":
-                    print(f"FeederPlugin: Fitting Gaussian Copula for {num_samples} samples of dimension {total_dims}...")
-                    self._marginal_kdes = []
-                    for i in range(total_dims):
-                        marginal_data = joint_empirical_data[:, i]
-                        if len(np.unique(marginal_data)) < 2 :
-                             print(f"FeederPlugin: Warning (Copula) - Marginal dimension {i} is constant. Using a special handler for its PPF.")
-                             const_val = marginal_data[0]
-                             class ConstantKDE: 
-                                 def __init__(self, val): self.val = val
-                                 def ppf(self, q): return np.full_like(q, self.val)
-                                 def resample(self, size): return np.full((1,size), self.val) 
-                                 def evaluate(self, points): 
-                                     return np.where(points == self.val, np.inf, 0)
-                             self._marginal_kdes.append(ConstantKDE(const_val))
-                        else:
-                             self._marginal_kdes.append(gaussian_kde(marginal_data, bw_method=copula_bw_method))
-
-                    if num_samples > 1 and total_dims > 0:
-                        if total_dims == 1:
-                            spearman_corr_matrix = np.array([[1.0]])
-                        else:
-                            spearman_corr_matrix, _ = spearmanr(joint_empirical_data, axis=0, nan_policy='propagate')
-                        
-                        if np.isnan(spearman_corr_matrix).any():
-                            print("FeederPlugin: Warning (Copula) - NaNs in Spearman matrix. Setting NaNs to 0, diagonal to 1.")
-                            spearman_corr_matrix = np.nan_to_num(spearman_corr_matrix, nan=0.0)
-                            np.fill_diagonal(spearman_corr_matrix, 1.0)
-                        
-                        self._copula_spearman_corr = self._find_nearest_psd(spearman_corr_matrix)
-                    elif total_dims > 0 : 
-                        self._copula_spearman_corr = np.eye(total_dims)
-                    else: 
-                        self._copula_spearman_corr = np.array([[]]) 
-
-                    print("FeederPlugin: Gaussian Copula fitting complete.")
+                if technique in ["kde", "copula"]:
+                    # Fitting KDE/Copula on 3D (per sample) latent codes is complex and
+                    # might not preserve sequence structure well if simply flattened.
+                    # User comment "generated totally correctly, not randomly" suggests direct use of learned sequences.
+                    print(f"FeederPlugin: Warning - '{technique}' sampling for 3D latent spaces is complex. "
+                          "Consider using 'direct' sampling to preserve learned sequence structures from the encoder. "
+                          "Falling back to 'direct' sampling for now.")
+                    self.params["encoder_sampling_technique"] = "direct" # Override to direct
                 
             except Exception as e:
-                self._invalidate_encoder_state() # Clear partially loaded state
-                raise RuntimeError(f"FeederPlugin: Error during encoder processing or KDE/Copula fitting. Error: {e}")
+                self._invalidate_encoder_state() 
+                raise RuntimeError(f"FeederPlugin: Error durante el procesamiento del encoder. Error: {e}")
 
     def set_params(self, **kwargs):
-        # Store old values for comparison to see if re-initialization is needed
         old_method = self.params.get("sampling_method")
         old_encoder_file = self.params.get("encoder_model_file")
         old_data_file = self.params.get("real_data_file")
@@ -288,23 +252,32 @@ class FeederPlugin:
         old_encoder_features = self.params.get("feature_columns_for_encoder")
         old_fundamental_features = self.params.get("fundamental_feature_names_for_conditioning")
         old_datetime_col = self.params.get("datetime_col_in_real_data")
-        old_latent_dim = self.params.get("latent_dim") # For checking if latent_dim itself changed
+        old_latent_shape = list(self.params.get("latent_shape", [0,0])) # Make a copy
 
         # Update self.params using kwargs, handling prefixed keys
         for param_key_short in self.plugin_params.keys():
             if param_key_short in kwargs:
                 self.params[param_key_short] = kwargs[param_key_short]
             else:
-                # Assumes a common prefix like "feeder_"
                 potential_prefixed_key = f"feeder_{param_key_short}" 
                 if potential_prefixed_key in kwargs:
                     self.params[param_key_short] = kwargs[potential_prefixed_key]
         
-        # Also directly update any non-prefixed keys from kwargs that might be tuned (e.g. latent_dim from optimizer)
-        # This ensures hp_for_eval keys like 'latent_dim' correctly update self.params
-        for key_from_kwargs, value_from_kwargs in kwargs.items():
-            if key_from_kwargs in self.plugin_params: # If it's a direct short name
-                 self.params[key_from_kwargs] = value_from_kwargs
+        # Handle 'latent_dim' from optimizer potentially overriding the feature part of 'latent_shape'
+        if 'latent_dim' in kwargs and isinstance(kwargs['latent_dim'], int):
+            current_shape = list(self.params.get('latent_shape', [0,0])) # Get current or default
+            if len(current_shape) == 2:
+                print(f"FeederPlugin: Updating latent_shape feature count from 'latent_dim'={kwargs['latent_dim']}. Old shape: {current_shape}")
+                current_shape[1] = kwargs['latent_dim']
+                self.params['latent_shape'] = current_shape
+            else:
+                print(f"FeederPlugin: Warning - 'latent_dim' provided, but current 'latent_shape' ({current_shape}) is not 2D. Cannot update feature count.")
+
+        # Ensure latent_shape is a list of two integers
+        ls = self.params.get("latent_shape")
+        if not (isinstance(ls, (list, tuple)) and len(ls) == 2 and all(isinstance(x, int) for x in ls)):
+            print(f"FeederPlugin: Warning - Invalid 'latent_shape' ({ls}). Resetting to default [18,32].")
+            self.params["latent_shape"] = [18, 32]
 
 
         new_method = self.params.get("sampling_method")
@@ -315,7 +288,7 @@ class FeederPlugin:
         new_encoder_features = self.params.get("feature_columns_for_encoder")
         new_fundamental_features = self.params.get("fundamental_feature_names_for_conditioning")
         new_datetime_col = self.params.get("datetime_col_in_real_data")
-        new_latent_dim = self.params.get("latent_dim")
+        new_latent_shape = list(self.params.get("latent_shape", [0,0]))
 
 
         reinitialize_encoder_related = False
@@ -326,14 +299,16 @@ class FeederPlugin:
                 old_encoder_features != new_encoder_features or
                 old_technique != new_technique or
                 (new_technique == "copula" and old_copula_bw_method != new_copula_bw_method) or
-                old_latent_dim != new_latent_dim # If latent_dim changed, VAE output shape might change
+                old_latent_shape != new_latent_shape # Compare shapes
                 ):
                 reinitialize_encoder_related = True
-            elif new_technique == "copula" and (self._copula_spearman_corr is None or not self._marginal_kdes):
-                reinitialize_encoder_related = True
-            elif new_technique == "kde" and self._joint_kde is None:
-                reinitialize_encoder_related = True
-            elif self._empirical_z_means is None: # If not loaded yet
+            elif new_technique == "copula" and (self._copula_spearman_corr is None or not self._marginal_kdes) and self._empirical_z_means is not None and self._empirical_z_means.ndim ==3 : # Copula for 3D not implemented
+                print("FeederPlugin: Copula for 3D latent space not implemented, will use direct.")
+                reinitialize_encoder_related = True # To ensure _load_and_process sets technique to direct
+            elif new_technique == "kde" and self._joint_kde is None and self._empirical_z_means is not None and self._empirical_z_means.ndim == 3: # KDE for 3D not implemented
+                print("FeederPlugin: KDE for 3D latent space not implemented, will use direct.")
+                reinitialize_encoder_related = True # To ensure _load_and_process sets technique to direct
+            elif self._empirical_z_means is None: 
                 reinitialize_encoder_related = True
 
         elif old_method == "from_encoder" and new_method != "from_encoder":
@@ -349,7 +324,7 @@ class FeederPlugin:
             reinitialize_fundamentals = True
         
         if reinitialize_encoder_related or reinitialize_fundamentals:
-            if self.params.get("real_data_file"): 
+            if self.params.get("real_data_file") or (new_method == "from_encoder" and self.params.get("encoder_model_file")):
                 try:
                     print("FeederPlugin: Re-initializing data due to parameter change.")
                     self._load_and_process_for_encoder_mode()
@@ -357,7 +332,6 @@ class FeederPlugin:
                     print(f"FeederPlugin: Error during re-initialization in set_params: {e}")
                     self._invalidate_encoder_state() 
             else: 
-                # If no real_data_file, but was needed, invalidate state.
                 if new_method == "from_encoder" or len(new_fundamental_features) > 0:
                     print("FeederPlugin: Warning - 'real_data_file' not provided, but needed for current settings. Clearing related state.")
                 self._invalidate_encoder_state()
@@ -427,114 +401,66 @@ class FeederPlugin:
         if len(target_datetimes) != n_ticks_to_generate:
             raise ValueError("Length of target_datetimes must match n_ticks_to_generate.")
 
-        latent_dim_config = self.params.get("latent_dim")
+        latent_s = self.params.get("latent_shape") # Should be [seq_len, features]
+        if not (isinstance(latent_s, (list, tuple)) and len(latent_s) == 2):
+            raise ValueError(f"Invalid latent_shape configuration: {latent_s}. Expected [sequence_length, features].")
+        latent_seq_len, latent_features = latent_s[0], latent_s[1]
+
         method = self.params.get("sampling_method")
-        technique = self.params.get("encoder_sampling_technique")
+        technique = self.params.get("encoder_sampling_technique") # May have been forced to 'direct'
         context_dim = self.params.get("context_vector_dim")
         context_strategy = self.params.get("context_vector_strategy")
-
-        # Determine actual latent_dim for Z sampling
-        if method == "from_encoder" and self._empirical_z_means is not None:
-            current_latent_dim_for_z = self._empirical_z_means.shape[1]
-            if current_latent_dim_for_z == 0 and latent_dim_config > 0: # Encoder produced 0-dim, but config expects >0
-                 print(f"FeederPlugin: Warning - Encoder produced 0-dim latent space, but config latent_dim is {latent_dim_config}. Using config dim for Z if standard_normal, or erroring for encoder methods if Z is truly 0-dim.")
-                 current_latent_dim_for_z = latent_dim_config # Fallback to config for standard_normal
-            elif current_latent_dim_for_z != latent_dim_config and latent_dim_config > 0:
-                 print(f"FeederPlugin: Info - Encoder latent dim ({current_latent_dim_for_z}) differs from config ({latent_dim_config}). Using encoder's dim for Z sampling.")
-        else: # standard_normal or encoder data not loaded
-            current_latent_dim_for_z = latent_dim_config
         
-        if current_latent_dim_for_z <= 0 and n_ticks_to_generate > 0:
-            raise ValueError(f"FeederPlugin: Effective latent dimension for Z is {current_latent_dim_for_z}, must be positive to generate samples.")
+        if latent_features <= 0 or latent_seq_len <=0 and n_ticks_to_generate > 0 :
+            raise ValueError(f"FeederPlugin: Effective latent_shape is ({latent_seq_len}, {latent_features}), must be positive to generate samples.")
 
-        # --- Z Sampling (similar to existing logic, but for n_ticks_to_generate) ---
-        Z_samples = np.empty((n_ticks_to_generate, current_latent_dim_for_z), dtype=np.float32)
+        Z_samples = np.empty((n_ticks_to_generate, latent_seq_len, latent_features), dtype=np.float32)
 
         if method == "from_encoder":
-            is_copula_ready = technique == "copula" and self._copula_spearman_corr is not None and self._marginal_kdes
-            is_kde_ready = technique == "kde" and self._joint_kde is not None
-            is_direct_ready = self._empirical_z_means is not None
-
-            if not is_direct_ready:
-                raise RuntimeError("FeederPlugin: 'from_encoder' selected, but empirical z_mean/z_log_var could not be loaded/processed.")
-            if technique == "copula" and not is_copula_ready:
-                 print("FeederPlugin: Warning (generate) - Copula technique selected but structures not fitted. Falling back to 'direct' sampling.")
-            if technique == "kde" and not is_kde_ready:
-                 print("FeederPlugin: Warning (generate) - KDE technique selected but KDE not fitted. Falling back to 'direct' sampling.")
-
-            sampled_z_means_batch = None
-            sampled_z_log_vars_batch = None
-            total_dims_for_joint_sampling = 2 * current_latent_dim_for_z
-
-            if technique == "copula" and is_copula_ready:
-                mean_vec = np.zeros(self._copula_spearman_corr.shape[0])
-                try:
-                    mvn_samples = np.random.multivariate_normal(mean_vec, self._copula_spearman_corr, size=n_ticks_to_generate)
-                except np.linalg.LinAlgError:
-                    reg_corr = self._copula_spearman_corr + np.eye(self._copula_spearman_corr.shape[0]) * 1e-6
-                    reg_corr = (reg_corr + reg_corr.T) / 2.0
-                    mvn_samples = np.random.multivariate_normal(mean_vec, reg_corr, size=n_ticks_to_generate)
-                
-                uniform_samples = norm.cdf(mvn_samples)
-                original_scale_samples = np.empty_like(uniform_samples)
-                for i in range(total_dims_for_joint_sampling):
-                    original_scale_samples[:, i] = self._marginal_kdes[i].ppf(uniform_samples[:, i])
-                
-                sampled_z_means_batch = original_scale_samples[:, :current_latent_dim_for_z]
-                sampled_z_log_vars_batch = original_scale_samples[:, current_latent_dim_for_z:total_dims_for_joint_sampling]
+            if self._empirical_z_means is None or self._empirical_z_log_vars is None:
+                raise RuntimeError("FeederPlugin: 'from_encoder' selected, but empirical z_mean/z_log_var are not loaded. Call set_params or ensure config is correct.")
+            if self._empirical_z_means.ndim != 3 or self._empirical_z_log_vars.ndim != 3:
+                 raise RuntimeError(f"FeederPlugin: Empirical z_mean/z_log_var must be 3D for sequential latent space. Got shapes: {self._empirical_z_means.shape}, {self._empirical_z_log_vars.shape}")
             
-            elif technique == "kde" and is_kde_ready:
-                kde_samples_transposed = self._joint_kde.resample(size=n_ticks_to_generate)
-                kde_samples = kde_samples_transposed.T
-                sampled_z_means_batch = kde_samples[:, :current_latent_dim_for_z]
-                sampled_z_log_vars_batch = kde_samples[:, current_latent_dim_for_z:total_dims_for_joint_sampling]
+            # For 3D latent spaces, 'direct' sampling of entire sequences is the primary supported method.
+            # KDE/Copula for 3D sequences is complex and not implemented here.
+            if technique not in ["direct"]:
+                print(f"FeederPlugin: Warning (generate) - Encoder technique '{technique}' for 3D latent space is not fully supported. Using 'direct' sampling.")
             
-            else: # Default to 'direct' or fallback
-                num_available_empirical = self._empirical_z_means.shape[0]
-                indices = np.random.choice(num_available_empirical, size=n_ticks_to_generate, replace=True)
-                sampled_z_means_batch = self._empirical_z_means[indices]
-                sampled_z_log_vars_batch = self._empirical_z_log_vars[indices]
+            num_available_empirical = self._empirical_z_means.shape[0]
+            indices = np.random.choice(num_available_empirical, size=n_ticks_to_generate, replace=True)
+            
+            sampled_z_means_batch = self._empirical_z_means[indices] # Shape: (n_ticks, seq_len, features)
+            sampled_z_log_vars_batch = self._empirical_z_log_vars[indices] # Shape: (n_ticks, seq_len, features)
 
-            epsilon_batch = np.random.normal(loc=0.0, scale=1.0, size=(n_ticks_to_generate, current_latent_dim_for_z))
+            epsilon_batch = np.random.normal(loc=0.0, scale=1.0, size=(n_ticks_to_generate, latent_seq_len, latent_features))
             Z_samples = sampled_z_means_batch + np.exp(0.5 * sampled_z_log_vars_batch) * epsilon_batch
         
         elif method == "standard_normal":
-            Z_samples = np.random.normal(loc=0.0, scale=1.0, size=(n_ticks_to_generate, current_latent_dim_for_z))
+            Z_samples = np.random.normal(loc=0.0, scale=1.0, size=(n_ticks_to_generate, latent_seq_len, latent_features))
         else:
             raise ValueError(f"FeederPlugin: Unknown sampling_method '{method}'.")
 
-        # --- Prepare output list of dictionaries ---
         output_sequence = []
         for i in range(n_ticks_to_generate):
             datetime_obj = target_datetimes.iloc[i]
+            z_tick = Z_samples[i, :, :] # Shape (latent_seq_len, latent_features)
 
-            # Get Z for the current tick
-            z_tick = Z_samples[i, :].reshape(1, -1) # Ensure shape (1, latent_dim)
-
-            # Get scaled date features
-            scaled_date_features_tick = self._get_scaled_date_features(datetime_obj) # Shape (num_date_features*2,)
-
-            # Get scaled fundamental features
-            scaled_fundamental_features_tick = self._get_scaled_fundamental_features(datetime_obj) # Shape (num_fundamental_features,)
+            scaled_date_features_tick = self._get_scaled_date_features(datetime_obj)
+            scaled_fundamental_features_tick = self._get_scaled_fundamental_features(datetime_obj)
             
-            # Concatenate to form conditional_data for the decoder
-            # Order: date features, then fundamental features
             conditional_data_for_tick = np.concatenate(
                 [scaled_date_features_tick, scaled_fundamental_features_tick]
-            ).reshape(1, -1) # Shape (1, num_date_feats*2 + num_fund_feats)
+            ).reshape(1, -1)
 
-            # Get context_h vector
-            context_h_tick = np.zeros((1, context_dim), dtype=np.float32) # Default "zeros" strategy
-            if context_strategy == "zeros":
-                pass # Already zeros
-            # elif context_strategy == "sample_from_real_context":
-                # Implement sampling if self._real_context_vectors_h is populated
+            context_h_tick = np.zeros((1, context_dim), dtype=np.float32)
+            # ... (context_strategy logic if any) ...
 
             output_sequence.append({
-                "Z": z_tick.astype(np.float32),
+                "Z": z_tick.astype(np.float32), # Now 2D: (seq_len, features)
                 "conditional_data": conditional_data_for_tick.astype(np.float32),
                 "context_h": context_h_tick.astype(np.float32),
-                "datetimes": datetime_obj # Store the original pandas Timestamp
+                "datetimes": datetime_obj
             })
             
         return output_sequence

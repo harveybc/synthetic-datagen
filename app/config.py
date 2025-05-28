@@ -32,10 +32,12 @@ DEFAULT_VALUES = {
 
      # Generation parameters
     "n_samples": 6300,  # Retained for compatibility, but main.py now uses num_synthetic_samples_to_generate
-    "latent_dim": 16, # FeederPlugin's latent_dim, main.py might override it based on decoder
+    # "latent_dim": 16, # FeederPlugin's latent_dim, main.py might override it based on decoder
+    "latent_shape": [18, 32], # NEW: (sequence_length, features) for FeederPlugin's Z output. Based on error: (18, 32)
     "batch_size": 32, # May not be directly used by new sequential generator logic
     
     # --- Parameters for FeederPlugin ---
+    # Ensure latent_shape is used here if it's a primary config for Feeder
     "feeder_sampling_method": "standard_normal", # "standard_normal", "from_encoder"
     "feeder_encoder_sampling_technique": "direct", # "direct", "kde", "copula"
     "encoder_model_file": "examples/results/phase_4_2/phase_4_2_cnn_small_encoder_model.h5.keras", # Used by Feeder if method is "from_encoder"
