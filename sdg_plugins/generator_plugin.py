@@ -689,6 +689,31 @@ class GeneratorPlugin:
                         #    current_tick_assembled_features[i] = np.random.uniform(0.01, 0.1) 
                     # print(f"GeneratorPlugin: Warning - Feature '{feat_name}' was not generated. Filled with placeholder: {current_tick_assembled_features[i]:.4f}")
 
+            # Example: Step 1.5 - Fill historical tick data based on generated history
+            # This assumes your main generation step aligns with the finest tick frequency or can be used.
+            # This is a simplified example and needs robust history management.
+            num_generated_steps = len(generated_sequence_all_features_list)
+
+            if "CLOSE_15m_tick_1" in self.feature_to_idx:
+                if num_generated_steps >= 1:
+                    # Assuming CLOSE_15m_tick_1 is the CLOSE of the previous generated step
+                    # This requires careful thought about what these tick columns *mean*
+                    # And assumes your main generation interval is, for example, 15 minutes.
+                    # If your main interval is 1 hour, this logic is wrong.
+                    idx_close = self.feature_to_idx['CLOSE']
+                    current_tick_assembled_features[self.feature_to_idx["CLOSE_15m_tick_1"]] = generated_sequence_all_features_list[-1][idx_close]
+                elif 'CLOSE' in self.feature_to_idx and not np.isnan(current_input_feature_window[-2, self.feature_to_idx['CLOSE']]):
+                    # Bootstrap from initial window if no generated history yet
+                    current_tick_assembled_features[self.feature_to_idx["CLOSE_15m_tick_1"]] = current_input_feature_window[-2, self.feature_to_idx['CLOSE']]
+                else:
+                    current_tick_assembled_features[self.feature_to_idx["CLOSE_15m_tick_1"]] = self._normalize_value(0.0, "CLOSE_15m_tick_1") # Fallback
+
+            # ... repeat for CLOSE_15m_tick_2, etc., with appropriate lags ...
+            # ... and for CLOSE_30m_tick_1, etc. ...
+
+            # This requires that 'CLOSE_15m_tick_1' etc. have entries in your normalization_params
+            # if you use _normalize_value.
+
 
             generated_sequence_all_features_list.append(current_tick_assembled_features)
 
