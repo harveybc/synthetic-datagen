@@ -309,29 +309,53 @@ class GeneratorPlugin:
                 current_tick_assembled_features[self.feature_to_idx[name]] = decoded_features_for_current_tick[i]
             
             # Fill conditional features from conditional_data_t
-            # Assumes conditional_data_t has date_conditionalFeatures then feeder_conditional_features
+            # Assumes conditional_data_t has sin/cos date features then feeder_conditional_features
             cond_input_idx = 0
-            for name in self.params["date_conditional_feature_names"]:
-                current_tick_assembled_features[self.feature_to_idx[name]] = conditional_data_t[0, cond_input_idx]
+            # Handle date conditional features (sin/cos pairs)
+            for original_date_feat_name in self.params["date_conditional_feature_names"]:
+                sin_feat_name = f"{original_date_feat_name}_sin"
+                cos_feat_name = f"{original_date_feat_name}_cos"
+
+                if sin_feat_name in self.feature_to_idx:
+                    current_tick_assembled_features[self.feature_to_idx[sin_feat_name]] = conditional_data_t[0, cond_input_idx]
+                else:
+                    print(f"GeneratorPlugin: Warning - Date feature '{sin_feat_name}' not found in feature_to_idx map.")
                 cond_input_idx += 1
+                
+                if cos_feat_name in self.feature_to_idx:
+                    current_tick_assembled_features[self.feature_to_idx[cos_feat_name]] = conditional_data_t[0, cond_input_idx]
+                else:
+                    print(f"GeneratorPlugin: Warning - Date feature '{cos_feat_name}' not found in feature_to_idx map.")
+                cond_input_idx += 1
+            
+            # Handle other feeder conditional features (e.g., fundamentals)
             for name in self.params["feeder_conditional_feature_names"]:
-                current_tick_assembled_features[self.feature_to_idx[name]] = conditional_data_t[0, cond_input_idx]
+                if name in self.feature_to_idx:
+                    current_tick_assembled_features[self.feature_to_idx[name]] = conditional_data_t[0, cond_input_idx]
+                else:
+                    print(f"GeneratorPlugin: Warning - Feeder conditional feature '{name}' not found in feature_to_idx map.")
                 cond_input_idx += 1
             
             current_ohlc_values_for_ti_dict = {
-                name: current_tick_assembled_features[self.feature_to_idx[name]]
+                name: self._denormalize_value(current_tick_assembled_features[self.feature_to_idx[name]], name)
                 for name in self.params["ohlc_feature_names"]
             }
             ohlc_history_for_ti_list.append(current_ohlc_values_for_ti_dict)
             
             if len(ohlc_history_for_ti_list) >= 1:
                 ohlc_df_for_ti_calc = pd.DataFrame(ohlc_history_for_ti_list)
-                ohlc_df_for_ti_calc.columns = self.params["ohlc_feature_names"]
+                # Columns are already denormalized from ohlc_history_for_ti_list
+                # ohlc_df_for_ti_calc.columns = self.params["ohlc_feature_names"] # Not needed if dict keys are correct
                 
-                calculated_tis_series = self._calculate_technical_indicators(ohlc_df_for_ti_calc).iloc[0]
+                calculated_tis_series_denormalized = self._calculate_technical_indicators(ohlc_df_for_ti_calc).iloc[0]
                 
                 for ti_name in self.params["ti_feature_names"]:
-                    current_tick_assembled_features[self.feature_to_idx[ti_name]] = calculated_tis_series[ti_name]
+                    denormalized_ti_val = calculated_tis_series_denormalized[ti_name]
+                    if pd.notnull(denormalized_ti_val):
+                        normalized_ti_val = self._normalize_value(denormalized_ti_val, ti_name)
+                        current_tick_assembled_features[self.feature_to_idx[ti_name]] = normalized_ti_val
+                    else:
+                        current_tick_assembled_features[self.feature_to_idx[ti_name]] = np.nan
             else:
                 for ti_name in self.params["ti_feature_names"]:
                      current_tick_assembled_features[self.feature_to_idx[ti_name]] = np.nan
