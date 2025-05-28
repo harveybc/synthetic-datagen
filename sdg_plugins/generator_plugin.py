@@ -24,6 +24,7 @@ import zipfile # For checking .keras file format (zip)
 class GeneratorPlugin:
     # Parámetros configurables por defecto
     plugin_params = {
+        "sequential_model_file": None, # ADD THIS LINE BACK
         "decoder_input_window_size": 144, # Window size expected by the decoder's x_window input
         "full_feature_names_ordered": [], # List of all 45 feature names in order from normalized_d2.csv
         "decoder_output_feature_names": [], # Features directly output by the Keras decoder model
@@ -92,6 +93,9 @@ class GeneratorPlugin:
         self.feature_to_idx = {name: i for i, name in enumerate(self.params["full_feature_names_ordered"])}
         self.num_all_features = len(self.params["full_feature_names_ordered"])
         self._validate_feature_name_consistency()
+        # ADDED: Initialize normalization parameters
+        self.normalization_params = self._load_normalization_params(self.params.get("generator_normalization_params_file"))
+
 
     def _load_model_from_path(self, model_path: str):
         """
@@ -191,6 +195,126 @@ class GeneratorPlugin:
                 self._validate_feature_name_consistency()
             elif old_full_feature_names: # It became empty, which is an issue
                  raise ValueError("'full_feature_names_ordered' cannot be empty after update.")
+        
+        # ADDED: Reload normalization params if file path changes
+        new_norm_file = kwargs.get("generator_normalization_params_file", self.params.get("generator_normalization_params_file"))
+        old_norm_file = self.params.get("generator_normalization_params_file") # Get old value before potential update by loop
+        
+        # Update the param in self.params if it was in kwargs
+        if "generator_normalization_params_file" in kwargs:
+            self.params["generator_normalization_params_file"] = kwargs["generator_normalization_params_file"]
+
+        if new_norm_file != old_norm_file or (new_norm_file and self.normalization_params is None):
+            self.normalization_params = self._load_normalization_params(new_norm_file)
+
+
+    def _validate_feature_name_consistency(self):
+        """
+        Validates that all configured feature name lists are subsets of 
+        'full_feature_names_ordered' and that critical feature lists are not empty.
+        """
+        print("GeneratorPlugin: Validating feature name consistency...")
+        full_set = set(self.params.get("full_feature_names_ordered", []))
+        if not full_set:
+            raise ValueError("'full_feature_names_ordered' cannot be empty and must be configured.")
+
+        def check_subset(list_name, critical=False):
+            feature_list = self.params.get(list_name, [])
+            if critical and not feature_list:
+                raise ValueError(f"'{list_name}' is a critical parameter and cannot be empty.")
+            
+            current_set = set(feature_list)
+            if not current_set.issubset(full_set):
+                missing = current_set - full_set
+                raise ValueError(
+                    f"Features in '{list_name}' are not all present in 'full_feature_names_ordered'. "
+                    f"Missing: {missing}. Ensure '{list_name}' only contains features from "
+                    f"'full_feature_names_ordered'."
+                )
+            print(f"GeneratorPlugin: Feature list '{list_name}' validated successfully against 'full_feature_names_ordered'.")
+
+        check_subset("decoder_output_feature_names", critical=True)
+        check_subset("ohlc_feature_names", critical=True)
+        check_subset("ti_feature_names", critical=False) # Can be empty if no TIs are calculated
+        
+        # For conditional features, we also need to check their sin/cos transformed versions if applicable
+        # date_conditional_feature_names are the original names (e.g., "day_of_month")
+        # Their transformed versions (e.g., "day_of_month_sin") must be in full_feature_names_ordered
+        date_cond_original_names = self.params.get("date_conditional_feature_names", [])
+        transformed_date_cond_names = []
+        for name in date_cond_original_names:
+            transformed_date_cond_names.append(f"{name}_sin")
+            transformed_date_cond_names.append(f"{name}_cos")
+        
+        date_cond_set = set(transformed_date_cond_names)
+        if transformed_date_cond_names and not date_cond_set.issubset(full_set):
+            missing_transformed = date_cond_set - full_set
+            raise ValueError(
+                f"Transformed date conditional features (from 'date_conditional_feature_names') are not all present "
+                f"in 'full_feature_names_ordered'. Missing: {missing_transformed}. "
+                f"Ensure sin/cos versions of date features are in 'full_feature_names_ordered'."
+            )
+        if transformed_date_cond_names:
+             print(f"GeneratorPlugin: Transformed date conditional features validated successfully.")
+        
+        check_subset("feeder_conditional_feature_names", critical=False) # Can be empty
+
+        # Validate that decoder input names are set
+        for input_name_key in ["decoder_input_name_latent", "decoder_input_name_window", 
+                               "decoder_input_name_conditions", "decoder_input_name_context"]:
+            if not self.params.get(input_name_key):
+                raise ValueError(f"Decoder input name parameter '{input_name_key}' is not configured in GeneratorPlugin.params.")
+        print("GeneratorPlugin: All decoder input name parameters are configured.")
+        print("GeneratorPlugin: Feature name consistency validation complete.")
+
+    # Placeholder for _normalize_value and _denormalize_value
+    # You need to implement these based on your normalization strategy
+    # For example, using a loaded JSON file with min/max values per feature.
+
+    def _load_normalization_params(self, file_path: Optional[str]) -> Optional[Dict[str, Dict[str, float]]]:
+        if not file_path:
+            print("GeneratorPlugin: Warning - No normalization_params_file provided. Denormalization/normalization will be identity operations.")
+            return None
+        try:
+            import json
+            with open(file_path, 'r') as f:
+                params = json.load(f)
+            # Basic validation: check if it's a dict and contains 'min'/'max' for entries
+            if not isinstance(params, dict):
+                raise ValueError("Normalization params file should contain a JSON object (dictionary).")
+            for feature, values in params.items():
+                if not (isinstance(values, dict) and "min" in values and "max" in values):
+                    raise ValueError(f"Normalization params for feature '{feature}' must be a dict with 'min' and 'max' keys.")
+            print(f"GeneratorPlugin: Successfully loaded normalization parameters from {file_path}")
+            return params
+        except FileNotFoundError:
+            print(f"GeneratorPlugin: ERROR - Normalization parameters file not found: {file_path}. Denormalization/normalization will be identity operations.")
+            return None
+        except json.JSONDecodeError:
+            print(f"GeneratorPlugin: ERROR - Could not decode JSON from normalization parameters file: {file_path}. Denormalization/normalization will be identity operations.")
+            return None
+        except ValueError as ve:
+            print(f"GeneratorPlugin: ERROR - Invalid format in normalization parameters file '{file_path}': {ve}. Denormalization/normalization will be identity operations.")
+            return None
+
+
+    def _normalize_value(self, value: float, feature_name: str) -> float:
+        if self.normalization_params and feature_name in self.normalization_params:
+            params = self.normalization_params[feature_name]
+            min_val, max_val = params['min'], params['max']
+            if max_val == min_val: # Avoid division by zero if min and max are the same
+                return 0.0 if value == min_val else (value - min_val) # Or handle as per your logic, e.g., 0.5 or raise error
+            return (value - min_val) / (max_val - min_val)
+        # print(f"GeneratorPlugin: Warning - No normalization params for '{feature_name}' or params not loaded. Returning original value for normalization.")
+        return value # Identity if no params
+
+    def _denormalize_value(self, norm_value: float, feature_name: str) -> float:
+        if self.normalization_params and feature_name in self.normalization_params:
+            params = self.normalization_params[feature_name]
+            min_val, max_val = params['min'], params['max']
+            return norm_value * (max_val - min_val) + min_val
+        # print(f"GeneratorPlugin: Warning - No normalization params for '{feature_name}' or params not loaded. Returning original value for denormalization.")
+        return norm_value # Identity if no params
 
 
     def get_debug_info(self) -> Dict[str, Any]:
