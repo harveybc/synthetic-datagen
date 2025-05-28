@@ -15,6 +15,7 @@ Interfaz:
 import numpy as np
 from typing import Dict, Any, List, Optional
 from tensorflow.keras.models import load_model, Model
+import tensorflow.keras as keras # Import keras for config
 import pandas as pd # Add pandas
 import pandas_ta as ta # Add pandas-ta
 import os # For os.path.exists
@@ -24,32 +25,32 @@ import zipfile # For checking .keras file format (zip)
 class GeneratorPlugin:
     # Parámetros configurables por defecto
     plugin_params = {
-        "sequential_model_file": None, # ADD THIS LINE BACK
-        "decoder_input_window_size": 144, # Window size expected by the decoder's x_window input
-        "full_feature_names_ordered": [], # List of all 45 feature names in order from normalized_d2.csv
-        "decoder_output_feature_names": [], # Features directly output by the Keras decoder model
-        "ohlc_feature_names": ["OPEN", "HIGH", "LOW", "CLOSE"], # For TI calculation
-        "ti_feature_names": [ # Technical indicators to calculate based on normalized_d2.csv
+        "sequential_model_file": None,
+        "decoder_input_window_size": 144, 
+        "full_feature_names_ordered": [], 
+        "decoder_output_feature_names": [], 
+        "ohlc_feature_names": ["OPEN", "HIGH", "LOW", "CLOSE"], 
+        "ti_feature_names": [ 
             "RSI", "MACD", "MACD_Histogram", "MACD_Signal", "EMA",
             "Stochastic_%K", "Stochastic_%D", "ADX", "DI+", "DI-",
             "ATR", "CCI", "WilliamsR", "Momentum", "ROC"
         ],
-        "date_conditional_feature_names": ["day_of_month", "hour_of_day", "day_of_week"], # Expected from FeederPlugin
-        "feeder_conditional_feature_names": ["S&P500_Close", "vix_close"], # Expected from FeederPlugin
-        "ti_calculation_min_lookback": 200, # Min OHLC history for reliable TIs (e.g., 200-period EMA)
-        "ti_params": { # Parameters for pandas-ta, align with tech_indicator.py or pandas-ta defaults
-            "rsi_length": 14, "ema_length": 14, # pandas-ta EMA default is 10, using 14 to match common short-term
+        "date_conditional_feature_names": ["day_of_month", "hour_of_day", "day_of_week"], 
+        "feeder_conditional_feature_names": ["S&P500_Close", "vix_close"], 
+        "ti_calculation_min_lookback": 200, 
+        "ti_params": { 
+            "rsi_length": 14, "ema_length": 14, 
             "macd_fast": 12, "macd_slow": 26, "macd_signal": 9,
             "stoch_k": 14, "stoch_d": 3, "stoch_smooth_k": 3,
-            "adx_length": 14, "atr_length": 14, "cci_length": 14, # pandas-ta CCI default is 20, using 14
-            "willr_length": 14, "mom_length": 14, "roc_length": 14 # pandas-ta MOM/ROC default is 10, using 14
+            "adx_length": 14, "atr_length": 14, "cci_length": 14, 
+            "willr_length": 14, "mom_length": 14, "roc_length": 14
         },
-        "batch_size_inference": 1,   # Típicamente, la generación secuencial se hace una secuencia a la vez
-        # CRITICAL: Update these to match your Keras decoder's actual input layer names
-        "decoder_input_name_latent": "input_latent_z",         # Placeholder name
-        "decoder_input_name_window": "input_x_window",         # Placeholder name
-        "decoder_input_name_conditions": "input_conditions_t", # Placeholder name
-        "decoder_input_name_context": "input_context_h"        # Placeholder name
+        "batch_size_inference": 1,
+        "decoder_input_name_latent": "input_latent_z",
+        "decoder_input_name_window": "input_x_window",
+        "decoder_input_name_conditions": "input_conditions_t",
+        "decoder_input_name_context": "input_context_h",
+        "generator_normalization_params_file": None # ADD THIS LINE for normalization config
     }
     # Variables incluidas en el debug
     plugin_debug_vars = [
@@ -133,12 +134,25 @@ class GeneratorPlugin:
                 print(f"GeneratorPlugin: Advertencia - Error al verificar el formato ZIP para '{model_path}': {e_zip}")
         
         try:
+            # Enable unsafe deserialization for Lambda layers
+            print("GeneratorPlugin: Enabling Keras unsafe deserialization for model loading.")
+            keras.config.enable_unsafe_deserialization()
+            
             loaded_model: Model = load_model(model_path, compile=False)
+            
+            # Disable unsafe deserialization after loading
+            print("GeneratorPlugin: Disabling Keras unsafe deserialization.")
+            keras.config.disable_unsafe_deserialization()
+
             self.sequential_model = loaded_model
             self.model = loaded_model # Mantener el alias
             print(f"GeneratorPlugin: Modelo Keras cargado exitosamente desde {model_path}")
             # print(self.sequential_model.summary()) # Descomentar para depurar la estructura del modelo
         except Exception as e:
+            # Ensure unsafe deserialization is disabled in case of an error during/after load_model
+            keras.config.disable_unsafe_deserialization()
+            print("GeneratorPlugin: Keras unsafe deserialization disabled due to error or completion.")
+
             error_message = f"Error al cargar el modelo Keras desde '{model_path}'. Tipo de error: {type(e).__name__}, Mensaje: {e}"
             print(f"GeneratorPlugin: {error_message}")
             if "HDF5" in str(e) and model_path.endswith(".keras"):
