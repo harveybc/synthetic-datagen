@@ -30,13 +30,29 @@ from app.config import DEFAULT_VALUES
 from app.plugin_loader import load_plugin
 from config_merger import merge_config, process_unknown_args
 
-# Attempt to import pandas_ta, if not available, TI calculation will be skipped.
+# Debugging information
+print("--- Python sys.path from main.py ---")
+for p in sys.path:
+    print(p)
+print("--- End Python sys.path ---")
+
+print("--- Python Environment Variables from main.py ---")
+print(f"PYTHONPATH: {os.environ.get('PYTHONPATH')}")
+print(f"CONDA_PREFIX: {os.environ.get('CONDA_PREFIX')}")
+print(f"PATH: {os.environ.get('PATH')}")
+print("--- End Python Environment Variables ---")
+
+print("--- Attempting to import pandas_ta directly in main.py ---")
 try:
-    import pandas_ta as ta
-    PANDAS_TA_AVAILABLE = True
-except ImportError:
-    PANDAS_TA_AVAILABLE = False
-    print("WARNING: pandas_ta library not found. Technical indicator calculation will be skipped.")
+    import pandas_ta
+    print("Successfully imported pandas_ta in main.py")
+    print(f"pandas_ta version: {pandas_ta.version}")
+    print(f"pandas_ta location: {pandas_ta.__file__}")
+except ImportError as e:
+    print(f"Failed to import pandas_ta in main.py: {e}")
+except Exception as e:
+    print(f"An unexpected error occurred while importing pandas_ta in main.py: {e}")
+print("--- End pandas_ta import attempt ---")
 
 # Assume these are defined in your config or constants file and loaded into `config`
 # For example:
