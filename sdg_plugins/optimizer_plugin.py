@@ -115,7 +115,7 @@ class OptimizerPlugin:
         feeder_plugin: Any,
         generator_plugin: Any,
         evaluator_plugin: Any,
-        config: Dict[str, Any], # This is the main, merged config from main.py
+        config: Dict[str, Any], 
     ) -> Dict[str, Union[int, float]]:
         """
         Run genetic algorithm to find best hyperparameters.
@@ -136,12 +136,17 @@ class OptimizerPlugin:
         Dict[str, Union[int, float]]
             Best hyperparameters found.
         """
-        # Store plugins and config for access by eval_individual (if it becomes a method)
-        # or for creating copies.
         self.feeder_ref = feeder_plugin
         self.generator_ref = generator_plugin
         self.evaluator_ref = evaluator_plugin
-        self.global_config = config # Store the comprehensive config
+        self.global_config = config 
+
+        # ADD LOGGING HERE
+        logger.debug(f"OptimizerPlugin.optimize: global_config contains generator_sequential_model_file = {self.global_config.get('generator_sequential_model_file')}")
+        logger.debug(f"OptimizerPlugin.optimize: global_config contains generator_normalization_params_file = {self.global_config.get('generator_normalization_params_file')}")
+        logger.debug(f"OptimizerPlugin.optimize: global_config contains feeder_real_data_file = {self.global_config.get('feeder_real_data_file')}")
+        logger.debug(f"OptimizerPlugin.optimize: global_config contains feeder_encoder_model_file = {self.global_config.get('feeder_encoder_model_file')}")
+
 
         # Set random seed for reproducibility if provided
         seed = self.params.get("random_seed")
@@ -174,41 +179,31 @@ class OptimizerPlugin:
         # Ensure hyper_keys is not empty before proceeding
         if not hyper_keys:
             logger.error("CRITICAL: hyper_keys is empty. Cannot register attributes for DEAP. Check 'hyperparameter_bounds'.")
-            # This should ideally prevent the optimizer from even starting if no params to tune.
-            # For now, this will likely lead to an error later if not caught,
-            # but the IndexError in eval_individual would be preceded by this.
-            # Consider raising an error here:
-            # raise ValueError("hyperparameter_bounds is empty or misconfigured, no keys to optimize.")
-            pass # Allow to proceed for now to see if other errors manifest, but this is a problem.
-
+            raise ValueError("hyperparameter_bounds is empty or misconfigured, no keys to optimize.")
 
         for key, low, up in zip(hyper_keys, low_bounds, up_bounds):
             if key in int_params:
                  toolbox.register(f"attr_{key}", random.randint, int(low), int(up))
             else:
                 toolbox.register(f"attr_{key}", random.uniform, low, up)
-
-
+        
         # Individual and population registration
         # Convert the generator expression to a tuple
         attribute_functions = tuple(toolbox.__getattribute__(f"attr_{key}") for key in hyper_keys)
         
         if not attribute_functions:
             logger.error("CRITICAL: No attribute functions generated for DEAP individual. Check hyper_keys and toolbox registration.")
-            # This would also lead to empty individuals.
-            # raise ValueError("Failed to create attribute functions for DEAP individual.")
-            pass
-
+            raise ValueError("Failed to create attribute functions for DEAP individual.")
 
         toolbox.register(
             "individual",
             tools.initCycle,
             creator.Individual,
-            attribute_functions, # Pass the tuple of functions
+            attribute_functions, 
             n=1,
         )
         toolbox.register("population", tools.initRepeat, list, toolbox.individual)
-
+        
         # Evaluation function (nested function, captures variables from optimize's scope)
         def eval_individual(ind: List[Union[float, int]]) -> Tuple[float]:
             """
@@ -262,26 +257,30 @@ class OptimizerPlugin:
             
             logger.info(f"Evaluating individual with hyperparameters: {hp_for_eval}")
 
-            # Create a new configuration for this specific evaluation run
-            # Start with the global config and override with current hyperparameters
             current_eval_config = copy.deepcopy(self.global_config)
             current_eval_config.update(hp_for_eval)
 
-            # Create temporary plugin instances for this evaluation to avoid side effects
-            # This assumes plugins can be initialized with a config dict.
+            # ADD LOGGING HERE
+            logger.debug(f"eval_individual: current_eval_config contains generator_sequential_model_file = {current_eval_config.get('generator_sequential_model_file')}")
+            logger.debug(f"eval_individual: current_eval_config contains generator_normalization_params_file = {current_eval_config.get('generator_normalization_params_file')}")
+            logger.debug(f"eval_individual: current_eval_config contains feeder_real_data_file = {current_eval_config.get('feeder_real_data_file')}")
+
+
             try:
+                # Plugins are initialized with current_eval_config.
+                # Their __init__ methods call their respective set_params.
                 temp_feeder = type(self.feeder_ref)(current_eval_config)
-                temp_feeder.set_params(**current_eval_config)
+                # REMOVE: temp_feeder.set_params(**current_eval_config)
 
                 temp_generator = type(self.generator_ref)(current_eval_config)
-                temp_generator.set_params(**current_eval_config)
+                # REMOVE: temp_generator.set_params(**current_eval_config)
                 
                 temp_evaluator = type(self.evaluator_ref)(current_eval_config)
-                temp_evaluator.set_params(**current_eval_config) # If evaluator also has tunable params or needs updated config
+                # REMOVE: temp_evaluator.set_params(**current_eval_config)
             except Exception as e_init:
                 logger.error(f"Failed to initialize temporary plugins for evaluation: {e_init}")
-                return (float('inf'),) # Return a very bad fitness
-
+                return (float('inf'),)
+            
             # Determine the number of ticks for this evaluation run
             # Use self.params for optimizer-specific settings, self.global_config for general ones
             num_ticks_for_evaluation = self.params.get('optimizer_n_samples_per_eval', 100)
@@ -304,6 +303,7 @@ class OptimizerPlugin:
                 )
             except Exception as e_feeder:
                 logger.error(f"FeederPlugin.generate failed during optimization eval: {e_feeder}")
+                logger.debug(f"Feeder params during error: {temp_feeder.params}")
                 return (float('inf'),)
 
             # Prepare initial window for the generator
@@ -329,10 +329,10 @@ class OptimizerPlugin:
                     sequence_length_T=num_ticks_for_evaluation,
                     initial_full_feature_window=initial_window_for_generator
                 )
-                # Assuming batch size is 1 for generation in optimizer
                 synthetic_data_np = generated_full_sequence_batch[0] 
             except Exception as e_generator:
                 logger.error(f"GeneratorPlugin.generate failed during optimization eval: {e_generator}")
+                logger.debug(f"Generator params during error: {temp_generator.params}")
                 return (float('inf'),)
 
             # Evaluate the generated synthetic_data

@@ -53,34 +53,21 @@ class FeederPlugin:
         if config is None:
             raise ValueError("La configuración ('config') es requerida.")
         self.params = self.plugin_params.copy()
-        self.set_params(**config) 
-
-        if self.params.get("random_seed") is not None:
-            np.random.seed(self.params["random_seed"])
-
+        
+        # Initialize encoder state attributes to ensure they exist even if not fully populated yet
         self._encoder = None
         self._empirical_z_means = None 
         self._empirical_z_log_vars = None
         self._joint_kde = None 
         self._marginal_kdes: List[gaussian_kde] = [] 
         self._copula_spearman_corr = None 
-        
         self._real_datetimes_pd_series: Optional[pd.Series] = None
         self._real_fundamental_features_df_scaled: Optional[pd.DataFrame] = None
-        # Add placeholder for real context vectors if that strategy is implemented
-        # self._real_context_vectors_h = None 
 
-        if self.params.get("sampling_method") == "from_encoder" or \
-           len(self.params.get("fundamental_feature_names_for_conditioning", [])) > 0:
-            # Load real data if using encoder OR if fundamental conditioning is needed,
-            # as fundamentals are sourced from real_data_file.
-            if self.params.get("real_data_file"):
-                try:
-                    self._load_and_process_for_encoder_mode() # This method now also loads fundamentals
-                except Exception as e: 
-                    print(f"FeederPlugin: Warning - Failed to initialize data during __init__: {e}")
-            else:
-                print("FeederPlugin: Warning - 'real_data_file' may be missing in initial config, needed for encoder or fundamental conditioning.")
+        self.set_params(**config) # This will now handle all necessary loading
+
+        if self.params.get("random_seed") is not None:
+            np.random.seed(self.params["random_seed"])
 
     def _invalidate_encoder_state(self):
         """Resets encoder-related and real_data_related attributes."""
@@ -292,6 +279,7 @@ class FeederPlugin:
                 raise RuntimeError(f"FeederPlugin: Error during encoder processing or KDE/Copula fitting. Error: {e}")
 
     def set_params(self, **kwargs):
+        # Store old values for comparison to see if re-initialization is needed
         old_method = self.params.get("sampling_method")
         old_encoder_file = self.params.get("encoder_model_file")
         old_data_file = self.params.get("real_data_file")
@@ -300,12 +288,25 @@ class FeederPlugin:
         old_encoder_features = self.params.get("feature_columns_for_encoder")
         old_fundamental_features = self.params.get("fundamental_feature_names_for_conditioning")
         old_datetime_col = self.params.get("datetime_col_in_real_data")
+        old_latent_dim = self.params.get("latent_dim") # For checking if latent_dim itself changed
 
-
-        for key, value in kwargs.items():
-            if key in self.plugin_params:
-                self.params[key] = value
+        # Update self.params using kwargs, handling prefixed keys
+        for param_key_short in self.plugin_params.keys():
+            if param_key_short in kwargs:
+                self.params[param_key_short] = kwargs[param_key_short]
+            else:
+                # Assumes a common prefix like "feeder_"
+                potential_prefixed_key = f"feeder_{param_key_short}" 
+                if potential_prefixed_key in kwargs:
+                    self.params[param_key_short] = kwargs[potential_prefixed_key]
         
+        # Also directly update any non-prefixed keys from kwargs that might be tuned (e.g. latent_dim from optimizer)
+        # This ensures hp_for_eval keys like 'latent_dim' correctly update self.params
+        for key_from_kwargs, value_from_kwargs in kwargs.items():
+            if key_from_kwargs in self.plugin_params: # If it's a direct short name
+                 self.params[key_from_kwargs] = value_from_kwargs
+
+
         new_method = self.params.get("sampling_method")
         new_encoder_file = self.params.get("encoder_model_file")
         new_data_file = self.params.get("real_data_file")
@@ -314,29 +315,30 @@ class FeederPlugin:
         new_encoder_features = self.params.get("feature_columns_for_encoder")
         new_fundamental_features = self.params.get("fundamental_feature_names_for_conditioning")
         new_datetime_col = self.params.get("datetime_col_in_real_data")
+        new_latent_dim = self.params.get("latent_dim")
 
 
         reinitialize_encoder_related = False
         if new_method == "from_encoder":
             if (old_method != new_method or 
                 old_encoder_file != new_encoder_file or 
-                old_data_file != new_data_file or # Data file change always triggers reload
-                old_encoder_features != new_encoder_features or # Encoder feature selection change
+                old_data_file != new_data_file or
+                old_encoder_features != new_encoder_features or
                 old_technique != new_technique or
-                (new_technique == "copula" and old_copula_bw_method != new_copula_bw_method)
+                (new_technique == "copula" and old_copula_bw_method != new_copula_bw_method) or
+                old_latent_dim != new_latent_dim # If latent_dim changed, VAE output shape might change
                 ):
                 reinitialize_encoder_related = True
-            # If technique is copula and structures are missing
             elif new_technique == "copula" and (self._copula_spearman_corr is None or not self._marginal_kdes):
                 reinitialize_encoder_related = True
             elif new_technique == "kde" and self._joint_kde is None:
                 reinitialize_encoder_related = True
-        elif old_method == "from_encoder" and new_method != "from_encoder": # Switched away
-            self._invalidate_encoder_state() # Clear encoder specific, but fundamentals might still be needed
+            elif self._empirical_z_means is None: # If not loaded yet
+                reinitialize_encoder_related = True
 
-        # Re-load fundamentals if data file, fundamental cols, or datetime col changed,
-        # OR if encoder reinitialization is happening (as it reloads the file)
-        # OR if fundamentals were not loaded but are now needed.
+        elif old_method == "from_encoder" and new_method != "from_encoder":
+            self._invalidate_encoder_state()
+
         reinitialize_fundamentals = False
         if (old_data_file != new_data_file or
             old_fundamental_features != new_fundamental_features or
@@ -355,7 +357,10 @@ class FeederPlugin:
                     print(f"FeederPlugin: Error during re-initialization in set_params: {e}")
                     self._invalidate_encoder_state() 
             else: 
-                self._invalidate_encoder_state() # Not enough info to initialize
+                # If no real_data_file, but was needed, invalidate state.
+                if new_method == "from_encoder" or len(new_fundamental_features) > 0:
+                    print("FeederPlugin: Warning - 'real_data_file' not provided, but needed for current settings. Clearing related state.")
+                self._invalidate_encoder_state()
 
     def get_debug_info(self) -> Dict[str, Any]:
         return {var: self.params.get(var) for var in self.plugin_debug_vars}

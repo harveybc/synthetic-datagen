@@ -208,6 +208,13 @@ class GeneratorPlugin:
         Actualiza parámetros del plugin.
         :param kwargs: pares clave-valor para actualizar plugin_params.
         """
+        # ADD LOGGING
+        print(f"GeneratorPlugin.set_params called with kwargs: {list(kwargs.keys())}") # Log keys to avoid overly verbose logs
+        if "generator_sequential_model_file" in kwargs:
+            print(f"GeneratorPlugin.set_params: kwargs has generator_sequential_model_file = {kwargs['generator_sequential_model_file']}")
+        if "sequential_model_file" in kwargs:
+             print(f"GeneratorPlugin.set_params: kwargs has sequential_model_file = {kwargs['sequential_model_file']}")
+
         old_model_file = self.params.get("sequential_model_file")
         old_full_feature_names = self.params.get("full_feature_names_ordered")
 
@@ -216,6 +223,9 @@ class GeneratorPlugin:
             # Attempt 1: Check if the exact short key exists in kwargs (passed from main.py's config)
             if param_key_short in kwargs:
                 self.params[param_key_short] = kwargs[param_key_short]
+                # ADD LOGGING
+                if param_key_short == "sequential_model_file":
+                    print(f"GeneratorPlugin.set_params: Updated self.params['sequential_model_file'] via short key to: {self.params[param_key_short]}")
             else:
                 # Attempt 2: Check if a prefixed version (e.g., "generator_sequential_model_file") exists in kwargs
                 # This assumes a common prefix like "generator_" for this plugin type.
@@ -223,11 +233,13 @@ class GeneratorPlugin:
                 potential_prefixed_key = f"generator_{param_key_short}" # e.g., "generator_sequential_model_file"
                 if potential_prefixed_key in kwargs:
                     self.params[param_key_short] = kwargs[potential_prefixed_key]
-                # else:
-                    # Optional: print a warning if a plugin parameter isn't found in the global config
-                    # print(f"GeneratorPlugin: Warning - Parameter '{param_key_short}' not found in provided config (kwargs). Using default or existing.")
+                    # ADD LOGGING
+                    if param_key_short == "sequential_model_file":
+                        print(f"GeneratorPlugin.set_params: Updated self.params['sequential_model_file'] via prefixed key '{potential_prefixed_key}' to: {self.params[param_key_short]}")
         
         new_model_file = self.params.get("sequential_model_file")
+        # ADD LOGGING
+        print(f"GeneratorPlugin.set_params: After processing kwargs, self.params['sequential_model_file'] is: {new_model_file}")
 
         # Cargar o recargar el modelo si la ruta cambió o si no estaba cargado y ahora hay una ruta
         if new_model_file != old_model_file or (new_model_file and self.sequential_model is None):
