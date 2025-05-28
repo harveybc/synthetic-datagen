@@ -283,10 +283,20 @@ def main():
 
         try:
             current_dt = pd.to_datetime(start_datetime_str)
-            # print(f"DEBUG generate_datetime_column: Initial current_dt: {current_dt}, type: {type(current_dt)}")
+            # Add a check here: if pd.to_datetime returns None without an error
+            if current_dt is None:
+                print(f"WARNING generate_datetime_column: pd.to_datetime('{start_datetime_str}') returned None. Defaulting to current system time.")
+                current_dt = pd.to_datetime(datetime.now().replace(microsecond=0))
         except Exception as e:
             print(f"ERROR generate_datetime_column: Error parsing 'start_datetime_str' ('{start_datetime_str}'): {e}. Defaulting to current system time.")
             current_dt = pd.to_datetime(datetime.now().replace(microsecond=0))
+        
+        # Ensure current_dt is a valid datetime object before proceeding
+        if not isinstance(current_dt, (datetime, pd.Timestamp)):
+            print(f"CRITICAL generate_datetime_column: current_dt is not a valid datetime object after parsing/defaulting (type: {type(current_dt)}). Forcing to now.")
+            current_dt = pd.to_datetime(datetime.now().replace(microsecond=0))
+            if not isinstance(current_dt, (datetime, pd.Timestamp)): # Final check if even system time fails
+                 raise SystemError(f"Failed to obtain a valid datetime object. Last attempt with system time resulted in type: {type(current_dt)}")
 
         time_delta_map = {
             "1h": timedelta(hours=1), "1H": timedelta(hours=1),
