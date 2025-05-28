@@ -71,9 +71,10 @@ class GeneratorPlugin:
             raise ValueError("Se requiere el diccionario de configuración ('config').")
         
         self.params = self.plugin_params.copy()
-        # Initialize self.sequential_model and self.model to None before set_params
+        # Initialize self.sequential_model, self.model, and self.normalization_params to None before set_params
         self.sequential_model: Optional[Model] = None
         self.model: Optional[Model] = None
+        self.normalization_params: Optional[Dict[str, Dict[str, float]]] = None # INITIALIZE HERE
         
         self.set_params(**config) # This will call _load_model_from_path
 
@@ -94,8 +95,10 @@ class GeneratorPlugin:
         self.feature_to_idx = {name: i for i, name in enumerate(self.params["full_feature_names_ordered"])}
         self.num_all_features = len(self.params["full_feature_names_ordered"])
         self._validate_feature_name_consistency()
-        # ADDED: Initialize normalization parameters
-        self.normalization_params = self._load_normalization_params(self.params.get("generator_normalization_params_file"))
+        # Normalization parameters are now fully handled within set_params or if already loaded by the above call.
+        # The line below is redundant if set_params correctly handles it, but safe.
+        if self.normalization_params is None and self.params.get("generator_normalization_params_file"):
+            self.normalization_params = self._load_normalization_params(self.params.get("generator_normalization_params_file"))
 
 
     def _load_model_from_path(self, model_path: str):
