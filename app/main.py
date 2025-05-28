@@ -95,6 +95,20 @@ print("--- End pandas_ta import attempt ---")
 # For now, assuming it's unused within this script's execution flow.
 # def generate_synthetic_datetimes_before_real(...): ...
 
+# Define the target CSV column order based on normalized_d2.csv
+# This should be the exact header string from your file, split into a list.
+TARGET_CSV_COLUMNS = [
+    "DATE_TIME","RSI","MACD","MACD_Histogram","MACD_Signal","EMA",
+    "Stochastic_%K","Stochastic_%D","ADX","DI+","DI-","ATR","CCI",
+    "WilliamsR","Momentum","ROC","OPEN","HIGH","LOW","CLOSE",
+    "BC-BO","BH-BL","BH-BO","BO-BL","S&P500_Close","vix_close",
+    "CLOSE_15m_tick_1","CLOSE_15m_tick_2","CLOSE_15m_tick_3","CLOSE_15m_tick_4",
+    "CLOSE_15m_tick_5","CLOSE_15m_tick_6","CLOSE_15m_tick_7","CLOSE_15m_tick_8",
+    "CLOSE_30m_tick_1","CLOSE_30m_tick_2","CLOSE_30m_tick_3","CLOSE_30m_tick_4",
+    "CLOSE_30m_tick_5","CLOSE_30m_tick_6","CLOSE_30m_tick_7","CLOSE_30m_tick_8",
+    "day_of_month","hour_of_day","day_of_week"
+]
+
 def main():
     """
     Orquesta la ejecución completa del sistema, incluyendo la optimización (si se configura)
@@ -899,24 +913,52 @@ def main():
         synthetic_data_output_file = config.get("synthetic_data_output_file", "examples/results/generated_synthetic_data.csv")
         os.makedirs(os.path.dirname(synthetic_data_output_file), exist_ok=True)
         
-        # Create a DataFrame to save, including the DATE_TIME column
-        # Use the target_datetimes_for_generation, sliced to match eval_segment_length
         datetimes_for_output_df = target_datetimes_for_generation.iloc[:eval_segment_length].reset_index(drop=True)
         
-        # Ensure the DataFrame for saving has the DATE_TIME column first
-        output_df_with_datetime = final_synthetic_data_for_eval_aligned_df.copy()
-        output_df_with_datetime.insert(0, config.get("datetime_col_name", "DATE_TIME"), datetimes_for_output_df)
+        # Start with the generated data (already aligned to common_features with real data)
+        # The columns in final_synthetic_data_for_eval_aligned_df are `aligned_eval_feature_names`
+        output_df_intermediate = final_synthetic_data_for_eval_aligned_df.copy()
         
-        output_df_with_datetime.to_csv(synthetic_data_output_file, index=False)
-        print(f"✔︎ Generated (aligned) synthetic data saved to {synthetic_data_output_file}")
+        # Insert the true DATE_TIME column
+        # Ensure the datetime column name from config is used, or default to "DATE_TIME"
+        datetime_col_name_for_output = config.get("datetime_col_name", "DATE_TIME")
+        output_df_intermediate.insert(0, datetime_col_name_for_output, datetimes_for_output_df)
 
+        # Ensure all TARGET_CSV_COLUMNS are present, fill with a placeholder if missing from generation, and reorder
+        # Create a new DataFrame with the desired columns.
+        # If a column from TARGET_CSV_COLUMNS is not in output_df_intermediate, it will be NaN.
+        # The generator plugin should ideally produce all of them.
+        
+        # Make sure the datetime column name used here matches one in TARGET_CSV_COLUMNS if it's not already "DATE_TIME"
+        if datetime_col_name_for_output != "DATE_TIME" and "DATE_TIME" in TARGET_CSV_COLUMNS and datetime_col_name_for_output in output_df_intermediate.columns:
+            output_df_intermediate = output_df_intermediate.rename(columns={datetime_col_name_for_output: "DATE_TIME"})
+        
+        # Reindex to ensure all target columns exist and are in the correct order.
+        # Missing columns from generation will be filled with NaN by reindex.
+        # The generator's placeholder logic should minimize this for non-modelled features.
+        output_df_final_structure = pd.DataFrame()
+        for col in TARGET_CSV_COLUMNS:
+            if col in output_df_intermediate.columns:
+                output_df_final_structure[col] = output_df_intermediate[col]
+            else:
+                # This column was in TARGET_CSV_COLUMNS but not generated or aligned.
+                # This indicates a mismatch or a feature that needs a generation rule.
+                # Fill with a default (e.g. 0.0 or np.nan) to maintain structure.
+                # The generator's placeholder logic should ideally prevent this for most cases.
+                print(f"WARNING: Column '{col}' from target CSV structure was not found in generated data. Filling with 0.0 for output CSV.")
+                output_df_final_structure[col] = 0.0 # Or np.nan, but user wants to avoid "bad" data.
+
+        output_df_final_structure.to_csv(synthetic_data_output_file, index=False, na_rep='NaN') # Explicitly state na_rep
+        print(f"✔︎ Generated synthetic data (structured to target CSV) saved to {synthetic_data_output_file}")
 
         # 3. Evaluate synthetic data using the EvaluatorPlugin
-        print("Evaluating synthetic data via EvaluatorPlugin...")
+        # Evaluation should use the data aligned by common features, not necessarily the full TARGET_CSV_COLUMNS
+        # if some target columns are purely for formatting and not part of the core evaluation set.
+        print("Evaluating synthetic data via EvaluatorPlugin (using commonly aligned features)...")
         metrics = evaluator_plugin.evaluate(
-            synthetic_data=final_synthetic_data_for_eval_aligned_df.values, # Ensure keyword matches method
-            real_data_processed=final_real_data_for_eval_aligned_df.values, # Ensure keyword matches method
-            feature_names=aligned_eval_feature_names,
+            synthetic_data=final_synthetic_data_for_eval_aligned_df.values,
+            real_data_processed=final_real_data_for_eval_aligned_df.values,
+            feature_names=aligned_eval_feature_names, # These are the common features
             config=config 
         )
         print("✔︎ Evaluation completed.")
@@ -932,7 +974,7 @@ def main():
                     if isinstance(obj, np.integer): return int(obj)
                     if isinstance(obj, np.floating): return float(obj)
                     if isinstance(obj, np.ndarray): return obj.tolist()
-                    if isinstance(obj, (pd.Timestamp, datetime)): return obj.isoformat()
+                    if isinstance(obj, (pd.Timestamp, datetime)): return obj.isoformat() # Ensure datetime is imported
                     return super(NumpyEncoder, self).default(obj)
             json.dump(metrics, f, indent=4, cls=NumpyEncoder)
         print(f"✔︎ Evaluation metrics saved to {metrics_output_file}")
@@ -946,6 +988,16 @@ def main():
 
 # --- ADD SCRIPT EXECUTION BLOCK ---
 if __name__ == "__main__":
+    # Ensure necessary imports for the script are at the top level of main.py
+    import pandas as pd
+    import numpy as np
+    import os
+    import sys
+    import traceback
+    import json
+    from datetime import datetime, timedelta
+    # ... other necessary global imports for main ...
+
     try:
         main()
     except KeyboardInterrupt:

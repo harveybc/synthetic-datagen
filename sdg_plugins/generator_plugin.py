@@ -490,22 +490,20 @@ class GeneratorPlugin:
                 ) -> np.ndarray:
         """
         Genera una secuencia de variables base de manera autorregresiva usando el modelo secuencial cargado.
-
         El `self.sequential_model` cargado es responsable de la lógica central de generación.
         Este método prepara las entradas para él paso a paso y recopila las salidas.
-
-        :param feeder_outputs_sequence: Lista de diccionarios, uno por paso de tiempo. Cada diccionario de
-                                        FeederPlugin.generate contiene 'Z', 'time_encodings',
-                                        'current_fundamentals'.
-        :param sequence_length_T: El número total de pasos de tiempo a generar.
-        :param initial_full_feature_window: Ventana de características completa inicial opcional.
-                                            Forma (decoder_input_window_size, num_all_features).
-        :return: Secuencia de variables base generadas, forma (1, sequence_length_T, num_base_features).
         """
         decoder_input_window_size = self.params["decoder_input_window_size"]
         min_ohlc_hist_len = self.params["ti_calculation_min_lookback"]
         
         ohlc_indices_in_full = [self.feature_to_idx[name] for name in self.params["ohlc_feature_names"]]
+        ohlc_names = self.params["ohlc_feature_names"] # ["OPEN", "HIGH", "LOW", "CLOSE"]
+
+        # Initialize previous_normalized_close from the initial window if available
+        if initial_full_feature_window is not None and 'CLOSE' in self.feature_to_idx:
+            self.previous_normalized_close = initial_full_feature_window[-1, self.feature_to_idx['CLOSE']]
+        else:
+            self.previous_normalized_close = 0.5 # Default to mid-value if no history or CLOSE not found
 
         ohlc_history_for_ti_list = [] 
 
@@ -516,7 +514,11 @@ class GeneratorPlugin:
                 start_idx_for_ohlc_hist = max(0, decoder_input_window_size - min_ohlc_hist_len)
                 for i in range(start_idx_for_ohlc_hist, decoder_input_window_size):
                     row_ohlc_values = current_input_feature_window[i, ohlc_indices_in_full]
-                    ohlc_dict = {name: row_ohlc_values[j] for j, name in enumerate(self.params["ohlc_feature_names"])}
+                    # Denormalize here if _calculate_technical_indicators expects denormalized values
+                    ohlc_dict = {
+                        name: self._denormalize_value(row_ohlc_values[j], name) 
+                        for j, name in enumerate(self.params["ohlc_feature_names"])
+                    }
                     ohlc_history_for_ti_list.append(ohlc_dict)
             else:
                 raise ValueError(f"Shape mismatch for initial_full_feature_window. Expected {current_input_feature_window.shape}, got {initial_full_feature_window.shape}")
@@ -525,40 +527,33 @@ class GeneratorPlugin:
 
         generated_sequence_all_features_list = []
 
-        # WRAPPED THE LOOP WITH TQDM
         for t in tqdm(range(sequence_length_T), desc="Generating synthetic sequence", unit="step", dynamic_ncols=True):
+            # Initialize current_tick_assembled_features with NaN to detect unfilled features
+            current_tick_assembled_features = np.full(self.num_all_features, np.nan, dtype=np.float32)
+
             feeder_step_output = feeder_outputs_sequence[t]
-            zt_original = feeder_step_output["Z"] # Shape (latent_seq_len, latent_features)
+            zt_original = feeder_step_output["Z"] 
             
             if zt_original.ndim == 2:
                 zt = np.expand_dims(zt_original, axis=0)
             elif zt_original.ndim == 3 and zt_original.shape[0] == 1: 
                 zt = zt_original
             else:
-                raise ValueError(f"Unexpected shape for zt from Feeder: {zt_original.shape}. Expected 2D (seq_len, features) or 3D (1, seq_len, features).")
+                raise ValueError(f"Unexpected shape for zt from Feeder: {zt_original.shape}.")
             
             conditional_data_t = feeder_step_output["conditional_data"] 
             if conditional_data_t.ndim == 1: conditional_data_t = np.expand_dims(conditional_data_t, axis=0)
 
-            context_h_t = feeder_step_output.get("context_h", np.zeros((1,1))) # Defaulting to (1,1) if not found, but FeederPlugin should provide it with correct dim
+            context_h_t = feeder_step_output.get("context_h", np.zeros((1,1))) 
             if context_h_t.ndim == 1: context_h_t = np.expand_dims(context_h_t, axis=0)
-
-            # The 'decoder_input_x_window_t_expanded' is NOT an input to the standalone decoder model.
-            # decoder_input_x_window_t_expanded = np.expand_dims(current_input_feature_window, axis=0)
 
             decoder_inputs = {
                 self.params["decoder_input_name_latent"]: zt,
-                # self.params["generator_decoder_input_name_window"]: decoder_input_x_window_t_expanded, # REMOVED THIS LINE
                 self.params["decoder_input_name_conditions"]: conditional_data_t,
                 self.params["decoder_input_name_context"]: context_h_t
             }
             
-            # DEBUG PRINT (Optional but recommended for verification)
-            # print(f"DEBUG GeneratorPlugin: Feeding to decoder with keys: {list(decoder_inputs.keys())}")
-            # for key, val in decoder_inputs.items():
-            #    print(f"DEBUG GeneratorPlugin:   Input '{key}': shape {val.shape}")
-
-            generated_decoder_output_step_t = self.sequential_model.predict(decoder_inputs, verbose=0) # ADDED verbose=0
+            generated_decoder_output_step_t = self.sequential_model.predict(decoder_inputs, verbose=0)
             
             if generated_decoder_output_step_t.ndim == 3 and generated_decoder_output_step_t.shape[1] == 1:
                 decoded_features_for_current_tick = generated_decoder_output_step_t[0, 0, :]
@@ -567,64 +562,133 @@ class GeneratorPlugin:
             else:
                 raise ValueError(f"Unexpected decoder output shape: {generated_decoder_output_step_t.shape}.")
 
-            current_tick_assembled_features = np.zeros(self.num_all_features, dtype=np.float32)
-
+            # 1. Fill features from decoder output
             for i, name in enumerate(self.params["decoder_output_feature_names"]):
-                current_tick_assembled_features[self.feature_to_idx[name]] = decoded_features_for_current_tick[i]
+                if name in self.feature_to_idx:
+                    current_tick_assembled_features[self.feature_to_idx[name]] = decoded_features_for_current_tick[i]
             
-            # Fill conditional features from conditional_data_t
-            # Assumes conditional_data_t has sin/cos date features then feeder_conditional_features
-            cond_input_idx = 0
-            # Handle date conditional features (sin/cos pairs)
-            for original_date_feat_name in self.params["date_conditional_feature_names"]:
-                sin_feat_name = f"{original_date_feat_name}_sin"
-                cos_feat_name = f"{original_date_feat_name}_cos"
+            # Store normalized OHLC from decoder for derivations
+            norm_open = current_tick_assembled_features[self.feature_to_idx[ohlc_names[0]]] if ohlc_names[0] in self.feature_to_idx else np.nan
+            norm_high = current_tick_assembled_features[self.feature_to_idx[ohlc_names[1]]] if ohlc_names[1] in self.feature_to_idx else np.nan
+            norm_low = current_tick_assembled_features[self.feature_to_idx[ohlc_names[2]]] if ohlc_names[2] in self.feature_to_idx else np.nan
+            norm_close = current_tick_assembled_features[self.feature_to_idx[ohlc_names[3]]] if ohlc_names[3] in self.feature_to_idx else np.nan
 
-                if sin_feat_name in self.feature_to_idx:
-                    current_tick_assembled_features[self.feature_to_idx[sin_feat_name]] = conditional_data_t[0, cond_input_idx]
-                else:
-                    print(f"GeneratorPlugin: Warning - Date feature '{sin_feat_name}' not found in feature_to_idx map.")
-                cond_input_idx += 1
-                
-                if cos_feat_name in self.feature_to_idx:
-                    current_tick_assembled_features[self.feature_to_idx[cos_feat_name]] = conditional_data_t[0, cond_input_idx]
-                else:
-                    print(f"GeneratorPlugin: Warning - Date feature '{cos_feat_name}' not found in feature_to_idx map.")
-                cond_input_idx += 1
+            # 2. Fill conditional features (sin/cos dates, fundamentals)
+            cond_input_idx = 0
+            for original_date_feat_name in self.params["date_conditional_feature_names"]:
+                for suffix in ["_sin", "_cos"]:
+                    feat_name = f"{original_date_feat_name}{suffix}"
+                    if feat_name in self.feature_to_idx:
+                        current_tick_assembled_features[self.feature_to_idx[feat_name]] = conditional_data_t[0, cond_input_idx]
+                    cond_input_idx += 1
             
-            # Handle other feeder conditional features (e.g., fundamentals)
             for name in self.params["feeder_conditional_feature_names"]:
                 if name in self.feature_to_idx:
                     current_tick_assembled_features[self.feature_to_idx[name]] = conditional_data_t[0, cond_input_idx]
-                else:
-                    print(f"GeneratorPlugin: Warning - Feeder conditional feature '{name}' not found in feature_to_idx map.")
                 cond_input_idx += 1
-            
+
+            # 3. Fill raw date features (normalized)
+            dt_obj = feeder_step_output["datetimes"] # pd.Timestamp object
+            raw_date_map = {
+                "day_of_month": dt_obj.day,
+                "hour_of_day": dt_obj.hour,
+                "day_of_week": dt_obj.dayofweek # Monday=0 to Sunday=6
+                # "day_of_year": dt_obj.dayofyear # If needed
+            }
+            for raw_feat_name, raw_val in raw_date_map.items():
+                if raw_feat_name in self.feature_to_idx:
+                    # These must be in normalization_params to be correctly normalized
+                    current_tick_assembled_features[self.feature_to_idx[raw_feat_name]] = self._normalize_value(float(raw_val), raw_feat_name)
+
+            # 4. Calculate and fill Technical Indicators
             current_ohlc_values_for_ti_dict = {
                 name: self._denormalize_value(current_tick_assembled_features[self.feature_to_idx[name]], name)
-                for name in self.params["ohlc_feature_names"]
+                for name in self.params["ohlc_feature_names"] if name in self.feature_to_idx and not np.isnan(current_tick_assembled_features[self.feature_to_idx[name]])
             }
-            ohlc_history_for_ti_list.append(current_ohlc_values_for_ti_dict)
             
-            if len(ohlc_history_for_ti_list) >= 1:
-                ohlc_df_for_ti_calc = pd.DataFrame(ohlc_history_for_ti_list)
-                # Columns are already denormalized from ohlc_history_for_ti_list
-                # ohlc_df_for_ti_calc.columns = self.params["ohlc_feature_names"] # Not needed if dict keys are correct
-                
-                calculated_tis_series_denormalized = self._calculate_technical_indicators(ohlc_df_for_ti_calc).iloc[0]
-                
-                for ti_name in self.params["ti_feature_names"]:
-                    denormalized_ti_val = calculated_tis_series_denormalized[ti_name]
-                    if pd.notnull(denormalized_ti_val):
-                        normalized_ti_val = self._normalize_value(denormalized_ti_val, ti_name)
-                        current_tick_assembled_features[self.feature_to_idx[ti_name]] = normalized_ti_val
-                    else:
-                        current_tick_assembled_features[self.feature_to_idx[ti_name]] = np.nan
-            else:
-                for ti_name in self.params["ti_feature_names"]:
-                     current_tick_assembled_features[self.feature_to_idx[ti_name]] = np.nan
+            if len(current_ohlc_values_for_ti_dict) == len(self.params["ohlc_feature_names"]): # Ensure all OHLC are available
+                ohlc_history_for_ti_list.append(current_ohlc_values_for_ti_dict)
+                if len(ohlc_history_for_ti_calc) >= 1: # Min length for any TI
+                    ohlc_df_for_ti_calc = pd.DataFrame(ohlc_history_for_ti_calc)
+                    calculated_tis_series_denormalized = self._calculate_technical_indicators(ohlc_df_for_ti_calc).iloc[0]
+                    
+                    for ti_name in self.params["ti_feature_names"]:
+                        if ti_name in self.feature_to_idx:
+                            denormalized_ti_val = calculated_tis_series_denormalized.get(ti_name, np.nan)
+                            if pd.notnull(denormalized_ti_val):
+                                normalized_ti_val = self._normalize_value(denormalized_ti_val, ti_name)
+                                current_tick_assembled_features[self.feature_to_idx[ti_name]] = normalized_ti_val
+                            else: # TI is NaN
+                                # Try to use previous window's value for this TI
+                                prev_val_norm = current_input_feature_window[-1, self.feature_to_idx[ti_name]]
+                                if pd.notnull(prev_val_norm):
+                                    current_tick_assembled_features[self.feature_to_idx[ti_name]] = prev_val_norm
+                                else:
+                                    current_tick_assembled_features[self.feature_to_idx[ti_name]] = 0.5 # Default for normalized if prev is also NaN
+                else: # Not enough history yet for any TI
+                    for ti_name in self.params["ti_feature_names"]:
+                        if ti_name in self.feature_to_idx:
+                            current_tick_assembled_features[self.feature_to_idx[ti_name]] = 0.5 # Default for normalized
+            else: # Not all OHLC values were available from decoder
+                 for ti_name in self.params["ti_feature_names"]:
+                        if ti_name in self.feature_to_idx:
+                            current_tick_assembled_features[self.feature_to_idx[ti_name]] = 0.5 # Default
 
-            current_tick_assembled_features[self.feature_to_idx['DATE_TIME']] = np.float32(t)
+            # 5. Calculate and fill derived OHLC features (e.g., BC-BO)
+            # These are calculated from NORMALIZED ohlc, then the result is normalized if necessary.
+            # Assuming derived features are also expected to be in 0-1 range if inputs are.
+            # Or, they should have their own entries in normalization_params.
+            if not np.isnan(norm_close) and not np.isnan(norm_open):
+                if "BC-BO" in self.feature_to_idx: 
+                    bc_bo_val = norm_close - norm_open
+                    current_tick_assembled_features[self.feature_to_idx["BC-BO"]] = self._normalize_value(bc_bo_val, "BC-BO")
+            if not np.isnan(norm_high) and not np.isnan(norm_low):
+                if "BH-BL" in self.feature_to_idx:
+                    bh_bl_val = norm_high - norm_low
+                    current_tick_assembled_features[self.feature_to_idx["BH-BL"]] = self._normalize_value(bh_bl_val, "BH-BL")
+            if not np.isnan(norm_high) and not np.isnan(norm_open):
+                if "BH-BO" in self.feature_to_idx:
+                    bh_bo_val = norm_high - norm_open
+                    current_tick_assembled_features[self.feature_to_idx["BH-BO"]] = self._normalize_value(bh_bo_val, "BH-BO")
+            if not np.isnan(norm_open) and not np.isnan(norm_low):
+                if "BO-BL" in self.feature_to_idx:
+                    bo_bl_val = norm_open - norm_low
+                    current_tick_assembled_features[self.feature_to_idx["BO-BL"]] = self._normalize_value(bo_bl_val, "BO-BL")
+
+            # 6. Calculate and fill log_return
+            if "log_return" in self.feature_to_idx:
+                if self.previous_normalized_close is not None and self.previous_normalized_close != 0 and not np.isnan(norm_close):
+                    log_return_val = np.log(norm_close / self.previous_normalized_close) if self.previous_normalized_close != 0 else 0.0
+                    current_tick_assembled_features[self.feature_to_idx["log_return"]] = self._normalize_value(log_return_val, "log_return")
+                else:
+                    current_tick_assembled_features[self.feature_to_idx["log_return"]] = self._normalize_value(0.0, "log_return") # Or 0.5 if normalized
+            if not np.isnan(norm_close):
+                self.previous_normalized_close = norm_close
+
+
+            # 7. Fill DATE_TIME (placeholder float index)
+            if 'DATE_TIME' in self.feature_to_idx:
+                current_tick_assembled_features[self.feature_to_idx['DATE_TIME']] = np.float32(t)
+
+            # 8. Placeholder for any remaining unfilled (NaN) features
+            # These are features in full_feature_names_ordered not covered above (e.g., STL, Wavelet, MTM, historical ticks if not from window)
+            for i, feat_name in enumerate(self.params["full_feature_names_ordered"]):
+                if np.isnan(current_tick_assembled_features[i]):
+                    # Try to use the value from the previous step in the input window
+                    prev_window_val = current_input_feature_window[-1, i]
+                    if pd.notnull(prev_window_val) and not np.isnan(prev_window_val): # Check if it's a valid number
+                        current_tick_assembled_features[i] = prev_window_val
+                    else:
+                        # Fallback: small random normalized value (0-1) or 0.5 as neutral
+                        # Avoid exact 0.0 if possible, as per user's request about zeros.
+                        current_tick_assembled_features[i] = np.random.uniform(0.01, 0.1) # Small, non-zero
+                        # Alternatively, if the feature has normalization params, use its mid-point
+                        # if self.normalization_params and feat_name in self.normalization_params:
+                        #    current_tick_assembled_features[i] = 0.5
+                        # else: # If no norm params, it's harder to pick a good default
+                        #    current_tick_assembled_features[i] = np.random.uniform(0.01, 0.1) 
+                    # print(f"GeneratorPlugin: Warning - Feature '{feat_name}' was not generated. Filled with placeholder: {current_tick_assembled_features[i]:.4f}")
+
 
             generated_sequence_all_features_list.append(current_tick_assembled_features)
 
@@ -635,6 +699,11 @@ class GeneratorPlugin:
                 ohlc_history_for_ti_list.pop(0)
         
         final_generated_sequence = np.array(generated_sequence_all_features_list, dtype=np.float32)
+        # Handle any remaining NaNs in the final array (should be rare after step 8)
+        if np.isnan(final_generated_sequence).any():
+            print("GeneratorPlugin: Warning - NaNs found in final_generated_sequence. Replacing with 0.01 (check generation logic).")
+            final_generated_sequence = np.nan_to_num(final_generated_sequence, nan=0.01)
+
         return np.expand_dims(final_generated_sequence, axis=0)
 
     def update_model(self, new_model: Model):
