@@ -540,7 +540,7 @@ class GeneratorPlugin:
                 zt = zt_original
             else:
                 raise ValueError(f"Unexpected shape for zt from Feeder: {zt_original.shape}.")
-            
+
             conditional_data_t = feeder_step_output["conditional_data"] 
             if conditional_data_t.ndim == 1: conditional_data_t = np.expand_dims(conditional_data_t, axis=0)
 
@@ -608,8 +608,8 @@ class GeneratorPlugin:
             
             if len(current_ohlc_values_for_ti_dict) == len(self.params["ohlc_feature_names"]): # Ensure all OHLC are available
                 ohlc_history_for_ti_list.append(current_ohlc_values_for_ti_dict)
-                if len(ohlc_history_for_ti_calc) >= 1: # Min length for any TI
-                    ohlc_df_for_ti_calc = pd.DataFrame(ohlc_history_for_ti_calc)
+                if len(ohlc_history_for_ti_list) >= 1: # Min length for any TI # CORRECTED VARIABLE NAME
+                    ohlc_df_for_ti_calc = pd.DataFrame(ohlc_history_for_ti_list)
                     calculated_tis_series_denormalized = self._calculate_technical_indicators(ohlc_df_for_ti_calc).iloc[0]
                     
                     for ti_name in self.params["ti_feature_names"]:
@@ -618,7 +618,7 @@ class GeneratorPlugin:
                             if pd.notnull(denormalized_ti_val):
                                 normalized_ti_val = self._normalize_value(denormalized_ti_val, ti_name)
                                 current_tick_assembled_features[self.feature_to_idx[ti_name]] = normalized_ti_val
-                            else: # TI is NaN
+                            else # TI is NaN
                                 # Try to use previous window's value for this TI
                                 prev_val_norm = current_input_feature_window[-1, self.feature_to_idx[ti_name]]
                                 if pd.notnull(prev_val_norm):
