@@ -55,6 +55,7 @@ DEFAULT_VALUES = {
     # --- Parameters for GeneratorPlugin ---
     "generator_sequential_model_file": "examples/results/phase_4_2/phase_4_2_cnn_small_decoder_model.h5.keras", # Path to Keras decoder
     "generator_decoder_input_window_size": 144,
+    "generator_normalization_params_file": "examples/data/phase_3/phase_3_debug_out.json", # Path to min/max JSON
     "generator_full_feature_names_ordered": [
         "DATE_TIME", "RSI", "MACD", "MACD_Histogram", "MACD_Signal", "EMA",
         "Stochastic_%K", "Stochastic_%D", "ADX", "DI+", "DI-", "ATR", "CCI",
@@ -64,7 +65,9 @@ DEFAULT_VALUES = {
         "CLOSE_15m_tick_5", "CLOSE_15m_tick_6", "CLOSE_15m_tick_7", "CLOSE_15m_tick_8",
         "CLOSE_30m_tick_1", "CLOSE_30m_tick_2", "CLOSE_30m_tick_3", "CLOSE_30m_tick_4",
         "CLOSE_30m_tick_5", "CLOSE_30m_tick_6", "CLOSE_30m_tick_7", "CLOSE_30m_tick_8",
-        "day_of_month", "hour_of_day", "day_of_week"
+        "day_of_month_sin", "day_of_month_cos", 
+        "hour_of_day_sin", "hour_of_day_cos", 
+        "day_of_week_sin", "day_of_week_cos"
     ],
     # IMPORTANT: Verify this list matches your Keras decoder's actual output features.
     # This list assumes the decoder outputs OHLC, derived OHLC, and lagged close prices.
@@ -82,7 +85,7 @@ DEFAULT_VALUES = {
         "Stochastic_%K", "Stochastic_%D", "ADX", "DI+", "DI-",
         "ATR", "CCI", "WilliamsR", "Momentum", "ROC"
     ],
-    "generator_date_conditional_feature_names": ["day_of_month", "hour_of_day", "day_of_week"], # Should match feeder's date features
+    "generator_date_conditional_feature_names": ["day_of_month", "hour_of_day", "day_of_week"], # Original names feeder uses for transformation
     "generator_feeder_conditional_feature_names": ["S&P500_Close", "vix_close"], # Should match feeder's fundamental features
     "generator_ti_calculation_min_lookback": 200,
     "generator_ti_params": {
