@@ -767,8 +767,8 @@ def main():
                 # 3. Evaluate synthetic data using the EvaluatorPlugin
                 print("Evaluating synthetic data via EvaluatorPlugin...")
                 metrics = evaluator_plugin.evaluate(
-                    synthetic_data_sequence=final_synthetic_data_for_eval_aligned_df.values,
-                    real_data_sequence=final_real_data_for_eval_aligned_df.values,
+                    synthetic_data=final_synthetic_data_for_eval_aligned_df.values, # Ensure keyword matches method
+                    real_data_processed=final_real_data_for_eval_aligned_df.values, # Ensure keyword matches method
                     feature_names=aligned_eval_feature_names,
                     config=config 
                 )

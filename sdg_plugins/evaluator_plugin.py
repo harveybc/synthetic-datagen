@@ -63,7 +63,6 @@ class EvaluatorPlugin:
         self,
         synthetic_data: np.ndarray,
         real_data_processed: np.ndarray,
-        real_dates: Optional[pd.Index], 
         feature_names: List[str],
         config: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
