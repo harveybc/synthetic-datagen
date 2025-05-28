@@ -867,8 +867,19 @@ def main():
         # `eval_feature_names` (from preprocessor) is the reference for real data columns
         # and for selecting/ordering columns for evaluation.
         
+        # Ensure X_real_eval_segment_np is 2D for DataFrame creation
+        # If it's (num_samples, window_length, num_features), take the last time step.
+        if X_real_eval_segment_np.ndim == 3:
+            print(f"INFO: Reshaping X_real_eval_segment_np for DataFrame from {X_real_eval_segment_np.shape} to 2D by taking the last time step of each window.")
+            X_real_eval_segment_2d_for_df = X_real_eval_segment_np[:, -1, :]
+        elif X_real_eval_segment_np.ndim == 2:
+            X_real_eval_segment_2d_for_df = X_real_eval_segment_np
+        else:
+            # This case should ideally not be reached if preprocessor output is consistent
+            raise ValueError(f"X_real_eval_segment_np has an unexpected number of dimensions for DataFrame creation: {X_real_eval_segment_np.ndim}. Expected 2D or 3D.")
+
         final_synthetic_data_for_eval_df = pd.DataFrame(X_syn_processed_for_eval_np, columns=synthetic_feature_names)
-        final_real_data_for_eval_df = pd.DataFrame(X_real_eval_segment_np, columns=eval_feature_names)
+        final_real_data_for_eval_df = pd.DataFrame(X_real_eval_segment_2d_for_df, columns=eval_feature_names)
 
         # Align columns of synthetic data to match the order and selection of eval_feature_names from real data
         common_features = [feat_name for feat_name in eval_feature_names if feat_name in final_synthetic_data_for_eval_df.columns]
