@@ -55,8 +55,27 @@ DEFAULT_VALUES = {
     # --- Parameters for GeneratorPlugin ---
     "generator_sequential_model_file": "examples/results/phase_4_2/phase_4_2_cnn_small_decoder_model.h5.keras", # Path to Keras decoder
     "generator_decoder_input_window_size": 144,
-    "generator_full_feature_names_ordered": [], # CRITICAL: User must provide all 45 feature names in order
-    "generator_decoder_output_feature_names": [], # CRITICAL: User must list features decoder outputs
+    "generator_full_feature_names_ordered": [
+        "DATE_TIME", "RSI", "MACD", "MACD_Histogram", "MACD_Signal", "EMA",
+        "Stochastic_%K", "Stochastic_%D", "ADX", "DI+", "DI-", "ATR", "CCI",
+        "WilliamsR", "Momentum", "ROC", "OPEN", "HIGH", "LOW", "CLOSE",
+        "BC-BO", "BH-BL", "BH-BO", "BO-BL", "S&P500_Close", "vix_close",
+        "CLOSE_15m_tick_1", "CLOSE_15m_tick_2", "CLOSE_15m_tick_3", "CLOSE_15m_tick_4",
+        "CLOSE_15m_tick_5", "CLOSE_15m_tick_6", "CLOSE_15m_tick_7", "CLOSE_15m_tick_8",
+        "CLOSE_30m_tick_1", "CLOSE_30m_tick_2", "CLOSE_30m_tick_3", "CLOSE_30m_tick_4",
+        "CLOSE_30m_tick_5", "CLOSE_30m_tick_6", "CLOSE_30m_tick_7", "CLOSE_30m_tick_8",
+        "day_of_month", "hour_of_day", "day_of_week"
+    ],
+    # IMPORTANT: Verify this list matches your Keras decoder's actual output features.
+    # This list assumes the decoder outputs OHLC, derived OHLC, and lagged close prices.
+    "generator_decoder_output_feature_names": [
+        "OPEN", "HIGH", "LOW", "CLOSE",
+        "BC-BO", "BH-BL", "BH-BO", "BO-BL",
+        "CLOSE_15m_tick_1", "CLOSE_15m_tick_2", "CLOSE_15m_tick_3", "CLOSE_15m_tick_4",
+        "CLOSE_15m_tick_5", "CLOSE_15m_tick_6", "CLOSE_15m_tick_7", "CLOSE_15m_tick_8",
+        "CLOSE_30m_tick_1", "CLOSE_30m_tick_2", "CLOSE_30m_tick_3", "CLOSE_30m_tick_4",
+        "CLOSE_30m_tick_5", "CLOSE_30m_tick_6", "CLOSE_30m_tick_7", "CLOSE_30m_tick_8"
+    ],
     "generator_ohlc_feature_names": ["OPEN", "HIGH", "LOW", "CLOSE"],
     "generator_ti_feature_names": [
         "RSI", "MACD", "MACD_Histogram", "MACD_Signal", "EMA",
