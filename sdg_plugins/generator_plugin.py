@@ -15,7 +15,8 @@ Interfaz:
 import numpy as np
 from typing import Dict, Any, List, Optional
 from tensorflow.keras.models import load_model, Model
-import tensorflow.keras as keras # Import keras for config
+import tensorflow as tf # Ensure TensorFlow is imported
+# import tensorflow.keras as keras # This alias can sometimes be tricky. We'll use tf.keras directly.
 import pandas as pd # Add pandas
 import pandas_ta as ta # Add pandas-ta
 import os # For os.path.exists
@@ -134,15 +135,15 @@ class GeneratorPlugin:
                 print(f"GeneratorPlugin: Advertencia - Error al verificar el formato ZIP para '{model_path}': {e_zip}")
         
         try:
-            # Enable unsafe deserialization for Lambda layers
-            print("GeneratorPlugin: Enabling Keras unsafe deserialization for model loading.")
-            keras.config.enable_unsafe_deserialization()
+            # Enable unsafe deserialization for Lambda layers using tf.keras.config
+            print("GeneratorPlugin: Enabling Keras unsafe deserialization for model loading via tf.keras.config.")
+            tf.keras.config.enable_unsafe_deserialization()
             
             loaded_model: Model = load_model(model_path, compile=False)
             
-            # Disable unsafe deserialization after loading
-            print("GeneratorPlugin: Disabling Keras unsafe deserialization.")
-            keras.config.disable_unsafe_deserialization()
+            # Disable unsafe deserialization after loading using tf.keras.config
+            print("GeneratorPlugin: Disabling Keras unsafe deserialization via tf.keras.config.")
+            tf.keras.config.disable_unsafe_deserialization()
 
             self.sequential_model = loaded_model
             self.model = loaded_model # Mantener el alias
@@ -150,8 +151,13 @@ class GeneratorPlugin:
             # print(self.sequential_model.summary()) # Descomentar para depurar la estructura del modelo
         except Exception as e:
             # Ensure unsafe deserialization is disabled in case of an error during/after load_model
-            keras.config.disable_unsafe_deserialization()
-            print("GeneratorPlugin: Keras unsafe deserialization disabled due to error or completion.")
+            # using tf.keras.config
+            try:
+                tf.keras.config.disable_unsafe_deserialization()
+                print("GeneratorPlugin: Keras unsafe deserialization disabled via tf.keras.config due to error or completion.")
+            except Exception as e_config:
+                print(f"GeneratorPlugin: Warning - Failed to disable unsafe deserialization during error handling: {e_config}")
+
 
             error_message = f"Error al cargar el modelo Keras desde '{model_path}'. Tipo de error: {type(e).__name__}, Mensaje: {e}"
             print(f"GeneratorPlugin: {error_message}")
