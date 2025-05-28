@@ -27,6 +27,7 @@ import random  # Random number generation
 import time  # Timing execution
 from typing import Any, Dict, List, Tuple, Union
 
+import numpy as np # ADD THIS IMPORT
 import pandas as pd  # Ensure pandas is imported
 from datetime import datetime, timedelta  # For datetime generation
 from deap import algorithms, base, creator, tools  # DEAP components
@@ -59,11 +60,15 @@ class OptimizerPlugin:
         "cxpb": 0.6,                  # Crossover probability
         "mutpb": 0.3,                 # Mutation probability
         "hyperparameter_bounds": {    # Bounds for each hyperparameter
-            "latent_dim": (4, 64),
-            "mmd_lambda": (1e-5, 1e-2),
-            "kl_beta": (1e-5, 1e-2),
-            "batch_size": (16, 128),
+            "latent_dim": (4, 64), # For FeederPlugin
+            # "mmd_lambda": (1e-5, 1e-2), # Example if you tune GAN params
+            # "kl_beta": (1e-5, 1e-2),  # Example if you tune GAN params
+            "batch_size": (16, 128), # Example, if used by a plugin being tuned
+            # Add other relevant hyperparameters for Feeder or Generator if they are tuned
+            # e.g., "generator_decoder_input_window_size": (60, 200),
         },
+        "optimizer_n_samples_per_eval": 100, # Number of samples to generate per evaluation
+        "optimizer_start_datetime": None, # Optional: "YYYY-MM-DD HH:MM:SS" for eval consistency
         "random_seed": None,          # Optional seed for reproducibility
     }
     #: Keys included in debug output
@@ -75,11 +80,12 @@ class OptimizerPlugin:
         """
         if config is None:
             raise ValueError("Se requiere el diccionario de configuración ('config').")
-        # Copia parámetros por defecto y aplica la configuración
-        self.params = self.plugin_params.copy()
-        self.set_params(**config)
-        # Deep copy to avoid mutating the class attribute
-        self.params: Dict[str, Any] = copy.deepcopy(self.plugin_params)
+        
+        self.params = copy.deepcopy(self.plugin_params) # Deep copy defaults
+        self.set_params(**config) # Apply global config overrides
+        
+        # Store the initial global config separately if needed by helpers
+        # self.global_config_snapshot = config.copy() # If _get_config_param needs the original global config
 
     def set_params(self, **kwargs: Any) -> None:
         """
@@ -109,7 +115,7 @@ class OptimizerPlugin:
         feeder_plugin: Any,
         generator_plugin: Any,
         evaluator_plugin: Any,
-        config: Dict[str, Any],
+        config: Dict[str, Any], # This is the main, merged config from main.py
     ) -> Dict[str, Union[int, float]]:
         """
         Run genetic algorithm to find best hyperparameters.
@@ -130,6 +136,13 @@ class OptimizerPlugin:
         Dict[str, Union[int, float]]
             Best hyperparameters found.
         """
+        # Store plugins and config for access by eval_individual (if it becomes a method)
+        # or for creating copies.
+        self.feeder_ref = feeder_plugin
+        self.generator_ref = generator_plugin
+        self.evaluator_ref = evaluator_plugin
+        self.global_config = config # Store the comprehensive config
+
         # Set random seed for reproducibility if provided
         seed = self.params.get("random_seed")
         if seed is not None:
@@ -141,7 +154,12 @@ class OptimizerPlugin:
         hyper_keys: List[str] = list(bounds.keys())
         low_bounds: List[float] = [bounds[k][0] for k in hyper_keys]
         up_bounds: List[float] = [bounds[k][1] for k in hyper_keys]
-        int_params = {"latent_dim", "batch_size"}  # Keys that must be int
+        
+        # Define which hyperparameters must be integers
+        # This should align with the keys in "hyperparameter_bounds"
+        int_params = {key for key in hyper_keys if isinstance(bounds[key][0], int) and isinstance(bounds[key][1], int)}
+        # Or explicitly:
+        # int_params = {"latent_dim", "batch_size"} # Add other integer params you tune
 
         # DEAP creator setup (avoid redefining if exists)
         if not hasattr(creator, "FitnessMin"):
@@ -152,13 +170,13 @@ class OptimizerPlugin:
         # Toolbox configuration
         toolbox = base.Toolbox()
 
-        # Attribute generator: float in [low, up]
-        def gen_float(low: float, up: float) -> float:
-            return random.uniform(low, up)
-
-        # Register individual attributes
+        # Attribute generator: float or int based on bounds
         for key, low, up in zip(hyper_keys, low_bounds, up_bounds):
-            toolbox.register(f"attr_{key}", gen_float, low, up)
+            if key in int_params:
+                 toolbox.register(f"attr_{key}", random.randint, int(low), int(up))
+            else:
+                toolbox.register(f"attr_{key}", random.uniform, low, up)
+
 
         # Individual and population registration
         toolbox.register(
@@ -170,10 +188,10 @@ class OptimizerPlugin:
         )
         toolbox.register("population", tools.initRepeat, list, toolbox.individual)
 
-        # Evaluation function
-        def eval_individual(ind: List[float]) -> Tuple[float]:
+        # Evaluation function (nested function, captures variables from optimize's scope)
+        def eval_individual(ind: List[Union[float, int]]) -> Tuple[float]:
             """
-            Evaluate one individual: generate data and compute fitness (MAE).
+            Evaluate one individual: generate data and compute fitness.
 
             Parameters
             ----------
@@ -186,32 +204,125 @@ class OptimizerPlugin:
                 Single-element tuple with fitness (lower is better).
             """
             # Map individual to dict of hyperparameters
-            hp: Dict[str, Union[int, float]] = {}
+            hp_for_eval: Dict[str, Union[int, float]] = {}
             for i, key in enumerate(hyper_keys):
-                val: Union[int, float] = ind[i]
+                val = ind[i]
+                # DEAP might provide floats even for int attributes if not careful with registration
                 if key in int_params:
-                    val = int(round(val))
-                hp[key] = val
+                    hp_for_eval[key] = int(round(val))
+                else:
+                    hp_for_eval[key] = val
+            
+            logger.info(f"Evaluating individual with hyperparameters: {hp_for_eval}")
 
-            logger.info(f"Evaluating individual: {hp}")
+            # Create a new configuration for this specific evaluation run
+            # Start with the global config and override with current hyperparameters
+            current_eval_config = copy.deepcopy(self.global_config)
+            current_eval_config.update(hp_for_eval)
 
-            # Merge with base config
-            cfg = copy.deepcopy(config)
-            cfg.update(hp)
+            # Create temporary plugin instances for this evaluation to avoid side effects
+            # This assumes plugins can be initialized with a config dict.
+            try:
+                temp_feeder = type(self.feeder_ref)(current_eval_config)
+                temp_feeder.set_params(**current_eval_config)
 
-            # Generate latent codes and synthetic windows
-            Z = feeder_plugin.generate(
-                n_samples=cfg["n_samples"], latent_dim=hp["latent_dim"]
-            )
-            X_syn = generator_plugin.generate(Z)
+                temp_generator = type(self.generator_ref)(current_eval_config)
+                temp_generator.set_params(**current_eval_config)
+                
+                temp_evaluator = type(self.evaluator_ref)(current_eval_config)
+                temp_evaluator.set_params(**current_eval_config) # If evaluator also has tunable params or needs updated config
+            except Exception as e_init:
+                logger.error(f"Failed to initialize temporary plugins for evaluation: {e_init}")
+                return (float('inf'),) # Return a very bad fitness
 
-            # Evaluate synthetic data against real reference
-            metrics = evaluator_plugin.evaluate(
-                synthetic_data=X_syn, real_data=cfg["real_data_file"]
-            )
-            # Extract MAE (assumed returned key)
-            fitness = metrics.get("mae", float("inf"))
-            return (fitness,)
+            # Determine the number of ticks for this evaluation run
+            # Use self.params for optimizer-specific settings, self.global_config for general ones
+            num_ticks_for_evaluation = self.params.get('optimizer_n_samples_per_eval', 100)
+            if num_ticks_for_evaluation <= 0:
+                logger.error("'optimizer_n_samples_per_eval' must be positive.")
+                return (float('inf'),)
+
+            # Generate target_datetimes for the FeederPlugin
+            # _generate_datetimes_for_opt needs access to the OptimizerPlugin instance (self)
+            target_datetimes_for_eval = self._generate_datetimes_for_opt(num_ticks_for_evaluation)
+            if target_datetimes_for_eval.empty:
+                logger.error("Failed to generate target_datetimes for evaluation.")
+                return (float('inf'),)
+
+            # Call FeederPlugin.generate
+            try:
+                feeder_outputs_sequence = temp_feeder.generate(
+                    n_ticks_to_generate=num_ticks_for_evaluation,
+                    target_datetimes=target_datetimes_for_eval
+                )
+            except Exception as e_feeder:
+                logger.error(f"FeederPlugin.generate failed during optimization eval: {e_feeder}")
+                return (float('inf'),)
+
+            # Prepare initial window for the generator
+            # Use params from the temporary generator instance
+            decoder_input_window_size = temp_generator.params.get("decoder_input_window_size")
+            gen_full_feature_names = temp_generator.params.get("full_feature_names_ordered", [])
+            
+            if not gen_full_feature_names:
+                logger.error("Generator's 'full_feature_names_ordered' is empty in current_eval_config.")
+                return (float('inf'),)
+            num_all_features_gen = len(gen_full_feature_names)
+            
+            if decoder_input_window_size is None or decoder_input_window_size <= 0:
+                logger.error(f"Invalid 'decoder_input_window_size': {decoder_input_window_size}")
+                return (float('inf'),)
+
+            initial_window_for_generator = np.zeros((decoder_input_window_size, num_all_features_gen), dtype=np.float32)
+
+            # Call GeneratorPlugin.generate
+            try:
+                generated_full_sequence_batch = temp_generator.generate(
+                    feeder_outputs_sequence=feeder_outputs_sequence,
+                    sequence_length_T=num_ticks_for_evaluation,
+                    initial_full_feature_window=initial_window_for_generator
+                )
+                # Assuming batch size is 1 for generation in optimizer
+                synthetic_data_np = generated_full_sequence_batch[0] 
+            except Exception as e_generator:
+                logger.error(f"GeneratorPlugin.generate failed during optimization eval: {e_generator}")
+                return (float('inf'),)
+
+            # Evaluate the generated synthetic_data
+            try:
+                # This part is highly dependent on your EvaluatorPlugin's `evaluate` method.
+                # It needs to handle how it gets the 'real_data_processed'.
+                # For now, we pass the current_eval_config which might contain 'real_data_file'.
+                # The EvaluatorPlugin must be robust enough to load/process this.
+                # A better approach would be to pre-load and pre-process a fixed evaluation
+                # dataset at the start of the `optimize` method and pass the NumPy array here.
+                
+                # Assuming evaluator can get feature names from synthetic_data_np if not provided,
+                # or uses feature names from its own config.
+                metrics = temp_evaluator.evaluate(
+                    synthetic_data=synthetic_data_np,
+                    # real_data_processed=... # This is the tricky part.
+                                                # Evaluator needs a consistent real data segment.
+                                                # If it loads from file path in current_eval_config,
+                                                # ensure that file is appropriate and preprocessed.
+                    feature_names=gen_full_feature_names, # Or a subset if evaluator expects that
+                    config=current_eval_config
+                )
+                # Extract a fitness score. Lower is better for FitnessMin.
+                # Example: using a specific MMD score or a combined quality score.
+                # This key 'mae' was from the original snippet, adjust if your metrics are different.
+                fitness_score = metrics.get("mae", metrics.get("avg_mmd_rbf", float('inf'))) 
+                if fitness_score is None or np.isnan(fitness_score) or not isinstance(fitness_score, (int, float)):
+                    logger.warning(f"Invalid fitness score from metrics: {fitness_score}. Defaulting to inf.")
+                    fitness_score = float('inf')
+                
+                logger.info(f"Individual {hp_for_eval} evaluated. Fitness: {fitness_score}")
+
+            except Exception as e_evaluator:
+                logger.error(f"EvaluatorPlugin.evaluate failed during optimization eval: {e_evaluator}")
+                fitness_score = float('inf')
+
+            return (fitness_score,) # DEAP expects a tuple
 
         # Register genetic operators
         toolbox.register("evaluate", eval_individual)
@@ -233,7 +344,7 @@ class OptimizerPlugin:
 
         # Run evolutionary algorithm
         start_time = time.time()
-        pop, _ = algorithms.eaSimple(
+        pop, logbook = algorithms.eaSimple( # Store logbook
             pop,
             toolbox,
             cxpb=self.params["cxpb"],
@@ -243,6 +354,8 @@ class OptimizerPlugin:
         )
         elapsed = time.time() - start_time
         logger.info(f"GA completed in {elapsed:.2f}s")
+        if logbook: # Print logbook if available
+            logger.info(f"Logbook: {logbook}")
 
         # Select best individual
         best_ind = tools.selBest(pop, k=1)[0]
@@ -257,163 +370,44 @@ class OptimizerPlugin:
         return best_params
 
     def _get_config_param(self, key: str, default: Any = None) -> Any:
-        """Helper to get a parameter from the optimizer's stored config."""
-        # Assuming self.config is populated with the main configuration
-        # during __init__ or set_params or when optimize is called.
-        if hasattr(self, "config") and isinstance(self.config, dict):
-            return self.config.get(key, default)
-        return default
+        """Helper to get a parameter from the optimizer's main config or its own params."""
+        # Prioritize global_config if available and key exists, else optimizer's params
+        if hasattr(self, 'global_config') and self.global_config is not None and key in self.global_config:
+            return self.global_config.get(key, default)
+        return self.params.get(key, default) # Fallback to optimizer's own params
 
     def _generate_datetimes_for_opt(self, num_ticks: int) -> pd.Series:
         """
         Generates a sequence of datetimes for optimizer evaluation.
-        This is a simplified version. For more complex scenarios (e.g., skipping weekends),
-        you might need to adapt logic from main.py's generate_datetime_column or
-        use pre-defined evaluation datetime sequences.
         """
-        start_dt_str = self._get_config_param("optimizer_start_datetime")
-        if not start_dt_str:  # Fallback to a default if not specified for optimizer
-            start_dt_str = self._get_config_param(
-                "start_datetime", datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            )
-
-        periodicity = self._get_config_param("dataset_periodicity", "1h")
+        # Use optimizer-specific start datetime if provided, else general start_datetime
+        start_dt_str = self.params.get("optimizer_start_datetime") # From optimizer's own params
+        if not start_dt_str:
+            start_dt_str = self._get_config_param("start_datetime", datetime.now().strftime('%Y-%m-%d %H:%M:%S')) # From global or optimizer params
+        
+        periodicity = self._get_config_param("dataset_periodicity", "1h") # From global or optimizer params
 
         try:
             current_dt = pd.to_datetime(start_dt_str)
         except Exception as e:
-            print(
-                f"OptimizerPlugin: Warning - Could not parse optimizer_start_datetime '{start_dt_str}'. Defaulting. Error: {e}"
-            )
-            current_dt = pd.to_datetime(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            logger.warning(f"Could not parse optimizer_start_datetime '{start_dt_str}'. Defaulting. Error: {e}")
+            current_dt = pd.to_datetime(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
 
-        # Simplified timedelta conversion
-        if "h" in periodicity:
-            delta = timedelta(hours=int(periodicity.replace("h", "")))
-        elif "min" in periodicity or "m" in periodicity or "T" in periodicity:
-            delta = timedelta(
-                minutes=int(periodicity.replace("min", "").replace("m", "").replace("T", ""))
-            )
-        elif "D" in periodicity:
-            delta = timedelta(days=int(periodicity.replace("D", "")))
+        delta = timedelta(hours=1) # Default
+        if 'h' in periodicity.lower():
+            try: delta = timedelta(hours=int(periodicity.lower().replace('h', '')))
+            except ValueError: logger.warning(f"Invalid hour value in periodicity: {periodicity}")
+        elif 'min' in periodicity.lower() or 'm' in periodicity.lower() or 't' in periodicity.lower():
+            try: delta = timedelta(minutes=int(periodicity.lower().replace('min', '').replace('m', '').replace('t', '')))
+            except ValueError: logger.warning(f"Invalid minute value in periodicity: {periodicity}")
+        elif 'd' in periodicity.lower():
+            try: delta = timedelta(days=int(periodicity.lower().replace('d', '')))
+            except ValueError: logger.warning(f"Invalid day value in periodicity: {periodicity}")
         else:
-            print(
-                f"OptimizerPlugin: Warning - Unhandled periodicity '{periodicity}' for optimizer datetime generation. Defaulting to 1 hour."
-            )
-            delta = timedelta(hours=1)
-
+            logger.warning(f"Unhandled periodicity '{periodicity}' for optimizer datetime generation. Defaulting to 1 hour.")
+            
         datetimes = [current_dt + i * delta for i in range(num_ticks)]
         return pd.Series(datetimes)
 
-    def eval_individual(self, individual_hyperparams):
-        """
-        Evaluates an individual set of hyperparameters.
-        This is a common function name for evolutionary algorithms (e.g., used with DEAP).
-        """
-        # 1. Apply individual_hyperparams to copies of feeder, generator, evaluator plugins
-        #    or re-initialize them with these hyperparameters.
-        #    This part is crucial and depends on your OptimizerPlugin's design.
-        #    Example:
-        #    temp_feeder_config = self.feeder.params.copy()
-        #    temp_feeder_config.update(individual_hyperparams relevant to feeder)
-        #    current_feeder_eval = type(self.feeder)(temp_feeder_config) # Or use set_params on a copy
-        #    current_feeder_eval.set_params(**temp_feeder_config)
-
-        #    temp_generator_config = self.generator.params.copy()
-        #    temp_generator_config.update(individual_hyperparams relevant to generator)
-        #    current_generator_eval = type(self.generator)(temp_generator_config)
-        #    current_generator_eval.set_params(**temp_generator_config)
-
-        # For this example, let's assume self.feeder and self.generator are
-        # already configured with the current individual's hyperparameters.
-
-        # 2. Determine the number of ticks for this evaluation run
-        #    This might come from the optimizer's config or be fixed.
-        num_ticks_for_evaluation = self._get_config_param(
-            "optimizer_n_samples_per_eval", 100
-        )  # Example value
-
-        # 3. Generate target_datetimes for the FeederPlugin
-        target_datetimes_for_eval = self._generate_datetimes_for_opt(num_ticks_for_evaluation)
-
-        # 4. Call FeederPlugin.generate with the correct arguments
-        #    The variable that was 'Z' should now store the sequence of feeder outputs.
-        feeder_outputs_sequence = self.feeder.generate(
-            n_ticks_to_generate=num_ticks_for_evaluation,
-            target_datetimes=target_datetimes_for_eval,
-        )
-
-        # 5. Prepare initial window for the generator (if needed by your logic)
-        #    This might be zeros or based on some real data segment.
-        decoder_input_window_size = self.generator.params.get("decoder_input_window_size")
-        num_all_features_gen = len(self.generator.params.get("full_feature_names_ordered", []))
-
-        if num_all_features_gen == 0:
-            raise ValueError("OptimizerPlugin: Generator's 'full_feature_names_ordered' is empty or not set.")
-
-        initial_window_for_generator = np.zeros((decoder_input_window_size, num_all_features_gen), dtype=np.float32)
-        # Optionally, populate initial_window_for_generator from a piece of real data if appropriate for optimization eval
-
-        # 6. Call GeneratorPlugin.generate
-        generated_full_sequence_batch = self.generator.generate(
-            feeder_outputs_sequence=feeder_outputs_sequence,
-            sequence_length_T=num_ticks_for_evaluation,
-            initial_full_feature_window=initial_window_for_generator,
-        )
-
-        synthetic_data_np = generated_full_sequence_batch[0]  # Shape: (sequence_length_T, num_all_features)
-
-        # 7. Evaluate the generated synthetic_data
-        #    You'll need a segment of real data for comparison.
-        #    This real data segment should be loaded or accessible here.
-        #    For example, from self.evaluator.params.get('real_data_file') or preloaded.
-        #    Let's assume `real_data_segment_for_eval_np` and `eval_feature_names_for_opt` are available.
-
-        # Placeholder for real_data_segment_for_eval_np and eval_feature_names_for_opt
-        # These need to be properly sourced (e.g., from preprocessed data accessible to the optimizer)
-        # real_data_segment_for_eval_np = ...
-        # eval_feature_names_for_opt = ...
-
-        # Example: (This is highly dependent on how your optimizer gets its evaluation data)
-        # if self.evaluator and hasattr(self.evaluator, '_load_real_data_for_evaluation'):
-        #     real_df_eval, eval_feature_names_for_opt = self.evaluator._load_real_data_for_evaluation(num_ticks_for_evaluation)
-        #     real_data_segment_for_eval_np = real_df_eval[eval_feature_names_for_opt].values
-        # else:
-        #     raise RuntimeError("OptimizerPlugin cannot access real data for evaluation.")
-
-        # Align synthetic data columns with real data columns for evaluation
-        # aligned_synthetic_df, aligned_real_df, aligned_features = self._align_data_for_evaluation(
-        #     pd.DataFrame(synthetic_data_np, columns=self.generator.params.get("full_feature_names_ordered")),
-        #     pd.DataFrame(real_data_segment_for_eval_np, columns=eval_feature_names_for_opt), # Assuming this is available
-        #     eval_feature_names_for_opt # Target feature set
-        # )
-
-        # metrics = self.evaluator.evaluate(
-        #     synthetic_data=aligned_synthetic_df.values,
-        #     real_data_processed=aligned_real_df.values,
-        #     feature_names=aligned_features,
-        #     config=self.config # Pass the main config
-        # )
-
-        # Extract a fitness score from the metrics
-        # fitness_score = metrics.get("overall_multivariate_fidelity", {}).get("avg_mmd_rbf", float('inf'))
-        # if fitness_score is None or not isinstance(fitness_score, (int, float)) or np.isnan(fitness_score):
-        #    fitness_score = float('inf') # Higher is worse for MMD
-
-        # return (fitness_score,) # DEAP expects a tuple of fitness values
-
-        # For now, to just fix the TypeError, the critical part is the feeder call.
-        # The rest of the evaluation logic needs to be correctly implemented.
-        # Returning a dummy fitness until the full evaluation flow is sorted.
-        print(f"OptimizerPlugin: eval_individual called. Feeder generated {len(feeder_outputs_sequence)} outputs.")
-        # This function must return a tuple (fitness_value,)
-        return (0.0,)  # Placeholder fitness
-
-    # ... other methods of OptimizerPlugin ...
-
-    # You might need a helper to align data if features differ or order matters for evaluation
-    # def _align_data_for_evaluation(self, synthetic_df, real_df, target_feature_names):
-    #     common_features = [f for f in target_feature_names if f in synthetic_df.columns and f in real_df.columns]
-    #     if not common_features:
-    #         raise ValueError("Optimizer evaluation: No common features between synthetic and real data based on target_feature_names.")
-    #     return synthetic_df[common_features], real_df[common_features], common_features
+    # The old eval_individual function (if it was a class method) is now replaced by the nested one.
+    # If you had other helper methods for eval_individual, ensure they are accessible or integrated.
