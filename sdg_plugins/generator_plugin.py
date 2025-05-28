@@ -528,10 +528,9 @@ class GeneratorPlugin:
             feeder_step_output = feeder_outputs_sequence[t]
             zt_original = feeder_step_output["Z"] # Shape (latent_seq_len, latent_features)
             
-            # Expand zt to (1, latent_seq_len, latent_features) for batch input
             if zt_original.ndim == 2:
                 zt = np.expand_dims(zt_original, axis=0)
-            elif zt_original.ndim == 3 and zt_original.shape[0] == 1: # Already has batch dim
+            elif zt_original.ndim == 3 and zt_original.shape[0] == 1: 
                 zt = zt_original
             else:
                 raise ValueError(f"Unexpected shape for zt from Feeder: {zt_original.shape}. Expected 2D (seq_len, features) or 3D (1, seq_len, features).")
@@ -539,18 +538,24 @@ class GeneratorPlugin:
             conditional_data_t = feeder_step_output["conditional_data"] 
             if conditional_data_t.ndim == 1: conditional_data_t = np.expand_dims(conditional_data_t, axis=0)
 
-            context_h_t = feeder_step_output.get("context_h", np.zeros((1,1))) 
+            context_h_t = feeder_step_output.get("context_h", np.zeros((1,1))) # Defaulting to (1,1) if not found, but FeederPlugin should provide it with correct dim
             if context_h_t.ndim == 1: context_h_t = np.expand_dims(context_h_t, axis=0)
 
-            decoder_input_x_window_t_expanded = np.expand_dims(current_input_feature_window, axis=0)
+            # The 'decoder_input_x_window_t_expanded' is NOT an input to the standalone decoder model.
+            # decoder_input_x_window_t_expanded = np.expand_dims(current_input_feature_window, axis=0)
 
             decoder_inputs = {
-                self.params["decoder_input_name_latent"]: zt, # Now should be (1, seq_len, features)
-                self.params["decoder_input_name_window"]: decoder_input_x_window_t_expanded,
-                self.params["decoder_input_name_conditions"]: conditional_data_t,
-                self.params["decoder_input_name_context"]: context_h_t
+                self.params["generator_decoder_input_name_latent"]: zt,
+                # self.params["generator_decoder_input_name_window"]: decoder_input_x_window_t_expanded, # REMOVED THIS LINE
+                self.params["generator_decoder_input_name_conditions"]: conditional_data_t,
+                self.params["generator_decoder_input_name_context"]: context_h_t
             }
             
+            # DEBUG PRINT (Optional but recommended for verification)
+            # print(f"DEBUG GeneratorPlugin: Feeding to decoder with keys: {list(decoder_inputs.keys())}")
+            # for key, val in decoder_inputs.items():
+            #    print(f"DEBUG GeneratorPlugin:   Input '{key}': shape {val.shape}")
+
             generated_decoder_output_step_t = self.sequential_model.predict(decoder_inputs)
             
             if generated_decoder_output_step_t.ndim == 3 and generated_decoder_output_step_t.shape[1] == 1:
