@@ -39,7 +39,6 @@ DEFAULT_VALUES = {
     "feeder_sampling_method": "standard_normal", # "standard_normal", "from_encoder"
     "feeder_encoder_sampling_technique": "direct", # "direct", "kde", "copula"
     "encoder_model_file": "examples/results/phase_4_2/phase_4_2_cnn_small_encoder_model.h5.keras", # Used by Feeder if method is "from_encoder"
-    "feeder_real_data_file": "examples/data/phase_3/normalized_d2.csv", # Path to CSV for Feeder (encoder input, fundamentals, datetimes)
     "feeder_feature_columns_for_encoder": [], # List of col names from feeder_real_data_file for VAE encoder input
     "feeder_real_data_file_has_header": True,
     "feeder_datetime_col_in_real_data": "DATE_TIME",
