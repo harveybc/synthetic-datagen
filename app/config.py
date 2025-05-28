@@ -59,7 +59,12 @@ DEFAULT_VALUES = {
         "OPEN", "HIGH", "LOW", "CLOSE",
         "RSI", "MACD", "MACD_Histogram", "MACD_Signal", "EMA",
         "Stochastic_%K", "Stochastic_%D", "ADX", "DI+", "DI-", "ATR", "CCI", "WilliamsR", "Momentum", "ROC",
-        "day_of_month", "hour_of_day", "day_of_week",
+        # ADD THE SIN/COS TRANSFORMED DATE FEATURES HERE:
+        "day_of_month_sin", "day_of_month_cos",
+        "hour_of_day_sin", "hour_of_day_cos",
+        "day_of_week_sin", "day_of_week_cos",
+        # Original date features (if your preprocessor also outputs them separately and they are used elsewhere)
+        # "day_of_month", "hour_of_day", "day_of_week", 
         "S&P500_Close", "vix_close",
         "log_return", "stl_trend", "stl_seasonal", "stl_resid",
         "wav_approx_L2", "wav_detail_L1", "wav_detail_L2",
@@ -69,6 +74,10 @@ DEFAULT_VALUES = {
         "CLOSE_15m_tick_5", "CLOSE_15m_tick_6", "CLOSE_15m_tick_7", "CLOSE_15m_tick_8",
         "CLOSE_30m_tick_1", "CLOSE_30m_tick_2", "CLOSE_30m_tick_3", "CLOSE_30m_tick_4",
         "CLOSE_30m_tick_5", "CLOSE_30m_tick_6", "CLOSE_30m_tick_7", "CLOSE_30m_tick_8"
+        # Ensure this list is complete and in the order your system expects.
+        # The order of the newly added sin/cos features within the list might matter
+        # depending on how other parts of your code (e.g., preprocessor output) are structured.
+        # Place them where they logically fit with your feature set.
     ], 
     "generator_decoder_output_feature_names": [
         # YOU MUST REPLACE THIS EXAMPLE WITH FEATURES DIRECTLY OUTPUT BY YOUR DECODER
