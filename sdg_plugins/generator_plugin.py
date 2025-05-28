@@ -20,6 +20,7 @@ import pandas as pd
 import pandas_ta as ta # Add pandas-ta
 import os # For os.path.exists
 import zipfile # For checking .keras file format (zip)
+from tqdm.auto import tqdm # ADDED for the overall progress bar
 
 
 class GeneratorPlugin:
@@ -524,7 +525,8 @@ class GeneratorPlugin:
 
         generated_sequence_all_features_list = []
 
-        for t in range(sequence_length_T):
+        # WRAPPED THE LOOP WITH TQDM
+        for t in tqdm(range(sequence_length_T), desc="Generating synthetic sequence", unit="step", dynamic_ncols=True):
             feeder_step_output = feeder_outputs_sequence[t]
             zt_original = feeder_step_output["Z"] # Shape (latent_seq_len, latent_features)
             
@@ -556,7 +558,7 @@ class GeneratorPlugin:
             # for key, val in decoder_inputs.items():
             #    print(f"DEBUG GeneratorPlugin:   Input '{key}': shape {val.shape}")
 
-            generated_decoder_output_step_t = self.sequential_model.predict(decoder_inputs)
+            generated_decoder_output_step_t = self.sequential_model.predict(decoder_inputs, verbose=0) # ADDED verbose=0
             
             if generated_decoder_output_step_t.ndim == 3 and generated_decoder_output_step_t.shape[1] == 1:
                 decoded_features_for_current_tick = generated_decoder_output_step_t[0, 0, :]
