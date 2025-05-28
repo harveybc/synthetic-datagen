@@ -11,13 +11,13 @@ Punto de entrada de la aplicación de predicción de EUR/USD. Este script orques
 
 import sys
 import json
-import pandas as pd # pandas might be imported here or later
+import pandas as pd
 from typing import Any, Dict, List
-import numpy as np # Import numpy as np is conventional
+import numpy as np
 import os
 import tempfile
 from datetime import datetime, timedelta
-import traceback # ADD THIS IMPORT
+import traceback # MOVED HERE - NOW AT GLOBAL SCOPE
 
 # --- MONKEY PATCH for numpy.NaN ---
 # Applied because pandas_ta 0.3.14b0 (or a dependency) seems to use
@@ -39,7 +39,7 @@ from app.config_handler import (
     remote_log
 )
 from app.cli import parse_args
-from app.config import DEFAULT_VALUES
+from app.config import DEFAULT_VALUES # Ensure this provides 'full_feature_names_ordered'
 from app.plugin_loader import load_plugin
 from config_merger import merge_config, process_unknown_args
 
@@ -210,7 +210,7 @@ def main():
         # If optimizer tunes 'latent_dim' (feature part), FeederPlugin's set_params will handle it.
     except Exception as e:
         print(f"Failed to load or initialize Generator Plugin '{plugin_name}': {e}")
-        traceback.print_exc() # Add traceback for better debugging
+        traceback.print_exc() # This will now work correctly
         sys.exit(1)
 
     # Selección del plugin Evaluator
@@ -942,6 +942,5 @@ if __name__ == "__main__":
         sys.exit(130)
     except Exception as e_global:
         print(f"❌ CRITICAL GLOBAL ERROR: An unhandled exception occurred outside main function execution: {e_global}")
-        import traceback
-        traceback.print_exc()
+        traceback.print_exc() # This will now work correctly
         sys.exit(1)
