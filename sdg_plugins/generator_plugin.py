@@ -678,6 +678,70 @@ class GeneratorPlugin:
             if not np.isnan(norm_close):
                 self.previous_normalized_close = norm_close
 
+            # 7. Fill historical tick data (e.g., CLOSE_15m_tick_X)
+            # This section attempts to fill historical tick data based on generated main 'CLOSE' history.
+            num_generated_steps = len(generated_sequence_all_features_list) # Current step t (0-indexed)
+
+            # TODO: Get main_interval_minutes from config (e.g., parse self.params.get('dataset_periodicity', '1h'))
+            # For now, assuming '1h' -> 60 minutes. This should be made dynamic.
+            dataset_periodicity_str = self.params.get('dataset_periodicity', '1h').lower()
+            if 'h' in dataset_periodicity_str:
+                main_interval_minutes = int(dataset_periodicity_str.replace('h', '')) * 60
+            elif 'min' in dataset_periodicity_str or 'm' in dataset_periodicity_str:
+                main_interval_minutes = int(dataset_periodicity_str.replace('min', '').replace('m', '').replace('t', ''))
+            else: # Default or unknown
+                main_interval_minutes = 60 
+                # print(f"GeneratorPlugin: Warning - Could not parse main_interval_minutes from {dataset_periodicity_str}. Defaulting to 60.")
+
+            tick_configs = [
+                ("CLOSE_15m_tick_{}", 15, 8),
+                ("CLOSE_30m_tick_{}", 30, 8),
+            ]
+            
+            idx_close_in_full_features = self.feature_to_idx.get('CLOSE', -1)
+
+            if idx_close_in_full_features != -1:
+                for pattern, sub_interval_minutes, num_sub_ticks in tick_configs:
+                    for i in range(1, num_sub_ticks + 1): # Tick numbers are 1-based
+                        feat_name = pattern.format(i)
+                        if feat_name in self.feature_to_idx:
+                            total_lag_minutes = i * sub_interval_minutes
+                            
+                            if total_lag_minutes > 0 and total_lag_minutes % main_interval_minutes == 0:
+                                lag_in_main_steps = total_lag_minutes // main_interval_minutes
+                                source_value = np.nan
+                                
+                                if num_generated_steps >= lag_in_main_steps:
+                                    # History from previously generated steps in this batch
+                                    source_value = generated_sequence_all_features_list[num_generated_steps - lag_in_main_steps][idx_close_in_full_features]
+                                elif (decoder_input_window_size - lag_in_main_steps) > 0 : # Check if lag fits in initial window
+                                    # Bootstrap from initial window (current_input_feature_window represents t-1, t-2... relative to current step t)
+                                    # Example: if lag_in_main_steps is 1 (e.g. 1 hour ago for hourly data)
+                                    # We need window_data[current_last_idx - 1] which is window_data[-2] if current_last_idx is -1
+                                    # current_input_feature_window[-1] is the *previous* tick's state before current generation.
+                                    # So, a lag of 1 main step means current_input_feature_window[-1] (the most recent historical point in the window)
+                                    # A lag of 2 main steps means current_input_feature_window[-2], etc.
+                                    # Index from end of window: -lag_in_main_steps
+                                    if decoder_input_window_size >= lag_in_main_steps:
+                                         source_value = current_input_feature_window[-(lag_in_main_steps), idx_close_in_full_features]
+
+                                if not np.isnan(source_value):
+                                    current_tick_assembled_features[self.feature_to_idx[feat_name]] = source_value
+                                else:
+                                    # Fallback if history not available even for aligned tick
+                                    current_tick_assembled_features[self.feature_to_idx[feat_name]] = np.random.uniform(0.01, 0.1) # Small random normalized
+                            else:
+                                # Sub-interval tick or zero lag, cannot derive from main CLOSE history this way.
+                                # Assign a random normalized value.
+                                current_tick_assembled_features[self.feature_to_idx[feat_name]] = np.random.uniform(0.01, 0.1) # Small random normalized
+            else: # CLOSE feature index not found, cannot derive ticks based on it.
+                for pattern, _, num_sub_ticks in tick_configs:
+                    for i in range(1, num_sub_ticks + 1):
+                        feat_name = pattern.format(i)
+                        if feat_name in self.feature_to_idx:
+                            current_tick_assembled_features[self.feature_to_idx[feat_name]] = np.random.uniform(0.01, 0.1) # Small random normalized
+                
+
 
             # 7. Fill DATE_TIME (placeholder float index)
             if 'DATE_TIME' in self.feature_to_idx:
