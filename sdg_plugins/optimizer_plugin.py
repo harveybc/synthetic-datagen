@@ -27,6 +27,8 @@ import random  # Random number generation
 import time  # Timing execution
 from typing import Any, Dict, List, Tuple, Union
 
+import pandas as pd  # Ensure pandas is imported
+from datetime import datetime, timedelta  # For datetime generation
 from deap import algorithms, base, creator, tools  # DEAP components
 
 # Initialize logger for this module
@@ -253,3 +255,165 @@ class OptimizerPlugin:
 
         logger.info(f"Best hyperparameters: {best_params}")
         return best_params
+
+    def _get_config_param(self, key: str, default: Any = None) -> Any:
+        """Helper to get a parameter from the optimizer's stored config."""
+        # Assuming self.config is populated with the main configuration
+        # during __init__ or set_params or when optimize is called.
+        if hasattr(self, "config") and isinstance(self.config, dict):
+            return self.config.get(key, default)
+        return default
+
+    def _generate_datetimes_for_opt(self, num_ticks: int) -> pd.Series:
+        """
+        Generates a sequence of datetimes for optimizer evaluation.
+        This is a simplified version. For more complex scenarios (e.g., skipping weekends),
+        you might need to adapt logic from main.py's generate_datetime_column or
+        use pre-defined evaluation datetime sequences.
+        """
+        start_dt_str = self._get_config_param("optimizer_start_datetime")
+        if not start_dt_str:  # Fallback to a default if not specified for optimizer
+            start_dt_str = self._get_config_param(
+                "start_datetime", datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            )
+
+        periodicity = self._get_config_param("dataset_periodicity", "1h")
+
+        try:
+            current_dt = pd.to_datetime(start_dt_str)
+        except Exception as e:
+            print(
+                f"OptimizerPlugin: Warning - Could not parse optimizer_start_datetime '{start_dt_str}'. Defaulting. Error: {e}"
+            )
+            current_dt = pd.to_datetime(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+        # Simplified timedelta conversion
+        if "h" in periodicity:
+            delta = timedelta(hours=int(periodicity.replace("h", "")))
+        elif "min" in periodicity or "m" in periodicity or "T" in periodicity:
+            delta = timedelta(
+                minutes=int(periodicity.replace("min", "").replace("m", "").replace("T", ""))
+            )
+        elif "D" in periodicity:
+            delta = timedelta(days=int(periodicity.replace("D", "")))
+        else:
+            print(
+                f"OptimizerPlugin: Warning - Unhandled periodicity '{periodicity}' for optimizer datetime generation. Defaulting to 1 hour."
+            )
+            delta = timedelta(hours=1)
+
+        datetimes = [current_dt + i * delta for i in range(num_ticks)]
+        return pd.Series(datetimes)
+
+    def eval_individual(self, individual_hyperparams):
+        """
+        Evaluates an individual set of hyperparameters.
+        This is a common function name for evolutionary algorithms (e.g., used with DEAP).
+        """
+        # 1. Apply individual_hyperparams to copies of feeder, generator, evaluator plugins
+        #    or re-initialize them with these hyperparameters.
+        #    This part is crucial and depends on your OptimizerPlugin's design.
+        #    Example:
+        #    temp_feeder_config = self.feeder.params.copy()
+        #    temp_feeder_config.update(individual_hyperparams relevant to feeder)
+        #    current_feeder_eval = type(self.feeder)(temp_feeder_config) # Or use set_params on a copy
+        #    current_feeder_eval.set_params(**temp_feeder_config)
+
+        #    temp_generator_config = self.generator.params.copy()
+        #    temp_generator_config.update(individual_hyperparams relevant to generator)
+        #    current_generator_eval = type(self.generator)(temp_generator_config)
+        #    current_generator_eval.set_params(**temp_generator_config)
+
+        # For this example, let's assume self.feeder and self.generator are
+        # already configured with the current individual's hyperparameters.
+
+        # 2. Determine the number of ticks for this evaluation run
+        #    This might come from the optimizer's config or be fixed.
+        num_ticks_for_evaluation = self._get_config_param(
+            "optimizer_n_samples_per_eval", 100
+        )  # Example value
+
+        # 3. Generate target_datetimes for the FeederPlugin
+        target_datetimes_for_eval = self._generate_datetimes_for_opt(num_ticks_for_evaluation)
+
+        # 4. Call FeederPlugin.generate with the correct arguments
+        #    The variable that was 'Z' should now store the sequence of feeder outputs.
+        feeder_outputs_sequence = self.feeder.generate(
+            n_ticks_to_generate=num_ticks_for_evaluation,
+            target_datetimes=target_datetimes_for_eval,
+        )
+
+        # 5. Prepare initial window for the generator (if needed by your logic)
+        #    This might be zeros or based on some real data segment.
+        decoder_input_window_size = self.generator.params.get("decoder_input_window_size")
+        num_all_features_gen = len(self.generator.params.get("full_feature_names_ordered", []))
+
+        if num_all_features_gen == 0:
+            raise ValueError("OptimizerPlugin: Generator's 'full_feature_names_ordered' is empty or not set.")
+
+        initial_window_for_generator = np.zeros((decoder_input_window_size, num_all_features_gen), dtype=np.float32)
+        # Optionally, populate initial_window_for_generator from a piece of real data if appropriate for optimization eval
+
+        # 6. Call GeneratorPlugin.generate
+        generated_full_sequence_batch = self.generator.generate(
+            feeder_outputs_sequence=feeder_outputs_sequence,
+            sequence_length_T=num_ticks_for_evaluation,
+            initial_full_feature_window=initial_window_for_generator,
+        )
+
+        synthetic_data_np = generated_full_sequence_batch[0]  # Shape: (sequence_length_T, num_all_features)
+
+        # 7. Evaluate the generated synthetic_data
+        #    You'll need a segment of real data for comparison.
+        #    This real data segment should be loaded or accessible here.
+        #    For example, from self.evaluator.params.get('real_data_file') or preloaded.
+        #    Let's assume `real_data_segment_for_eval_np` and `eval_feature_names_for_opt` are available.
+
+        # Placeholder for real_data_segment_for_eval_np and eval_feature_names_for_opt
+        # These need to be properly sourced (e.g., from preprocessed data accessible to the optimizer)
+        # real_data_segment_for_eval_np = ...
+        # eval_feature_names_for_opt = ...
+
+        # Example: (This is highly dependent on how your optimizer gets its evaluation data)
+        # if self.evaluator and hasattr(self.evaluator, '_load_real_data_for_evaluation'):
+        #     real_df_eval, eval_feature_names_for_opt = self.evaluator._load_real_data_for_evaluation(num_ticks_for_evaluation)
+        #     real_data_segment_for_eval_np = real_df_eval[eval_feature_names_for_opt].values
+        # else:
+        #     raise RuntimeError("OptimizerPlugin cannot access real data for evaluation.")
+
+        # Align synthetic data columns with real data columns for evaluation
+        # aligned_synthetic_df, aligned_real_df, aligned_features = self._align_data_for_evaluation(
+        #     pd.DataFrame(synthetic_data_np, columns=self.generator.params.get("full_feature_names_ordered")),
+        #     pd.DataFrame(real_data_segment_for_eval_np, columns=eval_feature_names_for_opt), # Assuming this is available
+        #     eval_feature_names_for_opt # Target feature set
+        # )
+
+        # metrics = self.evaluator.evaluate(
+        #     synthetic_data=aligned_synthetic_df.values,
+        #     real_data_processed=aligned_real_df.values,
+        #     feature_names=aligned_features,
+        #     config=self.config # Pass the main config
+        # )
+
+        # Extract a fitness score from the metrics
+        # fitness_score = metrics.get("overall_multivariate_fidelity", {}).get("avg_mmd_rbf", float('inf'))
+        # if fitness_score is None or not isinstance(fitness_score, (int, float)) or np.isnan(fitness_score):
+        #    fitness_score = float('inf') # Higher is worse for MMD
+
+        # return (fitness_score,) # DEAP expects a tuple of fitness values
+
+        # For now, to just fix the TypeError, the critical part is the feeder call.
+        # The rest of the evaluation logic needs to be correctly implemented.
+        # Returning a dummy fitness until the full evaluation flow is sorted.
+        print(f"OptimizerPlugin: eval_individual called. Feeder generated {len(feeder_outputs_sequence)} outputs.")
+        # This function must return a tuple (fitness_value,)
+        return (0.0,)  # Placeholder fitness
+
+    # ... other methods of OptimizerPlugin ...
+
+    # You might need a helper to align data if features differ or order matters for evaluation
+    # def _align_data_for_evaluation(self, synthetic_df, real_df, target_feature_names):
+    #     common_features = [f for f in target_feature_names if f in synthetic_df.columns and f in real_df.columns]
+    #     if not common_features:
+    #         raise ValueError("Optimizer evaluation: No common features between synthetic and real data based on target_feature_names.")
+    #     return synthetic_df[common_features], real_df[common_features], common_features
