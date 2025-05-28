@@ -510,7 +510,7 @@ class GeneratorPlugin:
         current_input_feature_window = np.zeros((decoder_input_window_size, self.num_all_features), dtype=np.float32)
         if initial_full_feature_window is not None:
             if initial_full_feature_window.shape == current_input_feature_window.shape:
-                current_input_feature_window = initial_full_feature_window.astype(np.float32).copy()
+                current_input_feature_window =
                 start_idx_for_ohlc_hist = max(0, decoder_input_window_size - min_ohlc_hist_len)
                 for i in range(start_idx_for_ohlc_hist, decoder_input_window_size):
                     row_ohlc_values = current_input_feature_window[i, ohlc_indices_in_full]
@@ -715,105 +715,4 @@ class GeneratorPlugin:
                                     # History from previously generated steps in this batch
                                     source_value = generated_sequence_all_features_list[num_generated_steps - lag_in_main_steps][idx_close_in_full_features]
                                 elif (decoder_input_window_size - lag_in_main_steps) > 0 : # Check if lag fits in initial window
-                                    # Bootstrap from initial window (current_input_feature_window represents t-1, t-2... relative to current step t)
-                                    # Example: if lag_in_main_steps is 1 (e.g. 1 hour ago for hourly data)
-                                    # We need window_data[current_last_idx - 1] which is window_data[-2] if current_last_idx is -1
-                                    # current_input_feature_window[-1] is the *previous* tick's state before current generation.
-                                    # So, a lag of 1 main step means current_input_feature_window[-1] (the most recent historical point in the window)
-                                    # A lag of 2 main steps means current_input_feature_window[-2], etc.
-                                    # Index from end of window: -lag_in_main_steps
-                                    if decoder_input_window_size >= lag_in_main_steps:
-                                         source_value = current_input_feature_window[-(lag_in_main_steps), idx_close_in_full_features]
-
-                                if not np.isnan(source_value):
-                                    current_tick_assembled_features[self.feature_to_idx[feat_name]] = source_value
-                                else:
-                                    # Fallback if history not available even for aligned tick
-                                    current_tick_assembled_features[self.feature_to_idx[feat_name]] = np.random.uniform(0.01, 0.1) # Small random normalized
-                            else:
-                                # Sub-interval tick or zero lag, cannot derive from main CLOSE history this way.
-                                # Assign a random normalized value.
-                                current_tick_assembled_features[self.feature_to_idx[feat_name]] = np.random.uniform(0.01, 0.1) # Small random normalized
-            else: # CLOSE feature index not found, cannot derive ticks based on it.
-                for pattern, _, num_sub_ticks in tick_configs:
-                    for i in range(1, num_sub_ticks + 1):
-                        feat_name = pattern.format(i)
-                        if feat_name in self.feature_to_idx:
-                            current_tick_assembled_features[self.feature_to_idx[feat_name]] = np.random.uniform(0.01, 0.1) # Small random normalized
-                
-
-
-            # 7. Fill DATE_TIME (placeholder float index)
-            if 'DATE_TIME' in self.feature_to_idx:
-                current_tick_assembled_features[self.feature_to_idx['DATE_TIME']] = np.float32(t)
-
-            # 8. Placeholder for any remaining unfilled (NaN) features
-            # These are features in full_feature_names_ordered not covered above (e.g., STL, Wavelet, MTM, historical ticks if not from window)
-            for i, feat_name in enumerate(self.params["full_feature_names_ordered"]):
-                if np.isnan(current_tick_assembled_features[i]):
-                    # Try to use the value from the previous step in the input window
-                    prev_window_val = current_input_feature_window[-1, i]
-                    if pd.notnull(prev_window_val) and not np.isnan(prev_window_val): # Check if it's a valid number
-                        current_tick_assembled_features[i] = prev_window_val
-                    else:
-                        # Fallback: small random normalized value (0-1) or 0.5 as neutral
-                        # Avoid exact 0.0 if possible, as per user's request about zeros.
-                        current_tick_assembled_features[i] = np.random.uniform(0.01, 0.1) # Small, non-zero
-                        # Alternatively, if the feature has normalization params, use its mid-point
-                        # if self.normalization_params and feat_name in self.normalization_params:
-                        #    current_tick_assembled_features[i] = 0.5
-                        # else: # If no norm params, it's harder to pick a good default
-                        #    current_tick_assembled_features[i] = np.random.uniform(0.01, 0.1) 
-                    # print(f"GeneratorPlugin: Warning - Feature '{feat_name}' was not generated. Filled with placeholder: {current_tick_assembled_features[i]:.4f}")
-
-            # Example: Step 1.5 - Fill historical tick data based on generated history
-            # This assumes your main generation step aligns with the finest tick frequency or can be used.
-            # This is a simplified example and needs robust history management.
-            num_generated_steps = len(generated_sequence_all_features_list)
-
-            if "CLOSE_15m_tick_1" in self.feature_to_idx:
-                if num_generated_steps >= 1:
-                    # Assuming CLOSE_15m_tick_1 is the CLOSE of the previous generated step
-                    # This requires careful thought about what these tick columns *mean*
-                    # And assumes your main generation interval is, for example, 15 minutes.
-                    # If your main interval is 1 hour, this logic is wrong.
-                    idx_close = self.feature_to_idx['CLOSE']
-                    current_tick_assembled_features[self.feature_to_idx["CLOSE_15m_tick_1"]] = generated_sequence_all_features_list[-1][idx_close]
-                elif 'CLOSE' in self.feature_to_idx and not np.isnan(current_input_feature_window[-2, self.feature_to_idx['CLOSE']]):
-                    # Bootstrap from initial window if no generated history yet
-                    current_tick_assembled_features[self.feature_to_idx["CLOSE_15m_tick_1"]] = current_input_feature_window[-2, self.feature_to_idx['CLOSE']]
-                else:
-                    current_tick_assembled_features[self.feature_to_idx["CLOSE_15m_tick_1"]] = self._normalize_value(0.0, "CLOSE_15m_tick_1") # Fallback
-
-            # ... repeat for CLOSE_15m_tick_2, etc., with appropriate lags ...
-            # ... and for CLOSE_30m_tick_1, etc. ...
-
-            # This requires that 'CLOSE_15m_tick_1' etc. have entries in your normalization_params
-            # if you use _normalize_value.
-
-
-            generated_sequence_all_features_list.append(current_tick_assembled_features)
-
-            current_input_feature_window = np.roll(current_input_feature_window, -1, axis=0)
-            current_input_feature_window[-1, :] = current_tick_assembled_features
-
-            if len(ohlc_history_for_ti_list) > self.params["ti_calculation_min_lookback"] + 50: # Buffer
-                ohlc_history_for_ti_list.pop(0)
-        
-        final_generated_sequence = np.array(generated_sequence_all_features_list, dtype=np.float32)
-        # Handle any remaining NaNs in the final array (should be rare after step 8)
-        if np.isnan(final_generated_sequence).any():
-            print("GeneratorPlugin: Warning - NaNs found in final_generated_sequence. Replacing with 0.01 (check generation logic).")
-            final_generated_sequence = np.nan_to_num(final_generated_sequence, nan=0.01)
-
-        return np.expand_dims(final_generated_sequence, axis=0)
-
-    def update_model(self, new_model: Model):
-        """
-        Actualiza el modelo del generador. Usado por GANTrainerPlugin después del entrenamiento de GAN.
-        """
-        if not isinstance(new_model, Model):
-            raise TypeError(f"new_model debe ser un modelo Keras, se recibió {type(new_model)}")
-        print("GeneratorPlugin: Actualizando sequential_model con una nueva instancia de modelo.")
-        self.sequential_model = new_model
-        self.model = new_model # Mantener la alias de self.model consistente
+                                    # Bootstrap from initial window (current_input_feature_window representa
