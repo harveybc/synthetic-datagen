@@ -676,13 +676,42 @@ def main():
     print("▶ Starting conditional sequential synthetic data generation...")
     try:
         # Determine the number of ticks to generate
-        # Option 1: From config (e.g., for generating a fixed number of new samples)
-        # Option 2: Match the length of the evaluation data segment
-        num_synthetic_samples_to_generate = config.get('num_synthetic_samples_to_generate', len(datetimes_eval_source))
-        
-        if num_synthetic_samples_to_generate <= 0:
-             raise ValueError("num_synthetic_samples_to_generate must be positive.")
+        n_config = config.get('num_synthetic_samples_to_generate') # This will be 0 by default from app/config.py
 
+        if n_config is not None and n_config > 0:
+            num_synthetic_samples_to_generate = n_config
+            print(f"INFO: Using 'num_synthetic_samples_to_generate' from configuration: {num_synthetic_samples_to_generate}")
+        else:
+            # If n_config is 0, None (not possible with DEFAULT_VALUES), or negative, default to length of evaluation data
+            default_length_source_name = "datetimes_eval_source"
+            default_length = 0
+            if hasattr(datetimes_eval_source, '__len__') and datetimes_eval_source is not None:
+                default_length = len(datetimes_eval_source)
+            else:
+                # This case should ideally be caught earlier when datetimes_eval_source is defined.
+                print(f"WARNING: {default_length_source_name} is not available or not a sequence. Defaulting generated samples to 0, which will likely error.")
+            
+            if n_config == 0:
+                print(f"INFO: 'num_synthetic_samples_to_generate' is 0 in config. Defaulting to length of {default_length_source_name} ({default_length}).")
+            elif n_config is None: # Should not happen given DEFAULT_VALUES
+                 print(f"INFO: 'num_synthetic_samples_to_generate' not found in config. Defaulting to length of {default_length_source_name} ({default_length}).")
+            else: # n_config < 0
+                 print(f"INFO: 'num_synthetic_samples_to_generate' is negative ({n_config}) in config. Defaulting to length of {default_length_source_name} ({default_length}).")
+            
+            num_synthetic_samples_to_generate = default_length
+
+        if num_synthetic_samples_to_generate <= 0:
+            len_eval_source_str = str(len(datetimes_eval_source)) if hasattr(datetimes_eval_source, '__len__') and datetimes_eval_source is not None else 'N/A or empty'
+            error_msg = (
+                f"num_synthetic_samples_to_generate must be positive. "
+                f"Resulted in {num_synthetic_samples_to_generate}. "
+                f"Config value for 'num_synthetic_samples_to_generate' was: {n_config}. "
+                f"Length of datetimes_eval_source: {len_eval_source_str}. "
+                f"Ensure 'num_synthetic_samples_to_generate' in your config is positive, "
+                f"or if it's 0 or not set, ensure evaluation data (e.g., x_test_dates from preprocessor) is available and non-empty."
+            )
+            raise ValueError(error_msg)
+        
         # Generate target datetimes for the synthetic sequence
         start_datetime_str = config.get('start_datetime', datetimes_eval_source.iloc[0].strftime('%Y-%m-%d %H:%M:%S') if not datetimes_eval_source.empty else datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
         periodicity_str = config.get('dataset_periodicity', '1h') # Default to hourly if not specified
