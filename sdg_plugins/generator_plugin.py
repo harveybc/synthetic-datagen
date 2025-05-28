@@ -657,11 +657,24 @@ class GeneratorPlugin:
 
             # 6. Calculate and fill log_return
             if "log_return" in self.feature_to_idx:
-                if self.previous_normalized_close is not None and self.previous_normalized_close != 0 and not np.isnan(norm_close):
-                    log_return_val = np.log(norm_close / self.previous_normalized_close) if self.previous_normalized_close != 0 else 0.0
-                    current_tick_assembled_features[self.feature_to_idx["log_return"]] = self._normalize_value(log_return_val, "log_return")
-                else:
-                    current_tick_assembled_features[self.feature_to_idx["log_return"]] = self._normalize_value(0.0, "log_return") # Or 0.5 if normalized
+                log_return_val_to_normalize = 0.0 # Default value for log_return before normalization
+
+                # Conditions for a valid log return calculation:
+                # - previous_normalized_close must exist and be strictly positive.
+                # - norm_close must exist (not NaN) and be strictly positive.
+                if (self.previous_normalized_close is not None and
+                        self.previous_normalized_close > 0 and  # Denominator must be strictly positive
+                        not np.isnan(norm_close) and
+                        norm_close > 0):  # Numerator must be strictly positive for log
+                    
+                    ratio = norm_close / self.previous_normalized_close
+                    # Ensure ratio is positive, though covered by above checks if norm_close/prev_norm_close are positive
+                    if ratio > 0:
+                        log_return_val_to_normalize = np.log(ratio)
+                    # else: log_return_val_to_normalize remains 0.0 if ratio somehow became non-positive
+                
+                current_tick_assembled_features[self.feature_to_idx["log_return"]] = self._normalize_value(log_return_val_to_normalize, "log_return")
+            
             if not np.isnan(norm_close):
                 self.previous_normalized_close = norm_close
 
