@@ -17,6 +17,7 @@ import numpy as np # Import numpy as np is conventional
 import os
 import tempfile
 from datetime import datetime, timedelta
+import traceback # ADD THIS IMPORT
 
 # --- MONKEY PATCH for numpy.NaN ---
 # Applied because pandas_ta 0.3.14b0 (or a dependency) seems to use
