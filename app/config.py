@@ -127,7 +127,6 @@ DEFAULT_VALUES = {
     "load_config": None,
     "save_config": "examples/results/phase_4_2/config_out.json",
     "save_log": "examples/results/phase_4_2/debug_out.json",
-
-    # CLI behavior
     "quiet_mode": False,
+    "run_hyperparameter_optimization": True, # ADD THIS LINE
 }

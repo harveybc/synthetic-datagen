@@ -484,57 +484,39 @@ def main():
     # GAN TRAINING OR VAE‐GENERATE + EVALUATE
     # -------------------------------------------------------------------------
     
-    is_gan_training_mode = cli_args.get('optimizer') and \
-                           getattr(optimizer_plugin, "__class__", None).__name__ == "GANTrainerPlugin"
-    is_hyperparam_opt_mode = cli_args.get('optimizer') and not is_gan_training_mode
+    is_gan_training_mode = config.get("gan_training_mode", False) # Assuming you might add this
+    is_hyperparam_opt_mode = config.get("hyperparameter_optimization_mode", False) and config.get("run_hyperparameter_optimization", True) # MODIFIED
 
-    if is_gan_training_mode:
-        print("▶ Running GAN training via Optimizer Plugin...")
-        try:
-            optimizer_plugin.optimize(
-                feeder=feeder_plugin,
-                generator=generator_plugin,
-                evaluator=evaluator_plugin,
-                preprocessor=preprocessor_plugin,
-                config=config
-            )
-            print("✔︎ GAN training completed.")
+    # Determine operation mode
+    # if is_gan_training_mode: # Placeholder for GAN training mode
+    #     print("▶ Running GAN training with Optimizer Plugin…")
+    #     # ... (GAN training logic using optimizer_plugin.train_gan(...) or similar)
+    #     sys.exit(0)
 
-            # Swap in the trained generator for downstream generation
-            trained_gen_model = optimizer_plugin.get_trained_generator() # Assuming this returns the Keras model
-            if trained_gen_model:
-                generator_plugin.update_model(trained_gen_model) # Assuming GeneratorPlugin has this method
-                print("✔︎ Generator plugin updated with GAN‐trained weights.")
-            else:
-                print("WARNING: GAN Optimizer did not return a trained generator model. Using original generator.")
-            # Let execution fall through to the generation/evaluation block
-        except Exception as e:
-            print(f"❌ GAN training failed: {e}")
-            import traceback
-            traceback.print_exc()
-            sys.exit(1)
-        # Do not exit here, proceed to generation with the (potentially) updated generator_plugin
-
-    elif is_hyperparam_opt_mode:
+    # elif is_hyperparam_opt_mode: # MODIFIED
+    if is_hyperparam_opt_mode: # Check if hyperparameter optimization should run
         print("▶ Running hyperparameter optimization with Optimizer Plugin…")
         try:
             optimal_params = optimizer_plugin.optimize(
                 feeder_plugin,
                 generator_plugin,
                 evaluator_plugin,
-                # preprocessor_plugin, # REMOVE THIS ARGUMENT
                 config
             )
             print("✔︎ Hyperparameter optimization completed.")
             # print(f"Optimal parameters: {optimal_params}") # Optionally print
-            sys.exit(0) # Exit after hyperparameter optimization as per original logic
+            # Update config with optimal_params before proceeding to generation, or exit
+            # For now, exiting as per original logic for hyperparam opt.
+            sys.exit(0) 
         except Exception as e:
             print(f"❌ Hyperparameter optimization failed: {e}")
             import traceback
             traceback.print_exc()
             sys.exit(1)
-    else:
-        print("▶ Skipping optimization, proceeding to data preprocessing, synthetic data generation, and evaluation…")
+    
+    # If not in hyperparameter optimization mode (or if it was skipped), proceed to generation.
+    # Ensure FeederPlugin is ready for generation (it should be from initialization)
+    print("▶ Generating synthetic data with Generator Plugin…")
 
     # This block will now execute if:
     # 1. No optimizer was specified.

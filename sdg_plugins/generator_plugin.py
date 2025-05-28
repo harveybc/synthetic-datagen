@@ -208,57 +208,79 @@ class GeneratorPlugin:
         Actualiza parámetros del plugin.
         :param kwargs: pares clave-valor para actualizar plugin_params.
         """
-        # ADD LOGGING
-        print(f"GeneratorPlugin.set_params called with kwargs: {list(kwargs.keys())}") # Log keys to avoid overly verbose logs
+        print(f"GeneratorPlugin.set_params called with kwargs: {list(kwargs.keys())}")
+        # For debugging specific keys
         if "generator_sequential_model_file" in kwargs:
             print(f"GeneratorPlugin.set_params: kwargs has generator_sequential_model_file = {kwargs['generator_sequential_model_file']}")
         if "sequential_model_file" in kwargs:
-             print(f"GeneratorPlugin.set_params: kwargs has sequential_model_file = {kwargs['sequential_model_file']}")
+            print(f"GeneratorPlugin.set_params: kwargs has sequential_model_file = {kwargs['sequential_model_file']}")
+        if "generator_normalization_params_file" in kwargs:
+            print(f"GeneratorPlugin.set_params: kwargs has generator_normalization_params_file = {kwargs['generator_normalization_params_file']}")
+
 
         old_model_file = self.params.get("sequential_model_file")
+        old_norm_file = self.params.get("generator_normalization_params_file")
         old_full_feature_names = self.params.get("full_feature_names_ordered")
 
-        # Iterate over the plugin's defined parameter keys (short names, e.g., "sequential_model_file")
+        # Update self.params by checking prefixed keys first, then short keys from kwargs
         for param_key_short in self.plugin_params.keys():
-            # Attempt 1: Check if the exact short key exists in kwargs (passed from main.py's config)
-            if param_key_short in kwargs:
+            prefixed_key = f"generator_{param_key_short}" # e.g., "generator_sequential_model_file"
+            
+            if prefixed_key in kwargs:
+                self.params[param_key_short] = kwargs[prefixed_key]
+                if param_key_short == "sequential_model_file":
+                    print(f"GeneratorPlugin.set_params: Updated self.params['sequential_model_file'] via prefixed key '{prefixed_key}' to: {self.params[param_key_short]}")
+                elif param_key_short == "generator_normalization_params_file": # this key is already prefixed in plugin_params
+                     # This case should not happen if param_key_short is 'generator_normalization_params_file'
+                     # and prefixed_key becomes 'generator_generator_normalization_params_file'
+                     # Let's handle 'generator_normalization_params_file' specifically if it's a direct key in kwargs
+                     pass
+            elif param_key_short in kwargs: # If no prefixed key, check for short key
                 self.params[param_key_short] = kwargs[param_key_short]
-                # ADD LOGGING
                 if param_key_short == "sequential_model_file":
                     print(f"GeneratorPlugin.set_params: Updated self.params['sequential_model_file'] via short key to: {self.params[param_key_short]}")
-            else:
-                # Attempt 2: Check if a prefixed version (e.g., "generator_sequential_model_file") exists in kwargs
-                # This assumes a common prefix like "generator_" for this plugin type.
-                # You might need to adjust the prefix if it varies or make this logic more generic.
-                potential_prefixed_key = f"generator_{param_key_short}" # e.g., "generator_sequential_model_file"
-                if potential_prefixed_key in kwargs:
-                    self.params[param_key_short] = kwargs[potential_prefixed_key]
-                    # ADD LOGGING
-                    if param_key_short == "sequential_model_file":
-                        print(f"GeneratorPlugin.set_params: Updated self.params['sequential_model_file'] via prefixed key '{potential_prefixed_key}' to: {self.params[param_key_short]}")
         
-        new_model_file = self.params.get("sequential_model_file")
-        # ADD LOGGING
-        print(f"GeneratorPlugin.set_params: After processing kwargs, self.params['sequential_model_file'] is: {new_model_file}")
+        # Special handling for 'generator_normalization_params_file' as it's already prefixed in plugin_params
+        # and might be passed directly as 'generator_normalization_params_file' in kwargs.
+        if "generator_normalization_params_file" in kwargs:
+            self.params["generator_normalization_params_file"] = kwargs["generator_normalization_params_file"]
+            print(f"GeneratorPlugin.set_params: Updated self.params['generator_normalization_params_file'] directly to: {self.params['generator_normalization_params_file']}")
 
-        # Cargar o recargar el modelo si la ruta cambió o si no estaba cargado y ahora hay una ruta
+
+        new_model_file = self.params.get("sequential_model_file")
+        new_norm_file = self.params.get("generator_normalization_params_file")
+        print(f"GeneratorPlugin.set_params: After processing kwargs, self.params['sequential_model_file'] is: {new_model_file}")
+        print(f"GeneratorPlugin.set_params: After processing kwargs, self.params['generator_normalization_params_file'] is: {new_norm_file}")
+
         if new_model_file != old_model_file or (new_model_file and self.sequential_model is None):
-            self._load_model_from_path(new_model_file) # Llama al helper centralizado
-        elif not new_model_file and old_model_file: # Si la nueva ruta es None/vacía y antes había una
+            self._load_model_from_path(new_model_file)
+        elif not new_model_file and old_model_file:
             print("GeneratorPlugin: La ruta del modelo se ha borrado. Limpiando el modelo cargado.")
             self.sequential_model = None
             self.model = None
+
+        if new_norm_file != old_norm_file or (new_norm_file and self.normalization_params is None):
+            self.normalization_params = self._load_normalization_params(new_norm_file)
+        elif not new_norm_file and old_norm_file: # If norm file path is cleared
+            print("GeneratorPlugin: Normalization params file path cleared. Resetting normalization_params.")
+            self.normalization_params = None
 
 
         if self.params.get("full_feature_names_ordered") != old_full_feature_names or \
            any(key in kwargs for key in ["decoder_output_feature_names", "ohlc_feature_names", 
                                          "ti_feature_names", "date_conditional_feature_names", 
-                                         "feeder_conditional_feature_names"]):
-            if self.params.get("full_feature_names_ordered"): # Ensure it's not empty before rebuilding
+                                         "feeder_conditional_feature_names",
+                                         "generator_decoder_output_feature_names", # Prefixed versions
+                                         "generator_ohlc_feature_names",
+                                         "generator_ti_feature_names",
+                                         "generator_date_conditional_feature_names",
+                                         "generator_feeder_conditional_feature_names"
+                                         ]):
+            if self.params.get("full_feature_names_ordered"):
                 self.feature_to_idx = {name: i for i, name in enumerate(self.params["full_feature_names_ordered"])}
                 self.num_all_features = len(self.params["full_feature_names_ordered"])
                 self._validate_feature_name_consistency()
-            elif old_full_feature_names: # It became empty, which is an issue
+            elif old_full_feature_names:
                  raise ValueError("'full_feature_names_ordered' cannot be empty after update.")
         
         # ADDED: Reload normalization params if file path changes
