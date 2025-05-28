@@ -36,6 +36,7 @@ class FeederPlugin:
         "max_day_of_month": 31,
         "max_hour_of_day": 23, # Hours 0-23
         "max_day_of_week": 6,  # Days 0-6
+        "max_day_of_year": 366, # ADDED for day_of_year
         "context_vector_dim": 16, # Dimension of the context_h vector for the decoder
         "context_vector_strategy": "zeros", # "zeros" or future "sample_from_real_context"
         "copula_kde_bw_method": None,
@@ -45,6 +46,7 @@ class FeederPlugin:
         "encoder_sampling_technique", "encoder_model_file", "real_data_file", 
         "feature_columns_for_encoder", "datetime_col_in_real_data",
         "date_feature_names_for_conditioning", "fundamental_feature_names_for_conditioning",
+        "max_day_of_month", "max_hour_of_day", "max_day_of_week", "max_day_of_year", # ADDED max_day_of_year
         "context_vector_dim", "context_vector_strategy",
         "copula_kde_bw_method"
     ]
@@ -357,6 +359,10 @@ class FeederPlugin:
             dow = datetime_obj.dayofweek # Monday=0, Sunday=6
             date_features.append(np.sin(2 * np.pi * dow / (self.params["max_day_of_week"] + 1))) # Max is 6, so 7 distinct values
             date_features.append(np.cos(2 * np.pi * dow / (self.params["max_day_of_week"] + 1)))
+        if "day_of_year" in self.params["date_feature_names_for_conditioning"]: # ADDED
+            doy = datetime_obj.dayofyear                                         # ADDED
+            date_features.append(np.sin(2 * np.pi * doy / self.params["max_day_of_year"])) # ADDED
+            date_features.append(np.cos(2 * np.pi * doy / self.params["max_day_of_year"])) # ADDED
         return np.array(date_features, dtype=np.float32)
 
     def _get_scaled_fundamental_features(self, datetime_obj: pd.Timestamp) -> np.ndarray:

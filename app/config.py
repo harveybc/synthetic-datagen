@@ -42,11 +42,12 @@ DEFAULT_VALUES = {
     "feeder_feature_columns_for_encoder": [], 
     "feeder_real_data_file_has_header": True,
     "feeder_datetime_col_in_real_data": "DATE_TIME",
-    "feeder_date_features_for_conditioning": ["day_of_month", "hour_of_day", "day_of_week"],
+    "feeder_date_features_for_conditioning": ["day_of_month", "hour_of_day", "day_of_week", "day_of_year"], # ADDED "day_of_year"
     "feeder_fundamental_features_for_conditioning": ["S&P500_Close", "vix_close"],
     "feeder_max_day_of_month": 31,
     "feeder_max_hour_of_day": 23,
     "feeder_max_day_of_week": 6,
+    "feeder_max_day_of_year": 366, # ADDED
     "feeder_context_vector_dim": 64, 
     "feeder_context_vector_strategy": "zeros",
     "feeder_copula_kde_bw_method": None,
@@ -55,16 +56,13 @@ DEFAULT_VALUES = {
     "generator_sequential_model_file": "examples/results/phase_4_2/phase_4_2_cnn_small_decoder_model.keras",
     "generator_decoder_input_window_size": 144, 
     "generator_full_feature_names_ordered": [
-        # YOU MUST REPLACE THIS EXAMPLE WITH YOUR ACTUAL FULL FEATURE LIST IN ORDER
         "OPEN", "HIGH", "LOW", "CLOSE",
         "RSI", "MACD", "MACD_Histogram", "MACD_Signal", "EMA",
         "Stochastic_%K", "Stochastic_%D", "ADX", "DI+", "DI-", "ATR", "CCI", "WilliamsR", "Momentum", "ROC",
-        # ADD THE SIN/COS TRANSFORMED DATE FEATURES HERE:
         "day_of_month_sin", "day_of_month_cos",
         "hour_of_day_sin", "hour_of_day_cos",
         "day_of_week_sin", "day_of_week_cos",
-        # Original date features (if your preprocessor also outputs them separately and they are used elsewhere)
-        # "day_of_month", "hour_of_day", "day_of_week", 
+        "day_of_year_sin", "day_of_year_cos", # ADDED
         "S&P500_Close", "vix_close",
         "log_return", "stl_trend", "stl_seasonal", "stl_resid",
         "wav_approx_L2", "wav_detail_L1", "wav_detail_L2",
@@ -89,7 +87,7 @@ DEFAULT_VALUES = {
         "Stochastic_%K", "Stochastic_%D", "ADX", "DI+", "DI-",
         "ATR", "CCI", "WilliamsR", "Momentum", "ROC"
     ],
-    "generator_date_conditional_feature_names": ["day_of_month", "hour_of_day", "day_of_week"], 
+    "generator_date_conditional_feature_names": ["day_of_month", "hour_of_day", "day_of_week", "day_of_year"], # ADDED "day_of_year"
     "generator_feeder_conditional_feature_names": ["S&P500_Close", "vix_close"], 
     "generator_ti_calculation_min_lookback": 200, 
     "generator_ti_params": { 
