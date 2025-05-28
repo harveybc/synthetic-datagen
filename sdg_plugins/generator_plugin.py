@@ -154,9 +154,21 @@ class GeneratorPlugin:
         old_model_file = self.params.get("sequential_model_file")
         old_full_feature_names = self.params.get("full_feature_names_ordered")
 
-        for key, value in kwargs.items():
-            if key in self.plugin_params:
-                self.params[key] = value
+        # Iterate over the plugin's defined parameter keys (short names, e.g., "sequential_model_file")
+        for param_key_short in self.plugin_params.keys():
+            # Attempt 1: Check if the exact short key exists in kwargs (passed from main.py's config)
+            if param_key_short in kwargs:
+                self.params[param_key_short] = kwargs[param_key_short]
+            else:
+                # Attempt 2: Check if a prefixed version (e.g., "generator_sequential_model_file") exists in kwargs
+                # This assumes a common prefix like "generator_" for this plugin type.
+                # You might need to adjust the prefix if it varies or make this logic more generic.
+                potential_prefixed_key = f"generator_{param_key_short}" # e.g., "generator_sequential_model_file"
+                if potential_prefixed_key in kwargs:
+                    self.params[param_key_short] = kwargs[potential_prefixed_key]
+                # else:
+                    # Optional: print a warning if a plugin parameter isn't found in the global config
+                    # print(f"GeneratorPlugin: Warning - Parameter '{param_key_short}' not found in provided config (kwargs). Using default or existing.")
         
         new_model_file = self.params.get("sequential_model_file")
 
