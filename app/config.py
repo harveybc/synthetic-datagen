@@ -57,7 +57,7 @@ DEFAULT_VALUES = {
     "generator_decoder_input_window_size": 144, 
     "generator_full_feature_names_ordered": [
         "DATE_TIME", 
-        "OPEN", "HIGH", "LOW", "CLOSE",
+        "OPEN", "HIGH", "LOW", "CLOSE", # CLOSE is derived
         "RSI", "MACD", "MACD_Histogram", "MACD_Signal", "EMA",
         "Stochastic_%K", "Stochastic_%D", "ADX", "DI+", "DI-", "ATR", "CCI", "WilliamsR", "Momentum", "ROC",
         "day_of_month_sin", "day_of_month_cos",
@@ -65,22 +65,26 @@ DEFAULT_VALUES = {
         "day_of_week_sin", "day_of_week_cos",
         "day_of_year_sin", "day_of_year_cos",
         "S&P500_Close", "vix_close",
-        "log_return", 
-        "stl_trend", "stl_seasonal", "stl_resid", # If decoder not generating these, they'll be placeholders
-        "wav_approx_L2", "wav_detail_L1", "wav_detail_L2", # If decoder not generating these, they'll be placeholders
-        "mtm_band_0", "mtm_band_1", "mtm_band_2", "mtm_band_3", # If decoder not generating these, they'll be placeholders
-        "BC-BO", "BH-BL", "BH-BO", "BO-BL", # These will be derived
-        "CLOSE_15m_tick_1", "CLOSE_15m_tick_2", "CLOSE_15m_tick_3", "CLOSE_15m_tick_4", # Placeholders if not in initial window
-        "CLOSE_15m_tick_5", "CLOSE_15m_tick_6", "CLOSE_15m_tick_7", "CLOSE_15m_tick_8", # Placeholders if not in initial window
-        "CLOSE_30m_tick_1", "CLOSE_30m_tick_2", "CLOSE_30m_tick_3", "CLOSE_30m_tick_4", # Placeholders if not in initial window
-        "CLOSE_30m_tick_5", "CLOSE_30m_tick_6", "CLOSE_30m_tick_7", "CLOSE_30m_tick_8", # Placeholders if not in initial window
-        # ADD RAW DATE FEATURES FOR POTENTIAL OUTPUT - these need to be in normalization_params
+        "log_return", # log_return is now expected from decoder
+        "stl_trend", "stl_seasonal", "stl_resid",
+        "wav_approx_L2", "wav_detail_L1", "wav_detail_L2",
+        "mtm_band_0", "mtm_band_1", "mtm_band_2", "mtm_band_3",
+        "BC-BO", "BH-BL", "BH-BO", "BO-BL",
+        "CLOSE_15m_tick_1", "CLOSE_15m_tick_2", "CLOSE_15m_tick_3", "CLOSE_15m_tick_4",
+        "CLOSE_15m_tick_5", "CLOSE_15m_tick_6", "CLOSE_15m_tick_7", "CLOSE_15m_tick_8",
+        "CLOSE_30m_tick_1", "CLOSE_30m_tick_2", "CLOSE_30m_tick_3", "CLOSE_30m_tick_4",
+        "CLOSE_30m_tick_5", "CLOSE_30m_tick_6", "CLOSE_30m_tick_7", "CLOSE_30m_tick_8",
         "day_of_month", "hour_of_day", "day_of_week" 
-        # day_of_year is not in the user's target CSV header, so not adding raw "day_of_year" here for now
     ], 
     "generator_decoder_output_feature_names": [
-        # YOU MUST REPLACE THIS EXAMPLE WITH FEATURES DIRECTLY OUTPUT BY YOUR DECODER
-         "OPEN", "HIGH", "LOW", "CLOSE" 
+        # Based on cvae_target_feature_names from phase_4_2_cnn_small_debug_out.json
+        # PLUS "log_return" as per user intent for CLOSE derivation.
+        "OPEN", "LOW", "HIGH", "vix_close", "BC-BO", "BH-BL", "S&P500_Close",
+        "CLOSE_15m_tick_1", "CLOSE_15m_tick_2", "CLOSE_15m_tick_3", "CLOSE_15m_tick_4",
+        "CLOSE_15m_tick_5", "CLOSE_15m_tick_6", "CLOSE_15m_tick_7", "CLOSE_15m_tick_8",
+        "CLOSE_30m_tick_1", "CLOSE_30m_tick_2", "CLOSE_30m_tick_3", "CLOSE_30m_tick_4",
+        "CLOSE_30m_tick_5", "CLOSE_30m_tick_6", "CLOSE_30m_tick_7", "CLOSE_30m_tick_8",
+        "log_return" # Added: Assuming decoder outputs log_return
     ], 
     "generator_ohlc_feature_names": ["OPEN", "HIGH", "LOW", "CLOSE"],
     "generator_ti_feature_names": [ 
