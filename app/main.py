@@ -737,13 +737,17 @@ def main():
             print("WARNING: Both synthetic and real data segments are empty. Output file will be empty or header-only.")
             df_combined_prepended = pd.DataFrame(columns=TARGET_CSV_COLUMNS) 
         elif output_df_synthetic_final.empty:
-            df_combined_prepended = output_df_real_final_segment.reindex(columns=TARGET_CSV_COLUMNS)
+            # df_combined_prepended = output_df_real_final_segment.reindex(columns=TARGET_CSV_COLUMNS) # .reindex is redundant
+            df_combined_prepended = output_df_real_final_segment
         elif output_df_real_final_segment.empty:
-            df_combined_prepended = output_df_synthetic_final.reindex(columns=TARGET_CSV_COLUMNS)
+            # df_combined_prepended = output_df_synthetic_final.reindex(columns=TARGET_CSV_COLUMNS) # .reindex is redundant
+            df_combined_prepended = output_df_synthetic_final
         else:
             df_combined_prepended = pd.concat(
-                [output_df_synthetic_final.reindex(columns=TARGET_CSV_COLUMNS), 
-                 output_df_real_final_segment.reindex(columns=TARGET_CSV_COLUMNS)], 
+                # [output_df_synthetic_final.reindex(columns=TARGET_CSV_COLUMNS), # .reindex is redundant
+                #  output_df_real_final_segment.reindex(columns=TARGET_CSV_COLUMNS)], # .reindex is redundant
+                [output_df_synthetic_final, 
+                 output_df_real_final_segment], 
                 ignore_index=True
             )
         
@@ -751,116 +755,6 @@ def main():
         os.makedirs(os.path.dirname(final_output_path), exist_ok=True)
         df_combined_prepended.to_csv(final_output_path, index=False, na_rep='NaN')
         print(f"✔︎ Combined data (synthetic prepended to real) saved to {final_output_path} (Shape: {df_combined_prepended.shape})")
-
-        # 9. Proceed with Evaluation (using x_test or x_validation as per original logic)
-        print("\n▶ Starting independent evaluation process using evaluation dataset (e.g., x_test)...")
-        
-        eval_data_source_path = config.get('x_test_file', config.get('x_validation_file'))
-        if not eval_data_source_path or not os.path.exists(eval_data_source_path):
-            print(f"WARNING: Evaluation data source (x_test_file or x_validation_file: '{eval_data_source_path}') not found or not configured. Skipping evaluation.")
-        else:
-            config_for_eval_preprocessing = config.copy()
-            if hasattr(preprocessor_plugin, 'plugin_params'): # Check if preprocessor_plugin has plugin_params
-                if not config_for_eval_preprocessing.get('use_stl', False):
-                     if 'stl_window' in preprocessor_plugin.plugin_params or 'stl_window' in config_for_eval_preprocessing:
-                        config_for_eval_preprocessing['stl_window'] = 0
-            
-            print(f"DEBUG main.py: Calling preprocessor_plugin.run_preprocessing for evaluation data: {eval_data_source_path}")
-            eval_datasets = preprocessor_plugin.run_preprocessing(config=config_for_eval_preprocessing)
-            
-            X_real_eval_source_anytype = eval_datasets.get("x_test", eval_datasets.get("x_validation"))
-            datetimes_eval_source_anytype = eval_datasets.get("x_test_dates", eval_datasets.get("x_val_dates")) 
-            eval_feature_names = eval_datasets.get("feature_names", []) 
-
-            if X_real_eval_source_anytype is None or datetimes_eval_source_anytype is None:
-                print(f"WARNING: No suitable x_test or x_validation data found from preprocessor output for path '{eval_data_source_path}'. Skipping evaluation.")
-            else:
-                datetimes_eval_source = pd.Series(pd.to_datetime(datetimes_eval_source_anytype))
-                if isinstance(X_real_eval_source_anytype, pd.DataFrame):
-                    if not eval_feature_names: eval_feature_names = list(X_real_eval_source_anytype.columns)
-                    X_real_eval_source_np = X_real_eval_source_anytype.values.astype(np.float32)
-                elif isinstance(X_real_eval_source_anytype, np.ndarray):
-                    X_real_eval_source_np = X_real_eval_source_anytype.astype(np.float32)
-                else:
-                    raise TypeError(f"Preprocessor eval output ('x_test' or 'x_validation') is of unexpected type: {type(X_real_eval_source_anytype)}")
-
-                # --- ADDED: Handle 3D preprocessor output for eval data ---
-                if X_real_eval_source_np.ndim == 3:
-                    print(f"DEBUG main.py: X_real_eval_source_np is 3D {X_real_eval_source_np.shape}. Taking last element of sequence dimension.")
-                    # Assume (num_samples, sequence_length, num_features) -> (num_samples, num_features)
-                    X_real_eval_source_np = X_real_eval_source_np[:, -1, :]
-                    print(f"DEBUG main.py: X_real_eval_source_np reshaped to 2D: {X_real_eval_source_np.shape}")
-                # --- END ADDED ---
-
-                if not eval_feature_names and X_real_eval_source_np.ndim > 1 and X_real_eval_source_np.shape[0] > 0: 
-                    eval_feature_names = [f"feature_{i}" for i in range(X_real_eval_source_np.shape[-1])]
-                
-                num_eval_samples = X_real_eval_source_np.shape[0]
-                if num_eval_samples == 0:
-                    print("WARNING: Evaluation data source is empty. Skipping evaluation generation.")
-                else:
-                    print(f"Generating {num_eval_samples} synthetic samples for evaluation against processed eval data...")
-                    
-                    feeder_outputs_for_eval = feeder_plugin.generate(
-                        n_ticks_to_generate=num_eval_samples,
-                        target_datetimes=datetimes_eval_source 
-                    )
-                    
-                    initial_window_for_eval_gen_df = pd.DataFrame(
-                        np.nan, 
-                        index=range(decoder_input_window_size), 
-                        columns=generator_full_feature_names
-                    ).astype(np.float32)
-
-                    if X_real_eval_source_np.shape[0] >= decoder_input_window_size:
-                        df_temp_processed_eval = pd.DataFrame(X_real_eval_source_np, columns=eval_feature_names)
-                        initial_window_raw_df_from_eval = df_temp_processed_eval.iloc[:decoder_input_window_size] 
-                        for col_name_gen_eval in generator_full_feature_names:
-                            if col_name_gen_eval in initial_window_raw_df_from_eval.columns:
-                                initial_window_for_eval_gen_df[col_name_gen_eval] = initial_window_raw_df_from_eval[col_name_gen_eval].values
-                    
-                    initial_window_for_eval_gen = initial_window_for_eval_gen_df.fillna(0.0).values
-                    
-                    generated_eval_output = generator_plugin.generate(
-                        feeder_outputs_sequence=feeder_outputs_for_eval,
-                        sequence_length_T=num_eval_samples,
-                        initial_full_feature_window=initial_window_for_eval_gen
-                    )
-                    if isinstance(generated_eval_output, list) and len(generated_eval_output) == 1 and isinstance(generated_eval_output[0], np.ndarray):
-                        X_syn_for_eval_np = generated_eval_output[0]
-                    elif isinstance(generated_eval_output, np.ndarray) and generated_eval_output.ndim == 3 and generated_eval_output.shape[0] == 1 : 
-                        X_syn_for_eval_np = generated_eval_output[0]
-                    elif isinstance(generated_eval_output, np.ndarray) and generated_eval_output.ndim == 2 and generated_eval_output.shape[0] == num_eval_samples :
-                        X_syn_for_eval_np = generated_eval_output
-                    else:
-                        raise TypeError(f"Unexpected output type or shape from generator_plugin.generate for eval: {type(generated_eval_output)}")
-
-                    df_syn_for_eval_full_features = pd.DataFrame(X_syn_for_eval_np, columns=generator_full_feature_names)
-                    df_real_for_eval_processed_features = pd.DataFrame(X_real_eval_source_np, columns=eval_feature_names)
-
-                    common_features_eval = [f_name for f_name in eval_feature_names if f_name in df_syn_for_eval_full_features.columns]
-                    if not common_features_eval:
-                        raise ValueError("No common features between synthetic data for eval (generator output) and real eval data (preprocessor output).")
-
-                    df_syn_for_eval_aligned = df_syn_for_eval_full_features[common_features_eval]
-                    df_real_for_eval_aligned = df_real_for_eval_processed_features[common_features_eval]
-                    
-                    print(f"Shape of synthetic data for evaluation (aligned): {df_syn_for_eval_aligned.shape}")
-                    print(f"Shape of real data for evaluation (aligned): {df_real_for_eval_aligned.shape}")
-
-                    print("Evaluating synthetic data (independent batch) via EvaluatorPlugin...")
-                    metrics = evaluator_plugin.evaluate(
-                        synthetic_data=df_syn_for_eval_aligned.values,
-                        real_data_processed=df_real_for_eval_aligned.values,
-                        feature_names=common_features_eval,
-                        config=config 
-                    )
-                    print("✔︎ Evaluation completed.")
-                    metrics_output_file = config.get("metrics_file", "examples/results/evaluation_metrics.json") 
-                    os.makedirs(os.path.dirname(metrics_output_file), exist_ok=True)
-                    with open(metrics_output_file, "w") as f:
-                        json.dump(metrics, f, indent=4)
-                    print(f"✔︎ Evaluation metrics saved to {metrics_output_file}")
 
     except Exception as e:
         print(f"❌ Synthetic data generation, prepending, or evaluation failed: {e}")
