@@ -661,11 +661,26 @@ def main():
                 target_datetimes=final_synthetic_target_datetimes_series
             )
 
+            # NEW: Get datetimes for the initial window to pass to the generator
+            initial_datetimes_for_gen_window_series = None
+            if initial_full_feature_window_for_gen is not None and initial_full_feature_window_for_gen.shape[0] > 0:
+                num_rows_in_initial_window = initial_full_feature_window_for_gen.shape[0]
+                # datetimes_train_processed_full_series contains datetimes for the entire processed x_train_file
+                if len(datetimes_train_processed_full_series) >= num_rows_in_initial_window:
+                    # The initial window for features comes from the END of x_train_processed_full_np
+                    # So, corresponding datetimes should also come from the END of datetimes_train_processed_full_series
+                    initial_datetimes_for_gen_window_series = datetimes_train_processed_full_series.iloc[-num_rows_in_initial_window:].reset_index(drop=True)
+                    print(f"DEBUG main.py: Extracted initial_datetimes_for_gen_window_series, shape: {initial_datetimes_for_gen_window_series.shape}, first: {initial_datetimes_for_gen_window_series.iloc[0] if not initial_datetimes_for_gen_window_series.empty else 'empty'}")
+                else:
+                    print(f"Warning: Not enough datetimes in datetimes_train_processed_full_series ({len(datetimes_train_processed_full_series)}) to match initial_full_feature_window_for_gen ({num_rows_in_initial_window} rows).")
+
+
             print("Generating synthetic feature values via GeneratorPlugin...")
             generated_output_from_plugin = generator_plugin.generate(
                 feeder_outputs_sequence=feeder_outputs_sequence_synthetic,
                 sequence_length_T=n_samples_synthetic,
-                initial_full_feature_window=initial_full_feature_window_for_gen
+                initial_full_feature_window=initial_full_feature_window_for_gen,
+                initial_datetimes_for_window=initial_datetimes_for_gen_window_series # NEW ARGUMENT
             )
             if isinstance(generated_output_from_plugin, list) and len(generated_output_from_plugin) == 1 and isinstance(generated_output_from_plugin[0], np.ndarray):
                  X_syn_generated_values_np = generated_output_from_plugin[0]
