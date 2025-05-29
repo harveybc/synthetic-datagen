@@ -609,32 +609,64 @@ class GeneratorPlugin:
                 # norm_open is already extracted above
                 norm_bc_bo_for_calc = current_tick_assembled_features[self.feature_to_idx["BC-BO"]] if "BC-BO" in self.feature_to_idx and pd.notnull(current_tick_assembled_features[self.feature_to_idx["BC-BO"]]) else np.nan
 
+                # --- BEGIN DEBUG PRINTS for CLOSE calculation ---
+                if t < 2: # Print for the first 2 ticks
+                    print(f"DEBUG GeneratorPlugin (t={t}): ---- Start CLOSE Calculation ----")
+                    open_idx = self.feature_to_idx.get('OPEN', -1)
+                    bcbo_idx = self.feature_to_idx.get('BC-BO', -1)
+                    print(f"DEBUG GeneratorPlugin (t={t}): norm_open raw from features: {current_tick_assembled_features[open_idx] if open_idx != -1 else 'OPEN_NOT_IN_feature_to_idx'}")
+                    print(f"DEBUG GeneratorPlugin (t={t}): norm_open extracted: {norm_open}")
+                    print(f"DEBUG GeneratorPlugin (t={t}): norm_bc_bo_for_calc raw from features: {current_tick_assembled_features[bcbo_idx] if bcbo_idx != -1 else 'BC-BO_NOT_IN_feature_to_idx'}")
+                    print(f"DEBUG GeneratorPlugin (t={t}): norm_bc_bo_for_calc extracted: {norm_bc_bo_for_calc}")
+
                 if pd.notnull(norm_open) and pd.notnull(norm_bc_bo_for_calc):
                     denorm_open_val = self._denormalize_value(norm_open, "OPEN")
                     denorm_bc_bo_val = self._denormalize_value(norm_bc_bo_for_calc, "BC-BO")
                     
+                    if t < 2:
+                        print(f"DEBUG GeneratorPlugin (t={t}): denorm_open_val: {denorm_open_val}")
+                        print(f"DEBUG GeneratorPlugin (t={t}): denorm_bc_bo_val: {denorm_bc_bo_val}")
+
                     if pd.notnull(denorm_open_val) and pd.notnull(denorm_bc_bo_val):
                         denorm_close_val = denorm_open_val + denorm_bc_bo_val
                         calculated_norm_close_from_obcbo = self._normalize_value(denorm_close_val, "CLOSE")
+                        if t < 2:
+                            print(f"DEBUG GeneratorPlugin (t={t}): denorm_close_val (sum): {denorm_close_val}")
+                            print(f"DEBUG GeneratorPlugin (t={t}): calculated_norm_close_from_obcbo: {calculated_norm_close_from_obcbo}")
+                            if self.normalization_params and "CLOSE" in self.normalization_params:
+                                norm_p = self.normalization_params["CLOSE"]
+                                print(f"DEBUG GeneratorPlugin (t={t}): CLOSE norm_params: min={norm_p.get('min')}, max={norm_p.get('max')}")
+                            else:
+                                print(f"DEBUG GeneratorPlugin (t={t}): CLOSE norm_params: Not found or normalization_params not loaded.")
+                    elif t < 2:
+                        print(f"DEBUG GeneratorPlugin (t={t}): Skipping denorm_close_val calculation due to NaN in denorm_open_val or denorm_bc_bo_val.")
+                elif t < 2:
+                    print(f"DEBUG GeneratorPlugin (t={t}): Skipping denormalization due to NaN in norm_open or norm_bc_bo_for_calc.")
+                # --- END DEBUG PRINTS for CLOSE calculation ---
 
             # Determine final norm_close for the current tick
-            norm_close = np.nan
+            norm_close = np.nan # Initialize to NaN for this step's logic
             if "CLOSE" in self.feature_to_idx:
                 if pd.notnull(calculated_norm_close_from_obcbo):
                     norm_close = calculated_norm_close_from_obcbo
-                    # print(f"DEBUG: Step {t}, norm_close from OPEN+BC-BO: {norm_close:.4f}")
+                    if t < 2: print(f"DEBUG GeneratorPlugin (t={t}): norm_close set from calculated_norm_close_from_obcbo: {norm_close}")
                 elif t == 0 and self.initial_denormalized_close_anchor is not None:
                     norm_close = self._normalize_value(self.initial_denormalized_close_anchor, "CLOSE")
-                    # print(f"DEBUG: Step {t}, norm_close from initial_anchor (OPEN+BC-BO failed): {norm_close:.4f}")
+                    if t < 2: print(f"DEBUG GeneratorPlugin (t={t}): norm_close set from initial_anchor: {norm_close} (anchor: {self.initial_denormalized_close_anchor})")
                 elif pd.notnull(norm_open): # Fallback to norm_close = norm_open
                     norm_close = norm_open
-                    # print(f"DEBUG: Step {t}, norm_close fallback to norm_open (OPEN+BC-BO/anchor failed/NA): {norm_close:.4f}")
-                # else: norm_close remains np.nan if all above fail
+                    if t < 2: print(f"DEBUG GeneratorPlugin (t={t}): norm_close set from fallback norm_open: {norm_close}")
+                else: # All strategies to determine norm_close failed, it remains NaN
+                    if t < 2: print(f"DEBUG GeneratorPlugin (t={t}): norm_close remains NaN after all strategies.")
 
                 if pd.notnull(norm_close):
                     current_tick_assembled_features[self.feature_to_idx["CLOSE"]] = norm_close
-                # else: CLOSE remains NaN in current_tick_assembled_features, will be handled by placeholder logic
-            # else: 'CLOSE' not in feature_to_idx, so norm_close remains np.nan and is not set in features.
+                    if t < 2: print(f"DEBUG GeneratorPlugin (t={t}): Assigned to current_tick_assembled_features['CLOSE']: {norm_close}")
+                else:
+                    # CLOSE remains NaN in current_tick_assembled_features, will be handled by placeholder logic in step 8
+                    if t < 2: print(f"DEBUG GeneratorPlugin (t={t}): current_tick_assembled_features['CLOSE'] remains NaN before step 8.")
+            elif t < 2:
+                 print(f"DEBUG GeneratorPlugin (t={t}): 'CLOSE' not in self.feature_to_idx. norm_close is {norm_close}.")
 
 
             # 2. Fill conditional features (sin/cos dates, fundamentals)
@@ -765,8 +797,15 @@ class GeneratorPlugin:
                 current_tick_assembled_features[self.feature_to_idx['DATE_TIME']] = np.float32(t)
 
             # 8. Placeholder for any remaining unfilled (NaN) features
-            for i, feat_name in enumerate(self.params["full_feature_names_ordered"]):
+            for i, feat_name_iter in enumerate(self.params["full_feature_names_ordered"]): # Renamed feat_name to feat_name_iter
                 if np.isnan(current_tick_assembled_features[i]):
+                    # --- BEGIN DEBUG for Step 8 ---
+                    if t < 2 and feat_name_iter == "CLOSE":
+                        print(f"DEBUG GeneratorPlugin (t={t}, Step 8): Filling NaN for CLOSE.")
+                        prev_win_val_close_idx = self.feature_to_idx.get('CLOSE', -1)
+                        prev_win_val_close = current_input_feature_window[-1, i] if prev_win_val_close_idx != -1 and i == prev_win_val_close_idx else 'N/A_OR_CLOSE_NOT_FOUND'
+                        print(f"DEBUG GeneratorPlugin (t={t}, Step 8): prev_window_val for CLOSE: {prev_win_val_close}")
+                    # --- END DEBUG for Step 8 ---
                     prev_window_val = current_input_feature_window[-1, i]
                     if pd.notnull(prev_window_val) and not np.isnan(prev_window_val):
                         current_tick_assembled_features[i] = prev_window_val
