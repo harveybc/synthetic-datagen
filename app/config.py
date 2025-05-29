@@ -78,13 +78,12 @@ DEFAULT_VALUES = {
     ], 
     "generator_decoder_output_feature_names": [
         # Based on cvae_target_feature_names from phase_4_2_cnn_small_debug_out.json
-        # PLUS "log_return" as per user intent for CLOSE derivation.
         "OPEN", "LOW", "HIGH", "vix_close", "BC-BO", "BH-BL", "S&P500_Close",
         "CLOSE_15m_tick_1", "CLOSE_15m_tick_2", "CLOSE_15m_tick_3", "CLOSE_15m_tick_4",
         "CLOSE_15m_tick_5", "CLOSE_15m_tick_6", "CLOSE_15m_tick_7", "CLOSE_15m_tick_8",
         "CLOSE_30m_tick_1", "CLOSE_30m_tick_2", "CLOSE_30m_tick_3", "CLOSE_30m_tick_4",
-        "CLOSE_30m_tick_5", "CLOSE_30m_tick_6", "CLOSE_30m_tick_7", "CLOSE_30m_tick_8",
-        "log_return" # Added: Assuming decoder outputs log_return
+        "CLOSE_30m_tick_5", "CLOSE_30m_tick_6", "CLOSE_30m_tick_7", "CLOSE_30m_tick_8"
+        # "log_return" REMOVED - It's NOT in the cvae_target_feature_names of the trained model
     ], 
     "generator_ohlc_feature_names": ["OPEN", "HIGH", "LOW", "CLOSE"],
     "generator_ti_feature_names": [ 

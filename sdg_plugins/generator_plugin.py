@@ -62,6 +62,7 @@ class GeneratorPlugin:
         self.model: Optional[Model] = None # Alias for sequential_model
         self.normalization_params: Optional[Dict[str, Dict[str, float]]] = None
         self.initial_denormalized_close_anchor: Optional[float] = None
+        self.previous_normalized_close: Optional[float] = None # ADDED for log_return calculation
 
         # Determine the file path for initial CLOSE anchor from the main config
         initial_close_file_path = config.get("x_train_file", config.get("real_data_file"))
@@ -519,28 +520,15 @@ class GeneratorPlugin:
         decoder_input_window_size = self.params["decoder_input_window_size"]
         min_ohlc_hist_len = self.params["ti_calculation_min_lookback"]
         
-        ohlc_indices_in_full = [self.feature_to_idx[name] for name in self.params["ohlc_feature_names"]]
-        ohlc_names = self.params["ohlc_feature_names"]
+        ohlc_names = self.params["ohlc_feature_names"] # Should be ["OPEN", "HIGH", "LOW", "CLOSE"]
 
-        # Initialize current_denormalized_close for this generation sequence
-        # Start with the anchor loaded during __init__/set_params
-        current_denormalized_close = self.initial_denormalized_close_anchor
-        if current_denormalized_close is None: # Should have been set by _load_initial_close_anchor
-            print("GeneratorPlugin: CRITICAL - self.initial_denormalized_close_anchor is None at start of generate. Defaulting to 1.0.")
-            current_denormalized_close = 1.0
-        
-        # If initial_full_feature_window is provided and contains a valid CLOSE,
-        # use it to potentially override the anchor for this specific generation run.
-        # This assumes CLOSE in initial_full_feature_window is NORMALIZED.
+        # Initialize self.previous_normalized_close for this generation sequence
+        self.previous_normalized_close = None # Reset for each call to generate
         if initial_full_feature_window is not None and 'CLOSE' in self.feature_to_idx:
             last_norm_close_in_window = initial_full_feature_window[-1, self.feature_to_idx['CLOSE']]
             if pd.notnull(last_norm_close_in_window):
-                # Denormalize it to start the sequence if it's a valid number
-                potential_start_close = self._denormalize_value(last_norm_close_in_window, 'CLOSE')
-                if pd.notnull(potential_start_close):
-                    current_denormalized_close = potential_start_close
-                    print(f"GeneratorPlugin: Overriding initial CLOSE for this sequence from initial_full_feature_window. New start: {current_denormalized_close}")
-
+                self.previous_normalized_close = float(last_norm_close_in_window)
+                print(f"GeneratorPlugin: Initialized previous_normalized_close from initial_full_feature_window: {self.previous_normalized_close}")
 
         ohlc_history_for_ti_list = [] 
 
@@ -606,34 +594,39 @@ class GeneratorPlugin:
                 raise ValueError(f"Unexpected decoder output shape: {generated_decoder_output_step_t.shape}.")
 
             # 1. Fill features from decoder output
-            # This now includes OPEN, HIGH, LOW, log_return, and all high-frequency ticks.
-            # CLOSE is NOT expected from the decoder.
-            for i, name in enumerate(self.params["decoder_output_feature_names"]):
+            # This now includes OPEN, HIGH, LOW, and all high-frequency ticks.
+            # CLOSE and log_return are NOT expected from the decoder with the current model.
+            for i, name in enumerate(self.params["decoder_output_feature_names"]): # Length is now 23
                 if name in self.feature_to_idx:
-                    current_tick_assembled_features[self.feature_to_idx[name]] = decoded_features_for_current_tick[i]
+                    current_tick_assembled_features[self.feature_to_idx[name]] = decoded_features_for_current_tick[i] # i will go up to 22
             
-            # Extract normalized OHLC (excluding CLOSE for now) and log_return from decoder output
             norm_open = current_tick_assembled_features[self.feature_to_idx[ohlc_names[0]]] if ohlc_names[0] in self.feature_to_idx else np.nan
             norm_high = current_tick_assembled_features[self.feature_to_idx[ohlc_names[1]]] if ohlc_names[1] in self.feature_to_idx else np.nan
             norm_low = current_tick_assembled_features[self.feature_to_idx[ohlc_names[2]]] if ohlc_names[2] in self.feature_to_idx else np.nan
-            # norm_close will be derived next
             
-            normalized_log_return_from_decoder = np.nan
-            if "log_return" in self.feature_to_idx and "log_return" in self.params["decoder_output_feature_names"]:
-                normalized_log_return_from_decoder = current_tick_assembled_features[self.feature_to_idx["log_return"]]
+            # log_return is NOT from decoder, so normalized_log_return_from_decoder will be effectively unused.
+            # normalized_log_return_from_decoder = np.nan # Explicitly set, or rely on it not being filled.
+            # if "log_return" in self.feature_to_idx and "log_return" in self.params["decoder_output_feature_names"]: # This condition will now be false
+            #    normalized_log_return_from_decoder = current_tick_assembled_features[self.feature_to_idx["log_return"]]
 
-            # NEW STEP 1.A: Derive CLOSE price using log_return from decoder
+            # REMOVED STEP 1.A: Derive CLOSE price using log_return from decoder, as log_return is not from decoder.
+
+            # NEW STRATEGY FOR norm_close:
+            norm_close = np.nan
             if "CLOSE" in self.feature_to_idx:
-                if pd.notnull(normalized_log_return_from_decoder):
-                    denormalized_log_return = self._denormalize_value(normalized_log_return_from_decoder, "log_return")
-                    current_denormalized_close = current_denormalized_close * np.exp(denormalized_log_return)
-                    norm_close = self._normalize_value(current_denormalized_close, "CLOSE")
-                    current_tick_assembled_features[self.feature_to_idx["CLOSE"]] = norm_close
+                if t == 0 and self.previous_normalized_close is None and self.initial_denormalized_close_anchor is not None:
+                    # Use anchor for the very first CLOSE if no history window was provided
+                    norm_close = self._normalize_value(self.initial_denormalized_close_anchor, "CLOSE")
+                    print(f"GeneratorPlugin: Step {t}, using initial_denormalized_close_anchor for CLOSE: {self.initial_denormalized_close_anchor} -> {norm_close}")
+                elif pd.notnull(norm_open):
+                    norm_close = norm_open # Placeholder: CLOSE = OPEN
+                    # print(f"GeneratorPlugin: Step {t}, setting norm_close = norm_open = {norm_close}")
                 else:
-                    # If log_return from decoder is NaN, CLOSE will remain NaN here and be filled by Step 8.
-                    # This might lead to CLOSE being a carry-forward or random if log_return is consistently NaN.
-                    print(f"GeneratorPlugin: Warning - log_return from decoder is NaN at step {t}. CLOSE will be NaN before fallback.")
-                    norm_close = np.nan # Ensure norm_close is NaN if derivation fails
+                    # If norm_open is also NaN, norm_close remains NaN, to be filled by Step 8
+                    print(f"GeneratorPlugin: Step {t}, norm_open is NaN. norm_close will be NaN before fallback.")
+                
+                if pd.notnull(norm_close):
+                    current_tick_assembled_features[self.feature_to_idx["CLOSE"]] = norm_close
             else:
                 norm_close = np.nan # CLOSE feature not in full list
 
@@ -670,7 +663,7 @@ class GeneratorPlugin:
                 ohlc_names[0]: norm_open,
                 ohlc_names[1]: norm_high,
                 ohlc_names[2]: norm_low,
-                ohlc_names[3]: norm_close # Use the derived norm_close
+                ohlc_names[3]: norm_close # Use the derived norm_close from new strategy
             }
             
             current_ohlc_values_for_ti_dict = {
@@ -714,21 +707,31 @@ class GeneratorPlugin:
                     bo_bl_val = norm_open - norm_low
                     current_tick_assembled_features[self.feature_to_idx["BO-BL"]] = self._normalize_value(bo_bl_val, "BO-BL")
 
-            # 6. Calculate and fill log_return (OLD LOGIC - REMOVE/COMMENT OUT)
-            # log_return is now sourced from the decoder (Step 1)
-            # The self.previous_normalized_close attribute is no longer needed for this.
-            # if "log_return" in self.feature_to_idx:
-            #     log_return_val_to_normalize = 0.0 
-            #     if (self.previous_normalized_close is not None and
-            #             self.previous_normalized_close > 0 and  
-            #             not np.isnan(norm_close) and
-            #             norm_close > 0):  
-            #         ratio = norm_close / self.previous_normalized_close
-            #         if ratio > 0:
-            #             log_return_val_to_normalize = np.log(ratio)
-            #     current_tick_assembled_features[self.feature_to_idx["log_return"]] = self._normalize_value(log_return_val_to_normalize, "log_return")
-            # if not np.isnan(norm_close): # This was for the old log_return logic
-            #    self.previous_normalized_close = norm_close
+            # 6. Calculate and fill log_return (REINSTATED AND MODIFIED)
+            # log_return is now calculated from the sequence of norm_close values.
+            if "log_return" in self.feature_to_idx:
+                log_return_val_to_normalize = 0.0  # Default to 0 log return (no change)
+                if (self.previous_normalized_close is not None and
+                        self.previous_normalized_close > 1e-9 and  # Avoid division by zero or tiny numbers
+                        pd.notnull(norm_close) and
+                        norm_close > 1e-9): # Ensure current close is also valid
+                    
+                    # Denormalize previous and current close to calculate log_return on actual prices
+                    # This is more robust than calculating on normalized values if normalization is non-linear
+                    # or if min/max are very different, though simple ratio of normalized is often used.
+                    # For simplicity with current _normalize/_denormalize, let's try with normalized first.
+                    # If issues arise, switch to denormalized for ratio.
+                    ratio = norm_close / self.previous_normalized_close
+                    if ratio > 1e-9: # Ensure ratio is positive
+                        log_return_val_to_normalize = np.log(ratio)
+                    # else: ratio is zero or negative, log_return remains 0.0
+                
+                # Store the raw log_return; it will be normalized if normalization_params for "log_return" exist.
+                # The _normalize_value function handles this.
+                current_tick_assembled_features[self.feature_to_idx["log_return"]] = self._normalize_value(log_return_val_to_normalize, "log_return")
+
+            if pd.notnull(norm_close): # Update previous_normalized_close for the next step
+               self.previous_normalized_close = norm_close
 
 
             # 7. Fill historical tick data (e.g., CLOSE_15m_tick_X)
