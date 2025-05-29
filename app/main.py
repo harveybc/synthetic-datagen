@@ -11,7 +11,7 @@ Punto de entrada de la aplicación de predicción de EUR/USD. Este script orques
 
 import os # Ensure os is imported
 import sys # Ensure sys is imported
-import traceback # Ensure traceback is imported
+import traceback # ADD THIS LINE
 import json # Ensure json is imported
 import pandas as pd # Ensure pandas is imported
 import numpy as np # Ensure numpy is imported
