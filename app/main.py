@@ -15,6 +15,7 @@ import traceback
 import json # Ensure json is imported
 import pandas as pd # Ensure pandas is imported
 import numpy as np # Ensure numpy is imported
+import tempfile # ADD THIS IMPORT
 
 # --- MONKEY PATCH for numpy.NaN ---
 # Applied because pandas_ta 0.3.14b0 (or a dependency) seems to use
@@ -565,48 +566,63 @@ def main():
         data_file_keys = [
             'real_data_file', 'x_train_file', 'y_train_file',
             'x_validation_file', 'y_validation_file',
-            'x_val_file', 'y_val_file',
             'x_test_file', 'y_test_file'
+            # Add other keys if your stl_preprocessor might use them from config
         ]
-        temp_files_created_paths = []
+        temp_files_created_paths = [] # To store paths of temporary files for cleanup
+        
+        # Create a mutable copy of the config for the preprocessor run
+        config_for_preprocessor_run_local = config_for_preprocessor_run.copy()
+
         for file_key in data_file_keys:
-            original_file_path = config_for_preprocessor_run.get(file_key)
+            original_file_path = config_for_preprocessor_run_local.get(file_key)
             if (
                 original_file_path
                 and isinstance(original_file_path, str)
                 and os.path.exists(original_file_path)
             ):
                 try:
-                    df_data = pd.read_csv(original_file_path)
-                    if len(df_data) % 2 != 0:
-                        df_trunc = df_data.iloc[:-1]
-                        if not df_trunc.empty:
-                            with tempfile.NamedTemporaryFile(
-                                delete=False,
-                                mode='w',
-                                newline='',
-                                suffix=f'_{file_key}.csv'
-                            ) as tmpf:
-                                df_trunc.to_csv(tmpf.name, index=False)
-                                temp_path = tmpf.name
-                            temp_files_created_paths.append(temp_path)
-                            config_for_preprocessor_run[file_key] = temp_path
-                            print(f"INFO: WORKAROUND 2: Using temp even-length file "
-                                  f"'{temp_path}' for key '{file_key}'. New length: {len(df_trunc)}")
-                except Exception as e2:
-                    print(f"WARN: WORKAROUND 2: Error processing '{original_file_path}': {e2}")
+                    df_temp = pd.read_csv(original_file_path) # Assumes header is inferred correctly
+                    
+                    if len(df_temp) > 0 and len(df_temp) % 2 != 0: # If odd length and not empty
+                        print(f"DEBUG main.py: WORKAROUND 2: File '{original_file_path}' (key: {file_key}) has odd length {len(df_temp)}. Truncating.")
+                        df_temp_truncated = df_temp.iloc[:-1] # Remove the last row
+                        
+                        # Create a temporary file to store the truncated data
+                        # delete=False is used because the preprocessor needs to open it by path
+                        with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.csv', newline='') as tmp_file_obj:
+                            df_temp_truncated.to_csv(tmp_file_obj.name, index=False) # Write with header, no index
+                            temp_file_path = tmp_file_obj.name
+                        
+                        temp_files_created_paths.append(temp_file_path)
+                        config_for_preprocessor_run_local[file_key] = temp_file_path # Update config to use temp file
+                        print(f"DEBUG main.py: WORKAROUND 2: Using temp file '{temp_file_path}' for key '{file_key}'.")
+                    else:
+                        print(f"DEBUG main.py: WORKAROUND 2: File '{original_file_path}' (key: {file_key}) has length {len(df_temp)}. No truncation needed.")
+
+                except Exception as e_read_write:
+                    print(f"DEBUG main.py: WORKAROUND 2: Error processing file '{original_file_path}' for key '{file_key}': {e_read_write}. Skipping truncation for this file.")
+            elif original_file_path and isinstance(original_file_path, str) and not os.path.exists(original_file_path):
+                print(f"DEBUG main.py: WORKAROUND 2: File '{original_file_path}' (key: {file_key}) not found. Skipping.")
+        # --- END OF WORKAROUND 2 MODIFICATION ---
 
         try:
             datasets = preprocessor_plugin.run_preprocessing(
-                config=config_for_preprocessor_run
+                config=config_for_preprocessor_run_local # Use the potentially modified config
             )
         finally:
+            # --- CLEANUP FOR WORKAROUND 2 ---
+            if temp_files_created_paths:
+                print("DEBUG main.py: WORKAROUND 2: Cleaning up temporary files...")
             for tmp_path in temp_files_created_paths:
                 try:
-                    os.remove(tmp_path)
-                except OSError as rm_err:
-                    print(f"WARN: Failed to remove temp file '{tmp_path}': {rm_err}")
-
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                        print(f"DEBUG main.py: WORKAROUND 2: Removed temp file '{tmp_path}'.")
+                except Exception as e_cleanup:
+                    print(f"DEBUG main.py: WORKAROUND 2: Error removing temp file '{tmp_path}': {e_cleanup}")
+            # --- END OF CLEANUP ---
+            
         print("PreprocessorPlugin.run_preprocessing finished.")
 
         # Extract feature names for evaluation
