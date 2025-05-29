@@ -32,6 +32,7 @@ DEFAULT_VALUES = {
 
      # Generation parameters
     "n_samples": 6300,
+    "max_steps_train": 25200,
     "latent_shape": [18, 32], 
     "batch_size": 32, 
     
