@@ -738,29 +738,65 @@ class GeneratorPlugin:
             # This section is now mostly skipped if tick features are in decoder_output_feature_names.
             decoder_outputs_set = set(self.params.get("decoder_output_feature_names", []))
             
-            # Check if any tick features are NOT supposed to come from the decoder
-            # This is unlikely given the new config, but good for robustness
-            needs_tick_derivation = False
-            for pattern, _, num_sub_ticks in tick_configs:
-                for i_tick in range(1, num_sub_ticks + 1):
-                    tick_feat_name_check = pattern.format(i_tick)
-                    if tick_feat_name_check in self.feature_to_idx and tick_feat_name_check not in decoder_outputs_set:
-                        needs_tick_derivation = True
-                        break
-                if needs_tick_derivation:
-                    break
+            needs_tick_derivation = False # Initialize
             
-            if needs_tick_derivation: # Only run if some ticks are NOT from decoder
-                num_generated_steps_for_ticks = len(generated_sequence_all_features_list)
-                dataset_periodicity_str_for_ticks = self.params.get('dataset_periodicity', '1h').lower()
-                # ... (rest of the original Step 7 logic for main_interval_minutes, tick_configs, etc.) ...
-                # ... but ensure it only fills features not in decoder_outputs_set ...
-                # For brevity, assuming this part is complex and less critical if ticks are from decoder.
-                # If you need this, the original logic needs to be carefully placed here with checks.
-                # Simplified: if a tick feature is NaN at this point AND was not in decoder_outputs_set,
-                # then the original Step 7 logic would apply.
-                # Given current config, high-freq ticks ARE in decoder_outputs_set, so this block is skipped.
-                pass # Placeholder: original Step 7 logic would go here if needed for non-decoder ticks
+            # Determine if any tick-like features need derivation.
+            # These are features in full_feature_names_ordered that look like ticks 
+            # but are not present in decoder_outputs_set.
+            # Example prefixes, adjust if your tick naming patterns are different.
+            potential_tick_feature_prefixes = ["CLOSE_15m_tick_", "CLOSE_30m_tick_"]
+            
+            current_full_feature_names = self.params.get("full_feature_names_ordered")
+            if current_full_feature_names: # Ensure the list exists
+                for feat_name_full in current_full_feature_names:
+                    is_potential_tick_feature = False
+                    for prefix in potential_tick_feature_prefixes:
+                        if feat_name_full.startswith(prefix):
+                            is_potential_tick_feature = True
+                            break # Found a matching prefix for this feature
+                    
+                    if is_potential_tick_feature:
+                        # Check if this potential tick feature is in feature_to_idx (i.e., expected in the output)
+                        # AND not provided by the decoder.
+                        if feat_name_full in self.feature_to_idx and feat_name_full not in decoder_outputs_set:
+                            needs_tick_derivation = True
+                            print(f"GeneratorPlugin: Tick feature '{feat_name_full}' identified for derivation (not in decoder outputs).")
+                            break # Found one feature needing derivation, so set flag and stop checking.
+            
+            if needs_tick_derivation:
+                # Define tick_configs here, as it's needed by the subsequent logic
+                # (which is assumed to be present in your executed file, causing the error).
+                tick_configs = [
+                    ("CLOSE_15m_tick_{}", 15, 8),  # (pattern, interval_minutes, num_sub_ticks)
+                    ("CLOSE_30m_tick_{}", 30, 8),
+                    # Add other tick configurations if necessary based on your feature names
+                ]
+                print(f"GeneratorPlugin: 'tick_configs' defined for deriving tick features: {tick_configs}")
+
+                # The user's executed file likely has the historical tick derivation logic here,
+                # which includes the loop: for pattern, _, num_sub_ticks in tick_configs:
+                # This is where the NameError for 'tick_configs' occurs if it's not defined above.
+                # Since the attached file has 'pass', I will keep 'pass' here.
+                # The critical fix is defining 'tick_configs' just above this comment block.
+                
+                # Example of how the user's code might look (leading to the error if tick_configs is undefined):
+                # num_generated_steps_for_ticks = len(generated_sequence_all_features_list)
+                # dataset_periodicity_str_for_ticks = self.params.get('dataset_periodicity', '1h').lower()
+                # main_interval_minutes = 0
+                # # ... logic to set main_interval_minutes based on dataset_periodicity_str_for_ticks ...
+
+                # for pattern, interval_minutes, num_sub_ticks in tick_configs: # THIS IS THE LINE CAUSING THE ERROR
+                #     if main_interval_minutes == 0 or main_interval_minutes % interval_minutes != 0:
+                #         continue
+                #     ticks_per_main_interval = main_interval_minutes // interval_minutes
+                #     for i_tick in range(1, num_sub_ticks + 1):
+                #         tick_feat_name = pattern.format(i_tick)
+                #         if tick_feat_name in self.feature_to_idx and tick_feat_name not in decoder_outputs_set:
+                #             # ... actual derivation logic for the tick feature ...
+                #             # val_to_fill = ...
+                #             # current_tick_assembled_features[self.feature_to_idx[tick_feat_name]] = val_to_fill
+                #             pass
+                pass # Placeholder for the actual tick derivation logic the user has in their executed file.
             
             # 7b. Fill DATE_TIME (placeholder float index) 
             if 'DATE_TIME' in self.feature_to_idx:
