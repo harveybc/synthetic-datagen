@@ -31,8 +31,8 @@ DEFAULT_VALUES = {
     "dataset_periodicity": "1h", 
 
      # Generation parameters
-    "n_samples": 50400,
-    "max_steps_train": 25200,
+    "n_samples": 5040,
+    "max_steps_train": 2520,
     "latent_shape": [18, 32], 
     "batch_size": 32, 
     
