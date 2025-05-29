@@ -28,23 +28,23 @@ class FeederPlugin:
         "sampling_method": "standard_normal", # Options: "standard_normal", "from_encoder"
         "encoder_sampling_technique": "direct", # Options for "from_encoder": "direct", "kde", "copula"
         "encoder_model_file": None,       # Path to the Keras encoder model file
-        "real_data_file": None,           # Path to the .csv file containing real data (X_real) for the encoder, plus datetimes and fundamentals
-        "feature_columns_for_encoder": [], # List of column names from real_data_file to be used as input to the VAE encoder
-        "real_data_file_has_header": True, # Whether the real_data_file (CSV) has a header row
-        "datetime_col_in_real_data": "DATE_TIME",  # Name of the datetime column in real_data_file
-        "date_feature_names_for_conditioning": ["day_of_month", "hour_of_day", "day_of_week", "day_of_year"], # UPDATED DEFAULT
-        "fundamental_feature_names_for_conditioning": ["S&P500_Close", "vix_close"], # Fundamental features to use from real_data_file
+        # "real_data_file": None,           # REMOVED - Will use x_train_file from main_config
+        "feature_columns_for_encoder": [], # List of column names from x_train_file to be used as input to the VAE encoder
+        "real_data_file_has_header": True, # Whether the x_train_file (CSV) has a header row
+        "datetime_col_in_real_data": "DATE_TIME",  # Name of the datetime column in x_train_file
+        "date_feature_names_for_conditioning": ["day_of_month", "hour_of_day", "day_of_week", "day_of_year"],
+        "fundamental_feature_names_for_conditioning": ["S&P500_Close", "vix_close"], # Fundamental features to use from x_train_file
         "max_day_of_month": 31,
-        "max_hour_of_day": 23, # Hours 0-23
-        "max_day_of_week": 6,  # Days 0-6
+        "max_hour_of_day": 23,
+        "max_day_of_week": 6,
         "max_day_of_year": 366, 
-        "context_vector_dim": 16, # Dimension of the context_h vector for the decoder
-        "context_vector_strategy": "zeros", # "zeros", "random_normal", "from_encoder_context" (if encoder provides it)
-        "copula_kde_bw_method": None, # For KDE within copula: 'scott', 'silverman', or a scalar
+        "context_vector_dim": 64, # Default updated to 64
+        "context_vector_strategy": "zeros",
+        "copula_kde_bw_method": None,
     }
     plugin_debug_vars = [
         "latent_shape", "random_seed", "sampling_method", 
-        "encoder_sampling_technique", "encoder_model_file", "real_data_file", 
+        "encoder_sampling_technique", "encoder_model_file", # "real_data_file" removed
         "feature_columns_for_encoder", "datetime_col_in_real_data",
         "date_feature_names_for_conditioning", "fundamental_feature_names_for_conditioning",
         "max_day_of_month", "max_hour_of_day", "max_day_of_week", "max_day_of_year",
@@ -55,6 +55,7 @@ class FeederPlugin:
     def __init__(self, config: Dict[str, Any]):
         if config is None:
             raise ValueError("La configuración ('config') es requerida.")
+        self.main_config = config.copy() # Store the main config
         self.params = self.plugin_params.copy()
         
         # Initialize encoder state attributes
@@ -127,11 +128,13 @@ class FeederPlugin:
 
     def _load_and_process_for_encoder_mode(self):
         """
-        Loads encoder, processes real data, and fits structures for Z sampling.
+        Loads encoder, processes real data (from x_train_file), and fits structures for Z sampling.
         Handles 3D latent spaces from the encoder.
         """
         encoder_path = self.params.get("encoder_model_file")
-        data_path = self.params.get("real_data_file")
+        # data_path = self.params.get("real_data_file") # REMOVED
+        data_path = self.main_config.get("x_train_file") # Use x_train_file from main config
+        
         technique = self.params.get("encoder_sampling_technique")
         copula_bw_method = self.params.get("copula_kde_bw_method")
         datetime_col_name = self.params.get("datetime_col_in_real_data")
@@ -143,11 +146,11 @@ class FeederPlugin:
 
         if not data_path:
             if self.params.get("sampling_method") == "from_encoder" or len(fundamental_cols) > 0:
-                 raise ValueError("FeederPlugin: 'real_data_file' must be set for 'from_encoder' method or if fundamental features are conditioned.")
+                 raise ValueError("FeederPlugin: 'x_train_file' (via main_config) must be set for 'from_encoder' method or if fundamental features are conditioned.")
             return # No data to load if no path and no need for fundamentals/encoder
 
         try:
-            print(f"FeederPlugin: Loading real data from CSV: {data_path}")
+            print(f"FeederPlugin: Loading real data from CSV (via x_train_file): {data_path}")
             # Load the entire CSV into a pandas DataFrame
             df_real_data_full = pd.read_csv(data_path, header=0 if has_header else None)
             if not has_header and encoder_feature_cols and isinstance(encoder_feature_cols[0], str):
@@ -249,13 +252,18 @@ class FeederPlugin:
     def set_params(self, **kwargs):
         old_method = self.params.get("sampling_method")
         old_encoder_file = self.params.get("encoder_model_file")
-        old_data_file = self.params.get("real_data_file")
+        # old_data_file = self.params.get("real_data_file") # REMOVED
+        old_data_file = self.main_config.get("x_train_file") # Get from stored main_config initially
         old_technique = self.params.get("encoder_sampling_technique")
         old_copula_bw_method = self.params.get("copula_kde_bw_method") 
         old_encoder_features = self.params.get("feature_columns_for_encoder")
         old_fundamental_features = self.params.get("fundamental_feature_names_for_conditioning")
         old_datetime_col = self.params.get("datetime_col_in_real_data")
         old_latent_shape = list(self.params.get("latent_shape", [0,0])) # Make a copy
+
+        # Update main_config if kwargs contains keys that are part of main config
+        # This is important if set_params is called with a more complete config later (e.g. by Optimizer)
+        self.main_config.update(kwargs)
 
         # Update self.params using kwargs, handling prefixed keys
         for param_key_short in self.plugin_params.keys():
@@ -285,7 +293,8 @@ class FeederPlugin:
 
         new_method = self.params.get("sampling_method")
         new_encoder_file = self.params.get("encoder_model_file")
-        new_data_file = self.params.get("real_data_file")
+        # new_data_file = self.params.get("real_data_file") # REMOVED
+        new_data_file = self.main_config.get("x_train_file") # Get updated from main_config
         new_technique = self.params.get("encoder_sampling_technique")
         new_copula_bw_method = self.params.get("copula_kde_bw_method") 
         new_encoder_features = self.params.get("feature_columns_for_encoder")
@@ -327,7 +336,8 @@ class FeederPlugin:
             reinitialize_fundamentals = True
         
         if reinitialize_encoder_related or reinitialize_fundamentals:
-            if self.params.get("real_data_file") or (new_method == "from_encoder" and self.params.get("encoder_model_file")):
+            # Check against the potentially updated self.main_config.get("x_train_file")
+            if self.main_config.get("x_train_file") or (new_method == "from_encoder" and self.params.get("encoder_model_file")):
                 try:
                     print("FeederPlugin: Re-initializing data due to parameter change.")
                     self._load_and_process_for_encoder_mode()
@@ -336,7 +346,7 @@ class FeederPlugin:
                     self._invalidate_encoder_state() 
             else: 
                 if new_method == "from_encoder" or len(new_fundamental_features) > 0:
-                    print("FeederPlugin: Warning - 'real_data_file' not provided, but needed for current settings. Clearing related state.")
+                    print(f"FeederPlugin: Warning - 'x_train_file' (from main config) not provided, but needed for current settings. Clearing related state.")
                 self._invalidate_encoder_state()
 
     def get_debug_info(self) -> Dict[str, Any]:
