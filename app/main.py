@@ -938,28 +938,27 @@ def main():
         output_df_intermediate.insert(0, datetime_col_name_for_output, datetimes_for_output_df)
 
         # Ensure all TARGET_CSV_COLUMNS are present, fill with a placeholder if missing from generation, and reorder
-        # Create a new DataFrame with the desired columns.
-        # If a column from TARGET_CSV_COLUMNS is not in output_df_intermediate, it will be NaN.
-        # The generator plugin should ideally produce all of them.
-        
-        # Make sure the datetime column name used here matches one in TARGET_CSV_COLUMNS if it's not already "DATE_TIME"
-        if datetime_col_name_for_output != "DATE_TIME" and "DATE_TIME" in TARGET_CSV_COLUMNS and datetime_col_name_for_output in output_df_intermediate.columns:
-            output_df_intermediate = output_df_intermediate.rename(columns={datetime_col_name_for_output: "DATE_TIME"})
-        
-        # Reindex to ensure all target columns exist and are in the correct order.
-        # Missing columns from generation will be filled with NaN by reindex.
-        # The generator's placeholder logic should minimize this for non-modelled features.
         output_df_final_structure = pd.DataFrame()
-        for col in TARGET_CSV_COLUMNS:
-            if col in output_df_intermediate.columns:
-                output_df_final_structure[col] = output_df_intermediate[col]
+        
+        # --- DEBUG PRINT for raw_synthetic_df columns ---
+        print(f"DEBUG main.py: Columns in raw_synthetic_df before final structuring (first 30 of {len(raw_synthetic_df.columns)}): {list(raw_synthetic_df.columns[:30])}")
+        if "CLOSE" in raw_synthetic_df.columns:
+            print(f"DEBUG main.py: 'CLOSE' IS in raw_synthetic_df.columns. Value for first row: {raw_synthetic_df['CLOSE'].iloc[0] if not raw_synthetic_df.empty and 'CLOSE' in raw_synthetic_df else 'N/A or CLOSE missing'}")
+            # Also check a few values to ensure they are not all zero
+            if not raw_synthetic_df.empty and 'CLOSE' in raw_synthetic_df and len(raw_synthetic_df['CLOSE']) > 5:
+                print(f"DEBUG main.py: Sample CLOSE values from raw_synthetic_df: {raw_synthetic_df['CLOSE'].iloc[:5].tolist()}")
+        else:
+            print(f"DEBUG main.py: 'CLOSE' IS NOT in raw_synthetic_df.columns. This is unexpected.")
+            print(f"DEBUG main.py: Full list of synthetic_feature_names used for raw_synthetic_df (first 30 of {len(synthetic_feature_names)}): {synthetic_feature_names[:30]}")
+        # --- END DEBUG PRINT ---
+
+        for col_target_name in TARGET_CSV_COLUMNS:
+            if col_target_name in raw_synthetic_df.columns:
+                output_df_final_structure[col_target_name] = raw_synthetic_df[col_target_name]
             else:
-                # This column was in TARGET_CSV_COLUMNS but not generated or aligned.
-                # This indicates a mismatch or a feature that needs a generation rule.
-                # Fill with a default (e.g. 0.0 or np.nan) to maintain structure.
-                # The generator's placeholder logic should ideally prevent this for most cases.
-                print(f"WARNING: Column '{col}' from target CSV structure was not found in generated data. Filling with 0.0 for output CSV.")
-                output_df_final_structure[col] = 0.0 # Or np.nan, but user wants to avoid "bad" data.
+                # This is where the warning "Column 'CLOSE' from target CSV structure was not found..." comes from
+                print(f"WARNING: Column '{col_target_name}' from target CSV structure was not found in generated data (raw_synthetic_df columns checked). Filling with 0.0 for output CSV.")
+                output_df_final_structure[col_target_name] = 0.0 
 
         output_df_final_structure.to_csv(synthetic_data_output_file, index=False, na_rep='NaN') # Explicitly state na_rep
         print(f"✔︎ Generated synthetic data (structured to target CSV) saved to {synthetic_data_output_file}")
