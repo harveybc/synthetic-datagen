@@ -39,7 +39,7 @@ class FeederPlugin:
         "max_day_of_week": 6,
         "max_day_of_year": 366, 
         "context_vector_dim": 64, # Default updated to 64
-        "context_vector_strategy": "zeros",
+        "context_vector_strategy": "zeros", # Options: "zeros", "random"
         "copula_kde_bw_method": None,
     }
     plugin_debug_vars = [
@@ -472,6 +472,15 @@ class FeederPlugin:
 
             context_h_tick = np.zeros((1, context_dim), dtype=np.float32)
             # ... (context_strategy logic if any) ...
+
+            if context_strategy == "random":
+                context_h_tick = np.random.normal(loc=0.0, scale=1.0, size=(1, context_dim)).astype(np.float32)
+            elif context_strategy == "zeros":
+                context_h_tick = np.zeros((1, context_dim), dtype=np.float32)
+            else: # Default to zeros if unknown strategy
+                if context_strategy != "zeros": # Avoid warning if it's already 'zeros' due to default
+                    print(f"FeederPlugin: Warning - Unknown context_vector_strategy '{context_strategy}'. Defaulting to 'zeros'.")
+                context_h_tick = np.zeros((1, context_dim), dtype=np.float32)
 
             output_sequence.append({
                 "Z": z_tick.astype(np.float32), # Now 2D: (seq_len, features)

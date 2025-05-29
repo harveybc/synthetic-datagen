@@ -50,7 +50,7 @@ DEFAULT_VALUES = {
     "feeder_max_day_of_week": 6,
     "feeder_max_day_of_year": 366, # ADDED
     "feeder_context_vector_dim": 64, # CHANGED from 16 to 64 to match Generator/main config
-    "feeder_context_vector_strategy": "zeros",
+    "feeder_context_vector_strategy": "random",
     "feeder_copula_kde_bw_method": None,
 
     # --- Parameters for GeneratorPlugin ---
