@@ -458,14 +458,6 @@ class GeneratorPlugin:
         debug_info.update(self.get_debug_info())
 
     def _calculate_technical_indicators(self, ohlc_history_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Calculates technical indicators based on the provided OHLC history.
-        Returns a DataFrame containing only the calculated TI columns for the last row.
-        Assumes ohlc_history_df has columns named as in self.params["ohlc_feature_names"] (e.g., OPEN, HIGH, LOW, CLOSE).
-        """
-        # Early exit if ohlc_history_df is too short for any meaningful calculation or empty.
-        # Most TIs require at least a few data points. A check for < 2 is a basic guard.
-        # Specific length checks will be done per indicator.
         if ohlc_history_df.empty:
             nan_placeholder_df = pd.DataFrame(columns=self.params["ti_feature_names"], index=[0]).astype(np.float32)
             nan_placeholder_df = nan_placeholder_df.fillna(np.nan)
@@ -477,7 +469,6 @@ class GeneratorPlugin:
             self.params["ohlc_feature_names"][2]: 'low',
             self.params["ohlc_feature_names"][3]: 'close'
         }
-        # Ensure input DataFrame has the expected columns before renaming
         missing_ohlc_cols = [col for col in self.params["ohlc_feature_names"] if col not in ohlc_history_df.columns]
         if missing_ohlc_cols:
             print(f"GeneratorPlugin: Warning (_calculate_technical_indicators) - Missing OHLC columns in input: {missing_ohlc_cols}. TIs will be NaN.")
@@ -486,9 +477,6 @@ class GeneratorPlugin:
             return nan_placeholder_df
             
         df = ohlc_history_df.rename(columns=ohlc_map)
-
-        # Initialize a DataFrame to store results, aligned with the input df's index
-        # This helps in correctly selecting the .iloc[[-1]] later.
         ti_df_results = pd.DataFrame(index=df.index)
         p = self.params["ti_params"]
         ti_names_to_calculate = self.params["ti_feature_names"]
@@ -497,7 +485,8 @@ class GeneratorPlugin:
         rsi_len = p.get("rsi_length", 14)
         if 'RSI' in ti_names_to_calculate:
             if len(df['close']) >= rsi_len:
-                ti_df_results['RSI'] = ta.rsi(df['close'], length=rsi_len)
+                rsi_series = ta.rsi(df['close'], length=rsi_len)
+                ti_df_results['RSI'] = rsi_series if isinstance(rsi_series, pd.Series) else np.nan
             else:
                 ti_df_results['RSI'] = np.nan
 
@@ -505,136 +494,991 @@ class GeneratorPlugin:
         macd_fast = p.get("macd_fast", 12)
         macd_slow = p.get("macd_slow", 26)
         macd_signal = p.get("macd_signal", 9)
-        min_len_macd = macd_slow + macd_signal # Approximate min length for all MACD components
+        min_len_macd = macd_slow + macd_signal - 1 
         if any(x in ti_names_to_calculate for x in ['MACD', 'MACD_Histogram', 'MACD_Signal']):
             if len(df['close']) >= min_len_macd:
-                macd_output = ta.macd(df['close'], fast=macd_fast, slow=macd_slow, signal=macd_signal)
-                if macd_output is not None and not macd_output.empty:
-                    if 'MACD' in ti_names_to_calculate: ti_df_results['MACD'] = macd_output.iloc[:,0]
-                    if 'MACD_Histogram' in ti_names_to_calculate: ti_df_results['MACD_Histogram'] = macd_output.iloc[:,1]
-                    if 'MACD_Signal' in ti_names_to_calculate: ti_df_results['MACD_Signal'] = macd_output.iloc[:,2]
-            # If too short, NaNs will be filled by the final loop
+                macd_output_df = ta.macd(df['close'], fast=macd_fast, slow=macd_slow, signal=macd_signal)
+                if macd_output_df is not None and not macd_output_df.empty and macd_output_df.shape[1] >= 3:
+                    if 'MACD' in ti_names_to_calculate: ti_df_results['MACD'] = macd_output_df.iloc[:,0]
+                    if 'MACD_Histogram' in ti_names_to_calculate: ti_df_results['MACD_Histogram'] = macd_output_df.iloc[:,1]
+                    if 'MACD_Signal' in ti_names_to_calculate: ti_df_results['MACD_Signal'] = macd_output_df.iloc[:,2]
+                else:
+                    if 'MACD' in ti_names_to_calculate: ti_df_results['MACD'] = np.nan
+                    if 'MACD_Histogram' in ti_names_to_calculate: ti_df_results['MACD_Histogram'] = np.nan
+                    if 'MACD_Signal' in ti_names_to_calculate: ti_df_results['MACD_Signal'] = np.nan
+            else:
+                if 'MACD' in ti_names_to_calculate: ti_df_results['MACD'] = np.nan
+                if 'MACD_Histogram' in ti_names_to_calculate: ti_df_results['MACD_Histogram'] = np.nan
+                if 'MACD_Signal' in ti_names_to_calculate: ti_df_results['MACD_Signal'] = np.nan
 
         # Stochastic
         stoch_k_period = p.get("stoch_k", 14)
         stoch_d_period = p.get("stoch_d", 3)
         stoch_smooth_k_period = p.get("stoch_smooth_k", 3)
-        # Min length for stoch_k is stoch_k_period.
+        min_len_stoch = stoch_k_period + stoch_d_period -1 
         if any(x in ti_names_to_calculate for x in ['Stochastic_%K', 'Stochastic_%D']):
-            if len(df['high']) >= stoch_k_period:
-                try:
-                    stoch_output = ta.stoch(df['high'], df['low'], df['close'], k=stoch_k_period, d=stoch_d_period, smooth_k=stoch_smooth_k_period)
-                    if stoch_output is not None and not stoch_output.empty:
-                        if 'Stochastic_%K' in ti_names_to_calculate: ti_df_results['Stochastic_%K'] = stoch_output.iloc[:,0]
-                        if 'Stochastic_%D' in ti_names_to_calculate: ti_df_results['Stochastic_%D'] = stoch_output.iloc[:,1]
-                except Exception as e_stoch:
-                    print(f"GeneratorPlugin: Warning - Error during ta.stoch calculation: {e_stoch}. Input df len: {len(df['high'])}. Filling with NaNs.")
-            # If too short or error, NaNs will be filled by the final loop
+            if len(df['high']) >= min_len_stoch:
+                stoch_output_df = ta.stoch(df['high'], df['low'], df['close'], k=stoch_k_period, d=stoch_d_period, smooth_k=stoch_smooth_k_period)
+                if stoch_output_df is not None and not stoch_output_df.empty and stoch_output_df.shape[1] >= 2:
+                    if 'Stochastic_%K' in ti_names_to_calculate: ti_df_results['Stochastic_%K'] = stoch_output_df.iloc[:,0]
+                    if 'Stochastic_%D' in ti_names_to_calculate: ti_df_results['Stochastic_%D'] = stoch_output_df.iloc[:,1]
+                else:
+                    if 'Stochastic_%K' in ti_names_to_calculate: ti_df_results['Stochastic_%K'] = np.nan
+                    if 'Stochastic_%D' in ti_names_to_calculate: ti_df_results['Stochastic_%D'] = np.nan
+            else:
+                if 'Stochastic_%K' in ti_names_to_calculate: ti_df_results['Stochastic_%K'] = np.nan
+                if 'Stochastic_%D' in ti_names_to_calculate: ti_df_results['Stochastic_%D'] = np.nan
 
         # ADX
-        adx_len = p.get("adx_length", 14)
-        min_len_adx = adx_len * 2 # ADX often needs more history
+        adx_len_param = p.get("adx_length", 14)
+        min_len_adx = adx_len_param * 2 - 1
         if any(x in ti_names_to_calculate for x in ['ADX', 'DI+', 'DI-']):
             if len(df['high']) >= min_len_adx:
-                adx_output = ta.adx(df['high'], df['low'], df['close'], length=adx_len)
-                if adx_output is not None and not adx_output.empty:
-                    if 'ADX' in ti_names_to_calculate: ti_df_results['ADX'] = adx_output.iloc[:,0]
-                    if 'DI+' in ti_names_to_calculate: ti_df_results['DI+'] = adx_output.iloc[:,1]
-                    if 'DI-' in ti_names_to_calculate: ti_df_results['DI-'] = adx_output.iloc[:,2]
+                adx_output_df = ta.adx(df['high'], df['low'], df['close'], length=adx_len_param)
+                if adx_output_df is not None and not adx_output_df.empty and adx_output_df.shape[1] >= 3:
+                    if 'ADX' in ti_names_to_calculate: ti_df_results['ADX'] = adx_output_df.iloc[:,0]
+                    if 'DI+' in ti_names_to_calculate: ti_df_results['DI+'] = adx_output_df.iloc[:,1]
+                    if 'DI-' in ti_names_to_calculate: ti_df_results['DI-'] = adx_output_df.iloc[:,2]
+                else:
+                    if 'ADX' in ti_names_to_calculate: ti_df_results['ADX'] = np.nan
+                    if 'DI+' in ti_names_to_calculate: ti_df_results['DI+'] = np.nan
+                    if 'DI-' in ti_names_to_calculate: ti_df_results['DI-'] = np.nan
+            else:
+                if 'ADX' in ti_names_to_calculate: ti_df_results['ADX'] = np.nan
+                if 'DI+' in ti_names_to_calculate: ti_df_results['DI+'] = np.nan
+                if 'DI-' in ti_names_to_calculate: ti_df_results['DI-'] = np.nan
 
         # ATR
         atr_len = p.get("atr_length", 14)
         if 'ATR' in ti_names_to_calculate:
             if len(df['high']) >= atr_len:
-                 ti_df_results['ATR'] = ta.atr(df['high'], df['low'], df['close'], length=atr_len)
+                 atr_series = ta.atr(df['high'], df['low'], df['close'], length=atr_len)
+                 ti_df_results['ATR'] = atr_series if isinstance(atr_series, pd.Series) else np.nan
+            else:
+                ti_df_results['ATR'] = np.nan
 
         # CCI
         cci_len = p.get("cci_length", 14)
         if 'CCI' in ti_names_to_calculate:
             if len(df['high']) >= cci_len:
-                ti_df_results['CCI'] = ta.cci(df['high'], df['low'], df['close'], length=cci_len)
+                cci_series = ta.cci(df['high'], df['low'], df['close'], length=cci_len)
+                ti_df_results['CCI'] = cci_series if isinstance(cci_series, pd.Series) else np.nan
+            else:
+                ti_df_results['CCI'] = np.nan
         
         # Williams %R
         willr_len = p.get("willr_length", 14)
         if 'WilliamsR' in ti_names_to_calculate:
             if len(df['high']) >= willr_len:
-                ti_df_results['WilliamsR'] = ta.willr(df['high'], df['low'], df['close'], length=willr_len)
+                willr_series = ta.willr(df['high'], df['low'], df['close'], length=willr_len)
+                ti_df_results['WilliamsR'] = willr_series if isinstance(willr_series, pd.Series) else np.nan
+            else:
+                ti_df_results['WilliamsR'] = np.nan
 
         # Momentum
         mom_len = p.get("mom_length", 14)
         if 'Momentum' in ti_names_to_calculate:
-            if len(df['close']) >= mom_len + 1: # Momentum needs length+1 samples
-                ti_df_results['Momentum'] = ta.mom(df['close'], length=mom_len)
+            if len(df['close']) >= mom_len + 1:
+                mom_series = ta.mom(df['close'], length=mom_len)
+                ti_df_results['Momentum'] = mom_series if isinstance(mom_series, pd.Series) else np.nan
+            else:
+                ti_df_results['Momentum'] = np.nan
         
         # ROC
         roc_len = p.get("roc_length", 14)
         if 'ROC' in ti_names_to_calculate:
-            if len(df['close']) >= roc_len + 1: # ROC needs length+1 samples
-                ti_df_results['ROC'] = ta.roc(df['close'], length=roc_len)
+            if len(df['close']) >= roc_len + 1:
+                roc_series = ta.roc(df['close'], length=roc_len)
+                ti_df_results['ROC'] = roc_series if isinstance(roc_series, pd.Series) else np.nan
+            else:
+                ti_df_results['ROC'] = np.nan
 
         # EMA
         ema_len = p.get("ema_length", 14)
         if 'EMA' in ti_names_to_calculate:
             if len(df['close']) >= ema_len:
-                ti_df_results['EMA'] = ta.ema(df['close'], length=ema_len)
+                ema_series = ta.ema(df['close'], length=ema_len)
+                ti_df_results['EMA'] = ema_series if isinstance(ema_series, pd.Series) else np.nan
+            else:
+                ti_df_results['EMA'] = np.nan
 
-        # Ensure all requested TI columns exist in ti_df_results, filling with NaN if not calculated
         for ti_name in self.params["ti_feature_names"]:
             if ti_name not in ti_df_results.columns:
                 ti_df_results[ti_name] = np.nan
         
-        # Select only the requested TIs and return the last row.
-        # If ohlc_history_df was very short (e.g. 1 row), ti_df_results will also have 1 row.
-        # iloc[[-1]] correctly gets the last row.
-        if ti_df_results.empty: # Should not happen if df was not empty
-            nan_placeholder_df = pd.DataFrame(columns=self.params["ti_feature_names"], index=[0]).astype(np.float32)
-            nan_placeholder_df = nan_placeholder_df.fillna(np.nan)
-            return nan_placeholder_df
-
-        # Ensure all target columns are present before selecting, to avoid KeyError
-        final_ti_columns_present = [col for col in self.params["ti_feature_names"] if col in ti_df_results.columns]
-        
-        if not final_ti_columns_present: # No TIs could be put into ti_df_results
+        if ti_df_results.empty and not df.empty:
+            ti_df_results = pd.DataFrame(np.nan, index=df.index, columns=self.params["ti_feature_names"])
+        elif ti_df_results.empty and df.empty:
              nan_placeholder_df = pd.DataFrame(columns=self.params["ti_feature_names"], index=[0]).astype(np.float32)
              nan_placeholder_df = nan_placeholder_df.fillna(np.nan)
              return nan_placeholder_df
 
-        # Return the last row of the calculated TIs
-        last_row_tis = ti_df_results[final_ti_columns_present].iloc[[-1]].reset_index(drop=True)
+        calculated_ti_cols = [col for col in self.params["ti_feature_names"] if col in ti_df_results.columns]
         
-        # Reindex to ensure all originally requested TIs are present, filling missing ones with NaN
-        # This is important if some TIs were calculated but others (due to column name issues or other) were not.
+        if not calculated_ti_cols:
+             nan_placeholder_df = pd.DataFrame(np.nan, index=[0], columns=self.params["ti_feature_names"]).astype(np.float32)
+             return nan_placeholder_df
+
+        last_row_tis = ti_df_results[calculated_ti_cols].tail(1).reset_index(drop=True)
         last_row_tis_reindexed = last_row_tis.reindex(columns=self.params["ti_feature_names"], fill_value=np.nan)
         
         return last_row_tis_reindexed.astype(np.float32)
 
-    # ADD THIS HELPER METHOD (adapted from FeederPlugin)
-    def _get_scaled_date_features_for_plugin(self, datetime_obj: pd.Timestamp) -> np.ndarray:
-        """Generates scaled (sin/cos) date features for a given datetime. Uses Generator's params and main_config."""
-        date_features = []
-        # Ensure self.main_config is available, it's set in __init__ from the passed config
-        main_cfg = getattr(self, 'main_config', {}) # Fallback to empty dict if not found
+    def set_params(self, **kwargs):
+        """
+        Actualiza parámetros del plugin.
+        """
+        print(f"GeneratorPlugin.set_params called with kwargs: {list(kwargs.keys())}")
+        
+        old_model_file = self.params.get("sequential_model_file")
+        old_norm_file = self.params.get("generator_normalization_params_file")
+        old_full_feature_names = self.params.get("full_feature_names_ordered")
 
-        # Use self.params for feature names, self.main_config for max values (as Feeder does)
-        date_conditional_names = self.params.get("date_conditional_feature_names", [])
+        # --- MODIFICATION: Update self.main_config first ---
+        # This ensures that if kwargs contains updates to main config keys (like x_train_file),
+        # they are reflected in self.main_config before deriving paths from it.
+        if hasattr(self, 'main_config') and self.main_config is not None:
+            self.main_config.update(kwargs) 
+        else: # Should not happen if __init__ ran correctly and self.main_config was set
+            print("GeneratorPlugin: Warning - self.main_config not found or is None during set_params. Initializing from kwargs.")
+            self.main_config = kwargs.copy()
 
-        if "day_of_month" in date_conditional_names:
-            dom = datetime_obj.day
-            max_dom = main_cfg.get("feeder_max_day_of_month", 31)
-            date_features.extend([np.sin(2 * np.pi * dom / max_dom), np.cos(2 * np.pi * dom / max_dom)])
-        if "hour_of_day" in date_conditional_names:
-            hod = datetime_obj.hour
-            max_hod = main_cfg.get("feeder_max_hour_of_day", 23)
-            date_features.extend([np.sin(2 * np.pi * hod / (max_hod + 1)), np.cos(2 * np.pi * hod / (max_hod + 1))])
-        if "day_of_week" in date_conditional_names:
-            dow = datetime_obj.dayofweek
-            max_dow = main_cfg.get("feeder_max_day_of_week", 6)
-            date_features.extend([np.sin(2 * np.pi * dow / (max_dow + 1)), np.cos(2 * np.pi * dow / (max_dow + 1))])
-        if "day_of_year" in date_conditional_names:
-            doy = datetime_obj.dayofyear
-            max_doy = main_cfg.get("feeder_max_day_of_year", 366)
-            date_features.extend([np.sin(2 * np.pi * doy / max_doy), np.cos(2 * np.pi * doy / max_doy)])
-        return np.array(date_features, dtype=np.float32)
+        # Determine the file path for initial CLOSE anchor from the (potentially updated) main config
+        initial_close_file_path_candidate = self.main_config.get(
+            "x_train_file", self.main_config.get("real_data_file") # Uses updated self.main_config
+        )
+
+        for param_key_short in self.plugin_params.keys():
+            prefixed_key = f"generator_{param_key_short}"
+            
+            if prefixed_key in kwargs:
+                self.params[param_key_short] = kwargs[prefixed_key]
+            elif param_key_short in kwargs: # Check non-prefixed as well
+                self.params[param_key_short] = kwargs[param_key_short]
+        
+        # Explicitly handle generator_normalization_params_file if it's passed with prefix or not
+        if "generator_normalization_params_file" in kwargs:
+            self.params["generator_normalization_params_file"] = kwargs["generator_normalization_params_file"]
+        elif "normalization_params_file" in kwargs and "generator_normalization_params_file" not in self.plugin_params:
+             # If a generic "normalization_params_file" is passed and the specific one isn't a plugin param
+             pass # self.params["generator_normalization_params_file"] = kwargs["normalization_params_file"]
+
+
+        new_model_file = self.params.get("sequential_model_file")
+        new_norm_file = self.params.get("generator_normalization_params_file")
+        # new_initial_close_file is now initial_close_file_path_candidate
+
+        if new_model_file != old_model_file or (new_model_file and self.sequential_model is None):
+            self._load_model_from_path(new_model_file)
+        elif not new_model_file and old_model_file:
+            print("GeneratorPlugin: La ruta del modelo se ha borrado. Limpiando el modelo cargado.")
+            self.sequential_model = None
+            self.model = None
+
+        if new_norm_file != old_norm_file or (new_norm_file and self.normalization_params is None):
+            self.normalization_params = self._load_normalization_params(new_norm_file)
+        elif not new_norm_file and old_norm_file:
+            print("GeneratorPlugin: Normalization params file path cleared. Resetting normalization_params.")
+            self.normalization_params = None
+            
+        # Reload initial close anchor if the source file path from main config might have changed
+        # or if it hasn't been loaded yet.
+        # We track the path used to load it with self._last_initial_close_file_path
+        
+        # --- Refined logic for initial_close_anchor reload ---
+        last_loaded_path_attr = '_last_initial_close_file_path'
+        current_last_loaded_path = getattr(self, last_loaded_path_attr, None)
+
+        if initial_close_file_path_candidate:
+            if self.initial_denormalized_close_anchor is None or \
+               current_last_loaded_path != initial_close_file_path_candidate:
+                print(f"GeneratorPlugin: Reloading initial close anchor. Reason: Anchor is None ({self.initial_denormalized_close_anchor is None}) or path changed (current: '{initial_close_file_path_candidate}', last: '{current_last_loaded_path}').")
+                self._load_initial_close_anchor(initial_close_file_path_candidate)
+                setattr(self, last_loaded_path_attr, initial_close_file_path_candidate)
+        elif not initial_close_file_path_candidate and self.initial_denormalized_close_anchor is not None:
+            print("GeneratorPlugin: Warning - x_train_file path for initial close anchor became None, but anchor was already loaded. Keeping existing anchor. Clearing last loaded path.")
+            setattr(self, last_loaded_path_attr, None) 
+            # Optionally, consider clearing self.initial_denormalized_close_anchor here if the policy is to nullify it
+            # when the path is removed. For now, it's kept if already loaded.
+
+        if self.params.get("full_feature_names_ordered") != old_full_feature_names or \
+           any(key in kwargs for key in ["decoder_output_feature_names", "ohlc_feature_names", 
+                                         "ti_feature_names", "date_conditional_feature_names", 
+                                         "feeder_conditional_feature_names",
+                                         "generator_decoder_output_feature_names", 
+                                         "generator_ohlc_feature_names",
+                                         "generator_ti_feature_names",
+                                         "generator_date_conditional_feature_names",
+                                         "generator_feeder_conditional_feature_names"
+                                         ]):
+            if self.params.get("full_feature_names_ordered"):
+                self.feature_to_idx = {name: i for i, name in enumerate(self.params["full_feature_names_ordered"])}
+                self.num_all_features = len(self.params["full_feature_names_ordered"])
+                self._validate_feature_name_consistency()
+            elif old_full_feature_names: 
+                 raise ValueError("'full_feature_names_ordered' cannot be empty after update.")
+        
+
+    def _load_initial_close_anchor(self, file_path: Optional[str]):
+        """
+        Loads the last CLOSE price from the specified data file (e.g., x_train_file).
+        The file_path comes from the main application config.
+        """
+        if not file_path:
+            print("GeneratorPlugin: Warning - No data file path (e.g., 'x_train_file') provided in main config for initial CLOSE. Initial CLOSE anchor will default to 1.0.")
+            self.initial_denormalized_close_anchor = 1.0
+            return
+
+        try:
+            df_real = pd.read_csv(file_path)
+            if 'CLOSE' in df_real.columns and not df_real['CLOSE'].empty:
+                # IMPORTANT ASSUMPTION: The 'CLOSE' in this file might be NORMALIZED if it's 'normalized_d4.csv'.
+                # If it's normalized, we need to denormalize it here.
+                # For now, let's assume we need to check normalization_params.
+                last_close_val_from_file = float(df_real['CLOSE'].iloc[-1])
+
+                if self.normalization_params and "CLOSE" in self.normalization_params:
+                    # If normalization params exist for CLOSE, assume value in file is normalized
+                    self.initial_denormalized_close_anchor = self._denormalize_value(last_close_val_from_file, "CLOSE")
+                    print(f"GeneratorPlugin: Initial CLOSE anchor (denormalized from file) loaded from '{file_path}': {self.initial_denormalized_close_anchor}")
+                else:
+                    # If no normalization params for CLOSE, assume value in file is already denormalized
+                    self.initial_denormalized_close_anchor = last_close_val_from_file
+                    print(f"GeneratorPlugin: Initial CLOSE anchor (assumed denormalized) loaded from '{file_path}': {self.initial_denormalized_close_anchor}")
+            else:
+                print(f"GeneratorPlugin: Warning - 'CLOSE' column not found or empty in '{file_path}'. Initial CLOSE anchor defaulting to 1.0.")
+                self.initial_denormalized_close_anchor = 1.0
+        except FileNotFoundError:
+            print(f"GeneratorPlugin: ERROR - Data file for initial CLOSE not found: {file_path}. Defaulting to 1.0.")
+            self.initial_denormalized_close_anchor = 1.0
+        except Exception as e:
+            print(f"GeneratorPlugin: ERROR - Could not load initial CLOSE from '{file_path}': {e}. Defaulting to 1.0.")
+            self.initial_denormalized_close_anchor = 1.0
+        
+        if self.initial_denormalized_close_anchor is None or pd.isna(self.initial_denormalized_close_anchor): # Final fallback
+            self.initial_denormalized_close_anchor = 1.0
+            print("GeneratorPlugin: Critical - initial_denormalized_close_anchor was None/NaN after attempting load. Defaulted to 1.0.")
+
+
+    def _validate_feature_name_consistency(self):
+        """
+        Validates that all configured feature name lists are subsets of 
+        'full_feature_names_ordered' and that critical feature lists are not empty.
+        """
+        print("GeneratorPlugin: Validating feature name consistency...")
+        full_set = set(self.params.get("full_feature_names_ordered", []))
+        if not full_set:
+            raise ValueError("'full_feature_names_ordered' cannot be empty and must be configured.")
+
+        def check_subset(list_name, critical=False):
+            feature_list = self.params.get(list_name, [])
+            if critical and not feature_list:
+                raise ValueError(f"'{list_name}' is a critical parameter and cannot be empty.")
+            
+            current_set = set(feature_list)
+            if not current_set.issubset(full_set):
+                missing = current_set - full_set
+                raise ValueError(
+                    f"Features in '{list_name}' are not all present in 'full_feature_names_ordered'. "
+                    f"Missing: {missing}. Ensure '{list_name}' only contains features from "
+                    f"'full_feature_names_ordered'."
+                )
+            print(f"GeneratorPlugin: Feature list '{list_name}' validated successfully against 'full_feature_names_ordered'.")
+
+        check_subset("decoder_output_feature_names", critical=True)
+        check_subset("ohlc_feature_names", critical=True)
+        check_subset("ti_feature_names", critical=False) # Can be empty if no TIs are calculated
+        
+        # For conditional features, we also need to check their sin/cos transformed versions if applicable
+        # date_conditional_feature_names are the original names (e.g., "day_of_month")
+        # Their transformed versions (e.g., "day_of_month_sin") must be in full_feature_names_ordered
+        date_cond_original_names = self.params.get("date_conditional_feature_names", [])
+        transformed_date_cond_names = []
+        for name in date_cond_original_names:
+            transformed_date_cond_names.append(f"{name}_sin")
+            transformed_date_cond_names.append(f"{name}_cos")
+        
+        date_cond_set = set(transformed_date_cond_names)
+        if transformed_date_cond_names and not date_cond_set.issubset(full_set):
+            missing_transformed = date_cond_set - full_set
+            raise ValueError(
+                f"Transformed date conditional features (from 'date_conditional_feature_names') are not all present "
+                f"in 'full_feature_names_ordered'. Missing: {missing_transformed}. "
+                f"Ensure sin/cos versions of date features are in 'full_feature_names_ordered'."
+            )
+        if transformed_date_cond_names:
+             print(f"GeneratorPlugin: Transformed date conditional features validated successfully.")
+        
+        check_subset("feeder_conditional_feature_names", critical=False) # Can be empty
+
+        # Validate that decoder input names are set
+        for input_name_key in ["decoder_input_name_latent", "decoder_input_name_window", 
+                               "decoder_input_name_conditions", "decoder_input_name_context"]:
+            if not self.params.get(input_name_key):
+                raise ValueError(f"Decoder input name parameter '{input_name_key}' is not configured in GeneratorPlugin.params.")
+        print("GeneratorPlugin: All decoder input name parameters are configured.")
+        print("GeneratorPlugin: Feature name consistency validation complete.")
+
+    # Placeholder for _normalize_value and _denormalize_value
+    # You need to implement these based on your normalization strategy
+    # For example, using a loaded JSON file with min/max values per feature.
+
+    def _load_normalization_params(self, file_path: Optional[str]) -> Optional[Dict[str, Dict[str, float]]]:
+        if not file_path:
+            print("GeneratorPlugin: Warning - No normalization_params_file provided. Denormalization/normalization will be identity operations.")
+            return None
+        try:
+            import json
+            with open(file_path, 'r') as f:
+                params = json.load(f)
+            # Basic validation: check if it's a dict and contains 'min'/'max' for entries
+            if not isinstance(params, dict):
+                raise ValueError("Normalization params file should contain a JSON object (dictionary).")
+            for feature, values in params.items():
+                if not (isinstance(values, dict) and "min" in values and "max" in values):
+                    raise ValueError(f"Normalization params for feature '{feature}' must be a dict with 'min' and 'max' keys.")
+            print(f"GeneratorPlugin: Successfully loaded normalization parameters from {file_path}")
+            return params
+        except FileNotFoundError:
+            print(f"GeneratorPlugin: ERROR - Normalization parameters file not found: {file_path}. Denormalization/normalization will be identity operations.")
+            return None
+        except json.JSONDecodeError:
+            print(f"GeneratorPlugin: ERROR - Could not decode JSON from normalization parameters file: {file_path}. Denormalization/normalization will be identity operations.")
+            return None
+        except ValueError as ve:
+            print(f"GeneratorPlugin: ERROR - Invalid format in normalization parameters file '{file_path}': {ve}. Denormalization/normalization will be identity operations.")
+            return None
+
+
+    def _normalize_value(self, value: float, feature_name: str) -> float:
+        if self.normalization_params and feature_name in self.normalization_params:
+            params = self.normalization_params[feature_name]
+            min_val, max_val = params['min'], params['max']
+            if max_val == min_val: # Avoid division by zero if min and max are the same
+                return 0.0 if value == min_val else (value - min_val) # Or handle as per your logic, e.g., 0.5 or raise error
+            return (value - min_val) / (max_val - min_val)
+        # print(f"GeneratorPlugin: Warning - No normalization params for '{feature_name}' or params not loaded. Returning original value for normalization.")
+        return value # Identity if no params
+
+    def _denormalize_value(self, norm_value: float, feature_name: str) -> float:
+        if self.normalization_params and feature_name in self.normalization_params:
+            params = self.normalization_params[feature_name]
+            min_val, max_val = params['min'], params['max']
+            return norm_value * (max_val - min_val) + min_val
+        # print(f"GeneratorPlugin: Warning - No normalization params for '{feature_name}' or params not loaded. Returning original value for denormalization.")
+        return norm_value # Identity if no params
+
+
+    def get_debug_info(self) -> Dict[str, Any]:
+        """
+        Devuelve diccionario con valores de debug.
+
+        :return: {var: valor} para cada var en plugin_debug_vars.
+        """
+        return {var: self.params.get(var) for var in self.plugin_debug_vars}
+
+    def add_debug_info(self, debug_info: Dict[str, Any]):
+        """
+        Inserta info de debug en el diccionario proporcionado.
+
+        :param debug_info: diccionario destino.
+        """
+        debug_info.update(self.get_debug_info())
+
+    def _calculate_technical_indicators(self, ohlc_history_df: pd.DataFrame) -> pd.DataFrame:
+        if ohlc_history_df.empty:
+            nan_placeholder_df = pd.DataFrame(columns=self.params["ti_feature_names"], index=[0]).astype(np.float32)
+            nan_placeholder_df = nan_placeholder_df.fillna(np.nan)
+            return nan_placeholder_df
+
+        ohlc_map = {
+            self.params["ohlc_feature_names"][0]: 'open',
+            self.params["ohlc_feature_names"][1]: 'high',
+            self.params["ohlc_feature_names"][2]: 'low',
+            self.params["ohlc_feature_names"][3]: 'close'
+        }
+        missing_ohlc_cols = [col for col in self.params["ohlc_feature_names"] if col not in ohlc_history_df.columns]
+        if missing_ohlc_cols:
+            print(f"GeneratorPlugin: Warning (_calculate_technical_indicators) - Missing OHLC columns in input: {missing_ohlc_cols}. TIs will be NaN.")
+            nan_placeholder_df = pd.DataFrame(columns=self.params["ti_feature_names"], index=[0]).astype(np.float32)
+            nan_placeholder_df = nan_placeholder_df.fillna(np.nan)
+            return nan_placeholder_df
+            
+        df = ohlc_history_df.rename(columns=ohlc_map)
+        ti_df_results = pd.DataFrame(index=df.index)
+        p = self.params["ti_params"]
+        ti_names_to_calculate = self.params["ti_feature_names"]
+
+        # RSI
+        rsi_len = p.get("rsi_length", 14)
+        if 'RSI' in ti_names_to_calculate:
+            if len(df['close']) >= rsi_len:
+                rsi_series = ta.rsi(df['close'], length=rsi_len)
+                ti_df_results['RSI'] = rsi_series if isinstance(rsi_series, pd.Series) else np.nan
+            else:
+                ti_df_results['RSI'] = np.nan
+
+        # MACD
+        macd_fast = p.get("macd_fast", 12)
+        macd_slow = p.get("macd_slow", 26)
+        macd_signal = p.get("macd_signal", 9)
+        min_len_macd = macd_slow + macd_signal - 1 
+        if any(x in ti_names_to_calculate for x in ['MACD', 'MACD_Histogram', 'MACD_Signal']):
+            if len(df['close']) >= min_len_macd:
+                macd_output_df = ta.macd(df['close'], fast=macd_fast, slow=macd_slow, signal=macd_signal)
+                if macd_output_df is not None and not macd_output_df.empty and macd_output_df.shape[1] >= 3:
+                    if 'MACD' in ti_names_to_calculate: ti_df_results['MACD'] = macd_output_df.iloc[:,0]
+                    if 'MACD_Histogram' in ti_names_to_calculate: ti_df_results['MACD_Histogram'] = macd_output_df.iloc[:,1]
+                    if 'MACD_Signal' in ti_names_to_calculate: ti_df_results['MACD_Signal'] = macd_output_df.iloc[:,2]
+                else:
+                    if 'MACD' in ti_names_to_calculate: ti_df_results['MACD'] = np.nan
+                    if 'MACD_Histogram' in ti_names_to_calculate: ti_df_results['MACD_Histogram'] = np.nan
+                    if 'MACD_Signal' in ti_names_to_calculate: ti_df_results['MACD_Signal'] = np.nan
+            else:
+                if 'MACD' in ti_names_to_calculate: ti_df_results['MACD'] = np.nan
+                if 'MACD_Histogram' in ti_names_to_calculate: ti_df_results['MACD_Histogram'] = np.nan
+                if 'MACD_Signal' in ti_names_to_calculate: ti_df_results['MACD_Signal'] = np.nan
+
+        # Stochastic
+        stoch_k_period = p.get("stoch_k", 14)
+        stoch_d_period = p.get("stoch_d", 3)
+        stoch_smooth_k_period = p.get("stoch_smooth_k", 3)
+        min_len_stoch = stoch_k_period + stoch_d_period -1 
+        if any(x in ti_names_to_calculate for x in ['Stochastic_%K', 'Stochastic_%D']):
+            if len(df['high']) >= min_len_stoch:
+                stoch_output_df = ta.stoch(df['high'], df['low'], df['close'], k=stoch_k_period, d=stoch_d_period, smooth_k=stoch_smooth_k_period)
+                if stoch_output_df is not None and not stoch_output_df.empty and stoch_output_df.shape[1] >= 2:
+                    if 'Stochastic_%K' in ti_names_to_calculate: ti_df_results['Stochastic_%K'] = stoch_output_df.iloc[:,0]
+                    if 'Stochastic_%D' in ti_names_to_calculate: ti_df_results['Stochastic_%D'] = stoch_output_df.iloc[:,1]
+                else:
+                    if 'Stochastic_%K' in ti_names_to_calculate: ti_df_results['Stochastic_%K'] = np.nan
+                    if 'Stochastic_%D' in ti_names_to_calculate: ti_df_results['Stochastic_%D'] = np.nan
+            else:
+                if 'Stochastic_%K' in ti_names_to_calculate: ti_df_results['Stochastic_%K'] = np.nan
+                if 'Stochastic_%D' in ti_names_to_calculate: ti_df_results['Stochastic_%D'] = np.nan
+
+        # ADX
+        adx_len_param = p.get("adx_length", 14)
+        min_len_adx = adx_len_param * 2 - 1
+        if any(x in ti_names_to_calculate for x in ['ADX', 'DI+', 'DI-']):
+            if len(df['high']) >= min_len_adx:
+                adx_output_df = ta.adx(df['high'], df['low'], df['close'], length=adx_len_param)
+                if adx_output_df is not None and not adx_output_df.empty and adx_output_df.shape[1] >= 3:
+                    if 'ADX' in ti_names_to_calculate: ti_df_results['ADX'] = adx_output_df.iloc[:,0]
+                    if 'DI+' in ti_names_to_calculate: ti_df_results['DI+'] = adx_output_df.iloc[:,1]
+                    if 'DI-' in ti_names_to_calculate: ti_df_results['DI-'] = adx_output_df.iloc[:,2]
+                else:
+                    if 'ADX' in ti_names_to_calculate: ti_df_results['ADX'] = np.nan
+                    if 'DI+' in ti_names_to_calculate: ti_df_results['DI+'] = np.nan
+                    if 'DI-' in ti_names_to_calculate: ti_df_results['DI-'] = np.nan
+            else:
+                if 'ADX' in ti_names_to_calculate: ti_df_results['ADX'] = np.nan
+                if 'DI+' in ti_names_to_calculate: ti_df_results['DI+'] = np.nan
+                if 'DI-' in ti_names_to_calculate: ti_df_results['DI-'] = np.nan
+
+        # ATR
+        atr_len = p.get("atr_length", 14)
+        if 'ATR' in ti_names_to_calculate:
+            if len(df['high']) >= atr_len:
+                 atr_series = ta.atr(df['high'], df['low'], df['close'], length=atr_len)
+                 ti_df_results['ATR'] = atr_series if isinstance(atr_series, pd.Series) else np.nan
+            else:
+                ti_df_results['ATR'] = np.nan
+
+        # CCI
+        cci_len = p.get("cci_length", 14)
+        if 'CCI' in ti_names_to_calculate:
+            if len(df['high']) >= cci_len:
+                cci_series = ta.cci(df['high'], df['low'], df['close'], length=cci_len)
+                ti_df_results['CCI'] = cci_series if isinstance(cci_series, pd.Series) else np.nan
+            else:
+                ti_df_results['CCI'] = np.nan
+        
+        # Williams %R
+        willr_len = p.get("willr_length", 14)
+        if 'WilliamsR' in ti_names_to_calculate:
+            if len(df['high']) >= willr_len:
+                willr_series = ta.willr(df['high'], df['low'], df['close'], length=willr_len)
+                ti_df_results['WilliamsR'] = willr_series if isinstance(willr_series, pd.Series) else np.nan
+            else:
+                ti_df_results['WilliamsR'] = np.nan
+
+        # Momentum
+        mom_len = p.get("mom_length", 14)
+        if 'Momentum' in ti_names_to_calculate:
+            if len(df['close']) >= mom_len + 1:
+                mom_series = ta.mom(df['close'], length=mom_len)
+                ti_df_results['Momentum'] = mom_series if isinstance(mom_series, pd.Series) else np.nan
+            else:
+                ti_df_results['Momentum'] = np.nan
+        
+        # ROC
+        roc_len = p.get("roc_length", 14)
+        if 'ROC' in ti_names_to_calculate:
+            if len(df['close']) >= roc_len + 1:
+                roc_series = ta.roc(df['close'], length=roc_len)
+                ti_df_results['ROC'] = roc_series if isinstance(roc_series, pd.Series) else np.nan
+            else:
+                ti_df_results['ROC'] = np.nan
+
+        # EMA
+        ema_len = p.get("ema_length", 14)
+        if 'EMA' in ti_names_to_calculate:
+            if len(df['close']) >= ema_len:
+                ema_series = ta.ema(df['close'], length=ema_len)
+                ti_df_results['EMA'] = ema_series if isinstance(ema_series, pd.Series) else np.nan
+            else:
+                ti_df_results['EMA'] = np.nan
+
+        for ti_name in self.params["ti_feature_names"]:
+            if ti_name not in ti_df_results.columns:
+                ti_df_results[ti_name] = np.nan
+        
+        if ti_df_results.empty and not df.empty:
+            ti_df_results = pd.DataFrame(np.nan, index=df.index, columns=self.params["ti_feature_names"])
+        elif ti_df_results.empty and df.empty:
+             nan_placeholder_df = pd.DataFrame(columns=self.params["ti_feature_names"], index=[0]).astype(np.float32)
+             nan_placeholder_df = nan_placeholder_df.fillna(np.nan)
+             return nan_placeholder_df
+
+        calculated_ti_cols = [col for col in self.params["ti_feature_names"] if col in ti_df_results.columns]
+        
+        if not calculated_ti_cols:
+             nan_placeholder_df = pd.DataFrame(np.nan, index=[0], columns=self.params["ti_feature_names"]).astype(np.float32)
+             return nan_placeholder_df
+
+        last_row_tis = ti_df_results[calculated_ti_cols].tail(1).reset_index(drop=True)
+        last_row_tis_reindexed = last_row_tis.reindex(columns=self.params["ti_feature_names"], fill_value=np.nan)
+        
+        return last_row_tis_reindexed.astype(np.float32)
+
+    def set_params(self, **kwargs):
+        """
+        Actualiza parámetros del plugin.
+        """
+        print(f"GeneratorPlugin.set_params called with kwargs: {list(kwargs.keys())}")
+        
+        old_model_file = self.params.get("sequential_model_file")
+        old_norm_file = self.params.get("generator_normalization_params_file")
+        old_full_feature_names = self.params.get("full_feature_names_ordered")
+
+        # --- MODIFICATION: Update self.main_config first ---
+        # This ensures that if kwargs contains updates to main config keys (like x_train_file),
+        # they are reflected in self.main_config before deriving paths from it.
+        if hasattr(self, 'main_config') and self.main_config is not None:
+            self.main_config.update(kwargs) 
+        else: # Should not happen if __init__ ran correctly and self.main_config was set
+            print("GeneratorPlugin: Warning - self.main_config not found or is None during set_params. Initializing from kwargs.")
+            self.main_config = kwargs.copy()
+
+        # Determine the file path for initial CLOSE anchor from the (potentially updated) main config
+        initial_close_file_path_candidate = self.main_config.get(
+            "x_train_file", self.main_config.get("real_data_file") # Uses updated self.main_config
+        )
+
+        for param_key_short in self.plugin_params.keys():
+            prefixed_key = f"generator_{param_key_short}"
+            
+            if prefixed_key in kwargs:
+                self.params[param_key_short] = kwargs[prefixed_key]
+            elif param_key_short in kwargs: # Check non-prefixed as well
+                self.params[param_key_short] = kwargs[param_key_short]
+        
+        # Explicitly handle generator_normalization_params_file if it's passed with prefix or not
+        if "generator_normalization_params_file" in kwargs:
+            self.params["generator_normalization_params_file"] = kwargs["generator_normalization_params_file"]
+        elif "normalization_params_file" in kwargs and "generator_normalization_params_file" not in self.plugin_params:
+             # If a generic "normalization_params_file" is passed and the specific one isn't a plugin param
+             pass # self.params["generator_normalization_params_file"] = kwargs["normalization_params_file"]
+
+
+        new_model_file = self.params.get("sequential_model_file")
+        new_norm_file = self.params.get("generator_normalization_params_file")
+        # new_initial_close_file is now initial_close_file_path_candidate
+
+        if new_model_file != old_model_file or (new_model_file and self.sequential_model is None):
+            self._load_model_from_path(new_model_file)
+        elif not new_model_file and old_model_file:
+            print("GeneratorPlugin: La ruta del modelo se ha borrado. Limpiando el modelo cargado.")
+            self.sequential_model = None
+            self.model = None
+
+        if new_norm_file != old_norm_file or (new_norm_file and self.normalization_params is None):
+            self.normalization_params = self._load_normalization_params(new_norm_file)
+        elif not new_norm_file and old_norm_file:
+            print("GeneratorPlugin: Normalization params file path cleared. Resetting normalization_params.")
+            self.normalization_params = None
+            
+        # Reload initial close anchor if the source file path from main config might have changed
+        # or if it hasn't been loaded yet.
+        # We track the path used to load it with self._last_initial_close_file_path
+        
+        # --- Refined logic for initial_close_anchor reload ---
+        last_loaded_path_attr = '_last_initial_close_file_path'
+        current_last_loaded_path = getattr(self, last_loaded_path_attr, None)
+
+        if initial_close_file_path_candidate:
+            if self.initial_denormalized_close_anchor is None or \
+               current_last_loaded_path != initial_close_file_path_candidate:
+                print(f"GeneratorPlugin: Reloading initial close anchor. Reason: Anchor is None ({self.initial_denormalized_close_anchor is None}) or path changed (current: '{initial_close_file_path_candidate}', last: '{current_last_loaded_path}').")
+                self._load_initial_close_anchor(initial_close_file_path_candidate)
+                setattr(self, last_loaded_path_attr, initial_close_file_path_candidate)
+        elif not initial_close_file_path_candidate and self.initial_denormalized_close_anchor is not None:
+            print("GeneratorPlugin: Warning - x_train_file path for initial close anchor became None, but anchor was already loaded. Keeping existing anchor. Clearing last loaded path.")
+            setattr(self, last_loaded_path_attr, None) 
+            # Optionally, consider clearing self.initial_denormalized_close_anchor here if the policy is to nullify it
+            # when the path is removed. For now, it's kept if already loaded.
+
+        if self.params.get("full_feature_names_ordered") != old_full_feature_names or \
+           any(key in kwargs for key in ["decoder_output_feature_names", "ohlc_feature_names", 
+                                         "ti_feature_names", "date_conditional_feature_names", 
+                                         "feeder_conditional_feature_names",
+                                         "generator_decoder_output_feature_names", 
+                                         "generator_ohlc_feature_names",
+                                         "generator_ti_feature_names",
+                                         "generator_date_conditional_feature_names",
+                                         "generator_feeder_conditional_feature_names"
+                                         ]):
+            if self.params.get("full_feature_names_ordered"):
+                self.feature_to_idx = {name: i for i, name in enumerate(self.params["full_feature_names_ordered"])}
+                self.num_all_features = len(self.params["full_feature_names_ordered"])
+                self._validate_feature_name_consistency()
+            elif old_full_feature_names: 
+                 raise ValueError("'full_feature_names_ordered' cannot be empty after update.")
+        
+
+    def _load_initial_close_anchor(self, file_path: Optional[str]):
+        """
+        Loads the last CLOSE price from the specified data file (e.g., x_train_file).
+        The file_path comes from the main application config.
+        """
+        if not file_path:
+            print("GeneratorPlugin: Warning - No data file path (e.g., 'x_train_file') provided in main config for initial CLOSE. Initial CLOSE anchor will default to 1.0.")
+            self.initial_denormalized_close_anchor = 1.0
+            return
+
+        try:
+            df_real = pd.read_csv(file_path)
+            if 'CLOSE' in df_real.columns and not df_real['CLOSE'].empty:
+                # IMPORTANT ASSUMPTION: The 'CLOSE' in this file might be NORMALIZED if it's 'normalized_d4.csv'.
+                # If it's normalized, we need to denormalize it here.
+                # For now, let's assume we need to check normalization_params.
+                last_close_val_from_file = float(df_real['CLOSE'].iloc[-1])
+
+                if self.normalization_params and "CLOSE" in self.normalization_params:
+                    # If normalization params exist for CLOSE, assume value in file is normalized
+                    self.initial_denormalized_close_anchor = self._denormalize_value(last_close_val_from_file, "CLOSE")
+                    print(f"GeneratorPlugin: Initial CLOSE anchor (denormalized from file) loaded from '{file_path}': {self.initial_denormalized_close_anchor}")
+                else:
+                    # If no normalization params for CLOSE, assume value in file is already denormalized
+                    self.initial_denormalized_close_anchor = last_close_val_from_file
+                    print(f"GeneratorPlugin: Initial CLOSE anchor (assumed denormalized) loaded from '{file_path}': {self.initial_denormalized_close_anchor}")
+            else:
+                print(f"GeneratorPlugin: Warning - 'CLOSE' column not found or empty in '{file_path}'. Initial CLOSE anchor defaulting to 1.0.")
+                self.initial_denormalized_close_anchor = 1.0
+        except FileNotFoundError:
+            print(f"GeneratorPlugin: ERROR - Data file for initial CLOSE not found: {file_path}. Defaulting to 1.0.")
+            self.initial_denormalized_close_anchor = 1.0
+        except Exception as e:
+            print(f"GeneratorPlugin: ERROR - Could not load initial CLOSE from '{file_path}': {e}. Defaulting to 1.0.")
+            self.initial_denormalized_close_anchor = 1.0
+        
+        if self.initial_denormalized_close_anchor is None or pd.isna(self.initial_denormalized_close_anchor): # Final fallback
+            self.initial_denormalized_close_anchor = 1.0
+            print("GeneratorPlugin: Critical - initial_denormalized_close_anchor was None/NaN after attempting load. Defaulted to 1.0.")
+
+
+    def _validate_feature_name_consistency(self):
+        """
+        Validates that all configured feature name lists are subsets of 
+        'full_feature_names_ordered' and that critical feature lists are not empty.
+        """
+        print("GeneratorPlugin: Validating feature name consistency...")
+        full_set = set(self.params.get("full_feature_names_ordered", []))
+        if not full_set:
+            raise ValueError("'full_feature_names_ordered' cannot be empty and must be configured.")
+
+        def check_subset(list_name, critical=False):
+            feature_list = self.params.get(list_name, [])
+            if critical and not feature_list:
+                raise ValueError(f"'{list_name}' is a critical parameter and cannot be empty.")
+            
+            current_set = set(feature_list)
+            if not current_set.issubset(full_set):
+                missing = current_set - full_set
+                raise ValueError(
+                    f"Features in '{list_name}' are not all present in 'full_feature_names_ordered'. "
+                    f"Missing: {missing}. Ensure '{list_name}' only contains features from "
+                    f"'full_feature_names_ordered'."
+                )
+            print(f"GeneratorPlugin: Feature list '{list_name}' validated successfully against 'full_feature_names_ordered'.")
+
+        check_subset("decoder_output_feature_names", critical=True)
+        check_subset("ohlc_feature_names", critical=True)
+        check_subset("ti_feature_names", critical=False) # Can be empty if no TIs are calculated
+        
+        # For conditional features, we also need to check their sin/cos transformed versions if applicable
+        # date_conditional_feature_names are the original names (e.g., "day_of_month")
+        # Their transformed versions (e.g., "day_of_month_sin") must be in full_feature_names_ordered
+        date_cond_original_names = self.params.get("date_conditional_feature_names", [])
+        transformed_date_cond_names = []
+        for name in date_cond_original_names:
+            transformed_date_cond_names.append(f"{name}_sin")
+            transformed_date_cond_names.append(f"{name}_cos")
+        
+        date_cond_set = set(transformed_date_cond_names)
+        if transformed_date_cond_names and not date_cond_set.issubset(full_set):
+            missing_transformed = date_cond_set - full_set
+            raise ValueError(
+                f"Transformed date conditional features (from 'date_conditional_feature_names') are not all present "
+                f"in 'full_feature_names_ordered'. Missing: {missing_transformed}. "
+                f"Ensure sin/cos versions of date features are in 'full_feature_names_ordered'."
+            )
+        if transformed_date_cond_names:
+             print(f"GeneratorPlugin: Transformed date conditional features validated successfully.")
+        
+        check_subset("feeder_conditional_feature_names", critical=False) # Can be empty
+
+        # Validate that decoder input names are set
+        for input_name_key in ["decoder_input_name_latent", "decoder_input_name_window", 
+                               "decoder_input_name_conditions", "decoder_input_name_context"]:
+            if not self.params.get(input_name_key):
+                raise ValueError(f"Decoder input name parameter '{input_name_key}' is not configured in GeneratorPlugin.params.")
+        print("GeneratorPlugin: All decoder input name parameters are configured.")
+        print("GeneratorPlugin: Feature name consistency validation complete.")
+
+    # Placeholder for _normalize_value and _denormalize_value
+    # You need to implement these based on your normalization strategy
+    # For example, using a loaded JSON file with min/max values per feature.
+
+    def _load_normalization_params(self, file_path: Optional[str]) -> Optional[Dict[str, Dict[str, float]]]:
+        if not file_path:
+            print("GeneratorPlugin: Warning - No normalization_params_file provided. Denormalization/normalization will be identity operations.")
+            return None
+        try:
+            import json
+            with open(file_path, 'r') as f:
+                params = json.load(f)
+            # Basic validation: check if it's a dict and contains 'min'/'max' for entries
+            if not isinstance(params, dict):
+                raise ValueError("Normalization params file should contain a JSON object (dictionary).")
+            for feature, values in params.items():
+                if not (isinstance(values, dict) and "min" in values and "max" in values):
+                    raise ValueError(f"Normalization params for feature '{feature}' must be a dict with 'min' and 'max' keys.")
+            print(f"GeneratorPlugin: Successfully loaded normalization parameters from {file_path}")
+            return params
+        except FileNotFoundError:
+            print(f"GeneratorPlugin: ERROR - Normalization parameters file not found: {file_path}. Denormalization/normalization will be identity operations.")
+            return None
+        except json.JSONDecodeError:
+            print(f"GeneratorPlugin: ERROR - Could not decode JSON from normalization parameters file: {file_path}. Denormalization/normalization will be identity operations.")
+            return None
+        except ValueError as ve:
+            print(f"GeneratorPlugin: ERROR - Invalid format in normalization parameters file '{file_path}': {ve}. Denormalization/normalization will be identity operations.")
+            return None
+
+
+    def _normalize_value(self, value: float, feature_name: str) -> float:
+        if self.normalization_params and feature_name in self.normalization_params:
+            params = self.normalization_params[feature_name]
+            min_val, max_val = params['min'], params['max']
+            if max_val == min_val: # Avoid division by zero if min and max are the same
+                return 0.0 if value == min_val else (value - min_val) # Or handle as per your logic, e.g., 0.5 or raise error
+            return (value - min_val) / (max_val - min_val)
+        # print(f"GeneratorPlugin: Warning - No normalization params for '{feature_name}' or params not loaded. Returning original value for normalization.")
+        return value # Identity if no params
+
+    def _denormalize_value(self, norm_value: float, feature_name: str) -> float:
+        if self.normalization_params and feature_name in self.normalization_params:
+            params = self.normalization_params[feature_name]
+            min_val, max_val = params['min'], params['max']
+            return norm_value * (max_val - min_val) + min_val
+        # print(f"GeneratorPlugin: Warning - No normalization params for '{feature_name}' or params not loaded. Returning original value for denormalization.")
+        return norm_value # Identity if no params
+
+
+    def get_debug_info(self) -> Dict[str, Any]:
+        """
+        Devuelve diccionario con valores de debug.
+
+        :return: {var: valor} para cada var en plugin_debug_vars.
+        """
+        return {var: self.params.get(var) for var in self.plugin_debug_vars}
+
+    def add_debug_info(self, debug_info: Dict[str, Any]):
+        """
+        Inserta info de debug en el diccionario proporcionado.
+
+        :param debug_info: diccionario destino.
+        """
+        debug_info.update(self.get_debug_info())
+
+    def _calculate_technical_indicators(self, ohlc_history_df: pd.DataFrame) -> pd.DataFrame:
+        if ohlc_history_df.empty:
+            nan_placeholder_df = pd.DataFrame(columns=self.params["ti_feature_names"], index=[0]).astype(np.float32)
+            nan_placeholder_df = nan_placeholder_df.fillna(np.nan)
+            return nan_placeholder_df
+
+        ohlc_map = {
+            self.params["ohlc_feature_names"][0]: 'open',
+            self.params["ohlc_feature_names"][1]: 'high',
+            self.params["ohlc_feature_names"][2]: 'low',
+            self.params["ohlc_feature_names"][3]: 'close'
+        }
+        missing_ohlc_cols = [col for col in self.params["ohlc_feature_names"] if col not in ohlc_history_df.columns]
+        if missing_ohlc_cols:
+            print(f"GeneratorPlugin: Warning (_calculate_technical_indicators) - Missing OHLC columns in input: {missing_ohlc_cols}. TIs will be NaN.")
+            nan_placeholder_df = pd.DataFrame(columns=self.params["ti_feature_names"], index=[0]).astype(np.float32)
+            nan_placeholder_df = nan_placeholder_df.fillna(np.nan)
+            return nan_placeholder_df
+            
+        df = ohlc_history_df.rename(columns=ohlc_map)
+        ti_df_results = pd.DataFrame(index=df.index)
+        p = self.params["ti_params"]
+        ti_names_to_calculate = self.params["ti_feature_names"]
+
+        # RSI
+        rsi_len = p.get("rsi_length", 14)
+        if 'RSI' in ti_names_to_calculate:
+            if len(df['close']) >= rsi_len:
+                rsi_series = ta.rsi(df['close'], length=rsi_len)
+                ti_df_results['RSI'] = rsi_series if isinstance(rsi_series, pd.Series) else np.nan
+            else:
+                ti_df_results['RSI'] = np.nan
+
+        # MACD
+        macd_fast = p.get("macd_fast", 12)
+        macd_slow = p.get("macd_slow", 26)
+        macd_signal = p.get("macd_signal", 9)
+        min_len_macd = macd_slow + macd_signal - 1 
+        if any(x in ti_names_to_calculate for x in ['MACD', 'MACD_Histogram', 'MACD_Signal']):
+            if len(df['close']) >= min_len_macd:
+                macd_output_df = ta.macd(df['close'], fast=macd_fast, slow=macd_slow, signal=macd_signal)
+                if macd_output_df is not None and not macd_output_df.empty and macd_output_df.shape[1] >= 3:
+                    if 'MACD' in ti_names_to_calculate: ti_df_results['MACD'] = macd_output_df.iloc[:,0]
+                    if 'MACD_Histogram' in ti_names_to_calculate: ti_df_results['MACD_Histogram'] = macd_output_df.iloc[:,1]
+                    if 'MACD_Signal' in ti_names_to_calculate: ti_df_results['MACD_Signal'] = macd_output_df.iloc[:,2]
+                else:
+                    if 'MACD' in ti_names_to_calculate: ti_df_results['MACD'] = np.nan
+                    if 'MACD_Histogram' in ti_names_to_calculate: ti_df_results['MACD_Histogram'] = np.nan
+                    if 'MACD_Signal' in ti_names_to_calculate: ti_df_results['MACD_Signal'] = np.nan
+            else:
+                if 'MACD' in ti_names_to_calculate: ti_df_results['MACD'] = np.nan
+                if 'MACD_Histogram' in ti_names_to_calculate: ti_df_results['MACD_Histogram'] = np.nan
+                if 'MACD_Signal' in ti_names_to_calculate: ti_df_results['MACD_Signal'] = np.nan
+
+        # Stochastic
+        stoch_k_period = p.get("stoch_k", 14)
+        stoch_d_period = p.get("stoch_d", 3)
+        stoch_smooth_k_period = p.get("stoch_smooth_k", 3)
+        min_len_stoch = stoch_k_period + stoch_d_period -1 
+        if any(x in ti_names_to_calculate for x in ['Stochastic_%K', 'Stochastic_%D']):
+            if len(df['high']) >= min_len_stoch:
+                stoch_output_df = ta.stoch(df['high'], df['low'], df['close'], k=stoch_k_period, d=stoch_d_period, smooth_k=stoch_smooth_k_period)
+                if stoch_output_df is not None and not stoch_output_df.empty and stoch_output_df.shape[1] >= 2:
+                    if 'Stochastic_%K' in ti_names_to_calculate: ti_df_results['Stochastic_%K'] = stoch_output_df.iloc[:,0]
+                    if 'Stochastic_%D' in ti_names_to_calculate: ti_df_results['Stochastic_%D'] = stoch_output_df.iloc[:,1]
+                else:
+                    if 'Stochastic_%K' in ti_names_to_calculate: ti_df_results['Stochastic_%K'] = np.nan
+                    if 'Stochastic_%D' in ti_names_to_calculate: ti_df_results['Stochastic_%D'] = np.nan
+            else:
+                if 'Stochastic_%K' in ti_names_to_calculate: ti_df_results['Stochastic_%K'] = np.nan
+                if 'Stochastic_%D' in ti_names_to_calculate: ti_df_results['Stochastic_%D'] = np.nan
+
+        # ADX
+        adx_len_param = p.get("adx_length", 14)
+        min_len_adx = adx_len_param * 2 - 1
+        if any(x in ti_names_to_calculate for x in ['ADX', 'DI+', 'DI-']):
+            if len(df['high']) >= min_len_adx:
+                adx_output_df = ta.adx(df['high'], df['low'], df['close'], length=adx_len_param)
+                if adx_output_df is not None and not adx_output_df.empty and adx_output_df.shape[1] >= 3:
+                    if 'ADX' in ti_names_to_calculate: ti_df_results['ADX'] = adx_output_df.iloc[:,0]
+                    if 'DI+' in ti_names_to_calculate: ti_df_results['DI+'] = adx_output_df.iloc[:,1]
+                    if 'DI-' in ti_names_to_calculate: ti_df_results['DI-'] = adx_output_df.iloc[:,2]
+                else:
+                    if 'ADX' in ti_names_to_calculate: ti_df_results['ADX'] = np.nan
+                    if 'DI+' in ti_names_to_calculate: ti_df_results['DI+'] = np.nan
+                    if 'DI-' in ti_names_to_calculate: ti_df_results['DI-'] = np.nan
+            else:
+                if 'ADX' in ti_names_to_calculate: ti_df_results['ADX'] = np.nan
+                if 'DI+' in ti_names_to_calculate: ti_df_results['DI+'] = np.nan
+                if 'DI-' in ti_names_to_calculate: ti_df_results['DI-'] = np.nan
+
+        # ATR
+        atr_len = p.get("atr_length", 14)
+        if 'ATR' in ti_names_to_calculate:
+            if len(df['high']) >= atr_len:
+                 atr_series = ta.atr(df['high'], df['low'], df['close'], length=atr_len)
+                 ti_df_results['ATR'] = atr_series if isinstance(atr_series, pd.Series) else np.nan
+            else:
+                ti_df_results['ATR'] = np.nan
+
+        # CCI
+        cci_len = p.get("cci_length", 14)
+        if 'CCI' in ti_names_to_calculate:
+            if len(df['high']) >= cci_len:
+                cci_series = ta.cci(df['high'], df['low'], df['close'], length=cci_len)
+                ti_df_results['CCI'] = cci_series if isinstance(cci_series, pd.Series) else np.nan
+            else:
+                ti_df_results['CCI'] = np.nan
+        
+        # Williams %R
+        willr_len = p.get("willr_length", 14)
+        if 'WilliamsR' in ti_names_to_calculate:
+            if len(df['high']) >= willr_len:
+                willr_series = ta.willr(df['high'], df['low'], df['close'], length=willr_len)
+                ti_df_results['WilliamsR'] = willr_series if isinstance(willr_series, pd.Series) else np.nan
+            else:
+                ti_df_results['WilliamsR'] = np.nan
+
+        # Momentum
+        mom_len = p.get("mom_length", 14)
+        if 'Momentum' in ti_names_to_calculate:
+            if len(df['close']) >= mom_len + 1:
+                mom_series = ta.mom(df['close'], length=mom_len)
+                ti_df_results['Momentum'] = mom_series if isinstance(mom_series, pd.Series) else np.nan
+            else:
+                ti_df_results['Momentum'] = np.nan
+        
+        # ROC
+        roc_len = p.get("roc_length", 14)
+        if 'ROC' in ti_names_to_calculate:
+            if len(df['close']) >= roc_len + 1:
+                roc_series = ta.roc(df['close'], length=roc_len)
+                ti_df_results['ROC'] = roc_series if isinstance(roc_series, pd.Series) else np.nan
+            else:
+                ti_df_results['ROC'] = np.nan
+
+        # EMA
+        ema_len = p.get("ema_length", 14)
+        if 'EMA' in ti_names_to_calculate:
+            if len(df['close']) >= ema_len:
+                ema_series = ta.ema(df['close'], length=ema_len)
+                ti_df_results['EMA'] = ema_series if isinstance(ema_series, pd.Series) else np.nan
+            else:
+                ti_df_results['EMA'] = np.nan
+
+        for ti_name in self.params["ti_feature_names"]:
+            if ti_name not in ti_df_results.columns:
+                ti_df_results[ti_name] = np.nan
+        
+        if ti_df_results.empty and not df.empty:
+            ti_df_results = pd.DataFrame(np.nan, index=df.index, columns=self.params["ti_feature_names"])
+        elif ti_df_results.empty and df.empty:
+             nan_placeholder_df = pd.DataFrame(columns=self.params["ti_feature_names"], index=[0]).astype(np.float32)
+             nan_placeholder_df = nan_placeholder_df.fillna(np.nan)
+             return nan_placeholder_df
+
+        calculated_ti_cols = [col for col in self.params["ti_feature_names"] if col in ti_df_results.columns]
+        
+        if not calculated_ti_cols:
+             nan_placeholder_df = pd.DataFrame(np.nan, index=[0], columns=self.params["ti_feature_names"]).astype(np.float32)
+             return nan_placeholder_df
+
+        last_row_tis = ti_df_results[calculated_ti_cols].tail(1).reset_index(drop=True)
+        last_row_tis_reindexed = last_row_tis.reindex(columns=self.params["ti_feature_names"], fill_value=np.nan)
+        
+        return last_row_tis_reindexed.astype(np.float32)
 
     def generate(self,
                  feeder_outputs_sequence: List[Dict[str, np.ndarray]],
