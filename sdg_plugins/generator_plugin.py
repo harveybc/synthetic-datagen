@@ -519,10 +519,39 @@ class GeneratorPlugin:
         
         return ti_df[self.params["ti_feature_names"]].iloc[[-1]].reset_index(drop=True).astype(np.float32)
 
+    # ADD THIS HELPER METHOD (adapted from FeederPlugin)
+    def _get_scaled_date_features_for_plugin(self, datetime_obj: pd.Timestamp) -> np.ndarray:
+        """Generates scaled (sin/cos) date features for a given datetime. Uses Generator's params and main_config."""
+        date_features = []
+        # Ensure self.main_config is available, it's set in __init__ from the passed config
+        main_cfg = getattr(self, 'main_config', {}) # Fallback to empty dict if not found
+
+        # Use self.params for feature names, self.main_config for max values (as Feeder does)
+        date_conditional_names = self.params.get("date_conditional_feature_names", [])
+
+        if "day_of_month" in date_conditional_names:
+            dom = datetime_obj.day
+            max_dom = main_cfg.get("feeder_max_day_of_month", 31)
+            date_features.extend([np.sin(2 * np.pi * dom / max_dom), np.cos(2 * np.pi * dom / max_dom)])
+        if "hour_of_day" in date_conditional_names:
+            hod = datetime_obj.hour
+            max_hod = main_cfg.get("feeder_max_hour_of_day", 23)
+            date_features.extend([np.sin(2 * np.pi * hod / (max_hod + 1)), np.cos(2 * np.pi * hod / (max_hod + 1))])
+        if "day_of_week" in date_conditional_names:
+            dow = datetime_obj.dayofweek
+            max_dow = main_cfg.get("feeder_max_day_of_week", 6)
+            date_features.extend([np.sin(2 * np.pi * dow / (max_dow + 1)), np.cos(2 * np.pi * dow / (max_dow + 1))])
+        if "day_of_year" in date_conditional_names:
+            doy = datetime_obj.dayofyear
+            max_doy = main_cfg.get("feeder_max_day_of_year", 366)
+            date_features.extend([np.sin(2 * np.pi * doy / max_doy), np.cos(2 * np.pi * doy / max_doy)])
+        return np.array(date_features, dtype=np.float32)
+
     def generate(self,
                  feeder_outputs_sequence: List[Dict[str, np.ndarray]],
                  sequence_length_T: int,
-                 initial_full_feature_window: Optional[np.ndarray] = None
+                 initial_full_feature_window: Optional[np.ndarray] = None,
+                 initial_datetimes_for_window: Optional[pd.Series] = None # NEW ARGUMENT
                 ) -> np.ndarray:
         """
         Genera una secuencia de variables base de manera autorregresiva usando el modelo secuencial cargado.
@@ -530,15 +559,11 @@ class GeneratorPlugin:
         decoder_input_window_size = self.params["decoder_input_window_size"]
         min_ohlc_hist_len = self.params["ti_calculation_min_lookback"]
         
-        ohlc_names = self.params["ohlc_feature_names"] # Should be ["OPEN", "HIGH", "LOW", "CLOSE"]
+        ohlc_names = self.params["ohlc_feature_names"]
 
         # Initialize self.previous_normalized_close for this generation sequence
-        self.previous_normalized_close = None # Reset for each call to generate
-        if initial_full_feature_window is not None and 'CLOSE' in self.feature_to_idx:
-            last_norm_close_in_window = initial_full_feature_window[-1, self.feature_to_idx['CLOSE']]
-            if pd.notnull(last_norm_close_in_window):
-                self.previous_normalized_close = float(last_norm_close_in_window)
-                print(f"GeneratorPlugin: Initialized previous_normalized_close from initial_full_feature_window: {self.previous_normalized_close}")
+        self.previous_normalized_close = None 
+        # This will be properly set after the initial window is processed or from its last tick.
 
         ohlc_history_for_ti_list = [] 
 
@@ -546,29 +571,131 @@ class GeneratorPlugin:
         if initial_full_feature_window is not None:
             if initial_full_feature_window.shape == current_input_feature_window.shape:
                 current_input_feature_window = initial_full_feature_window.astype(np.float32).copy()
+                
+                # Populate ohlc_history_for_ti_list from the initial window (denormalized)
+                # This part is crucial for TI calculation during pre-fill and main loop.
                 start_idx_for_ohlc_hist = max(0, decoder_input_window_size - min_ohlc_hist_len)
-                for i in range(start_idx_for_ohlc_hist, decoder_input_window_size):
-                    # OHLC in initial_full_feature_window are assumed to be NORMALIZED
+                for i in range(decoder_input_window_size): # Iterate full window to build complete history
                     row_ohlc_norm_values = {
                         name: current_input_feature_window[i, self.feature_to_idx[name]]
-                        for name in self.params["ohlc_feature_names"] if name in self.feature_to_idx
+                        for name in ohlc_names if name in self.feature_to_idx and pd.notnull(current_input_feature_window[i, self.feature_to_idx[name]])
                     }
-                    # Denormalize here for TI history
-                    ohlc_dict_denorm = {
-                        name: self._denormalize_value(row_ohlc_norm_values.get(name, np.nan), name)
-                        for name in self.params["ohlc_feature_names"]
-                    }
-                    # Only add if all OHLC values are valid after denormalization
-                    if all(pd.notnull(v) for v in ohlc_dict_denorm.values()) and len(ohlc_dict_denorm) == len(self.params["ohlc_feature_names"]):
-                        ohlc_history_for_ti_list.append(ohlc_dict_denorm)
+                    if len(row_ohlc_norm_values) == len(ohlc_names): # Ensure all OHLC are present
+                        ohlc_dict_denorm = {
+                            name: self._denormalize_value(row_ohlc_norm_values.get(name, np.nan), name)
+                            for name in ohlc_names
+                        }
+                        if all(pd.notnull(v) for v in ohlc_dict_denorm.values()):
+                            ohlc_history_for_ti_list.append(ohlc_dict_denorm)
+                
+                if len(ohlc_history_for_ti_list) > min_ohlc_hist_len + 50: # Trim if it became too long
+                    ohlc_history_for_ti_list = ohlc_history_for_ti_list[-(min_ohlc_hist_len + 50):]
 
-            else:
+
+                # --- BEGIN PRE-FILL OF DERIVED FEATURES IN current_input_feature_window ---
+                if initial_datetimes_for_window is not None and \
+                   len(initial_datetimes_for_window) == decoder_input_window_size:
+                    
+                    print("GeneratorPlugin: Pre-filling derived features in initial_full_feature_window...")
+                    _local_prev_norm_close_for_prefill = None
+                    # Try to get a close value from *before* the window for the first log_return.
+                    # This is hard. If not available, first log_return in window will be 0.
+                    # If the initial window is from the very start of data, there's no prior.
+                    # For simplicity, if the first row's CLOSE is valid, use it as its own previous for log_return=0.
+                    if 'CLOSE' in self.feature_to_idx and pd.notnull(current_input_feature_window[0, self.feature_to_idx['CLOSE']]):
+                        _local_prev_norm_close_for_prefill = current_input_feature_window[0, self.feature_to_idx['CLOSE']]
+
+
+                    for i_prefill in range(decoder_input_window_size):
+                        dt_obj_prefill = initial_datetimes_for_window.iloc[i_prefill]
+                        
+                        # 1. Raw Date Features (day_of_month, hour_of_day, day_of_week)
+                        raw_date_map_prefill = {
+                            "day_of_month": dt_obj_prefill.day,
+                            "hour_of_day": dt_obj_prefill.hour,
+                            "day_of_week": dt_obj_prefill.dayofweek
+                        }
+                        for raw_feat_name, raw_val in raw_date_map_prefill.items():
+                            if raw_feat_name in self.feature_to_idx:
+                                current_input_feature_window[i_prefill, self.feature_to_idx[raw_feat_name]] = self._normalize_value(raw_val, raw_feat_name)
+
+                        # 2. Sin/Cos Date Features
+                        scaled_date_features_prefill_arr = self._get_scaled_date_features_for_plugin(dt_obj_prefill)
+                        sincos_idx_counter = 0
+                        for original_date_feat_name_cfg in self.params.get("date_conditional_feature_names", []):
+                            for suffix in ["_sin", "_cos"]:
+                                feat_name_transformed = f"{original_date_feat_name_cfg}{suffix}"
+                                if feat_name_transformed in self.feature_to_idx:
+                                    if sincos_idx_counter < len(scaled_date_features_prefill_arr):
+                                        current_input_feature_window[i_prefill, self.feature_to_idx[feat_name_transformed]] = scaled_date_features_prefill_arr[sincos_idx_counter]
+                                    else: # Should not happen if _get_scaled_date_features_for_plugin is correct
+                                        current_input_feature_window[i_prefill, self.feature_to_idx[feat_name_transformed]] = 0.0 
+                                    sincos_idx_counter += 1
+                        
+                        # Fundamental features: Assumed to be correctly populated from preprocessor output or remain 0.0/NaN
+
+                        # 3. Technical Indicators
+                        # Use the ohlc_history_for_ti_list (which contains denormalized OHLC for the whole initial window)
+                        # We need to pass a DataFrame slice of this history to _calculate_technical_indicators
+                        # The slice should be up to and including the current row i_prefill for TI calculation.
+                        if len(ohlc_history_for_ti_list) > i_prefill : # Ensure we have history up to this point
+                            history_slice_for_ti_df = pd.DataFrame(ohlc_history_for_ti_list[:i_prefill+1])
+                            if not history_slice_for_ti_df.empty:
+                                calculated_ti_for_prefill_df = self._calculate_technical_indicators(history_slice_for_ti_df) # Returns DF for last row
+                                if not calculated_ti_for_prefill_df.empty:
+                                    for ti_name in self.params["ti_feature_names"]:
+                                        if ti_name in self.feature_to_idx and ti_name in calculated_ti_for_prefill_df.columns:
+                                            val_ti_denorm = calculated_ti_for_prefill_df.iloc[0][ti_name]
+                                            if pd.notnull(val_ti_denorm):
+                                                current_input_feature_window[i_prefill, self.feature_to_idx[ti_name]] = self._normalize_value(val_ti_denorm, ti_name)
+                                            else: # If TI is NaN, keep it NaN (will be 0.01 later if needed for model input)
+                                                current_input_feature_window[i_prefill, self.feature_to_idx[ti_name]] = np.nan
+
+
+                        # 4. Log Return
+                        # CLOSE for current prefill step
+                        norm_c_prefill = np.nan
+                        if 'CLOSE' in self.feature_to_idx and pd.notnull(current_input_feature_window[i_prefill, self.feature_to_idx['CLOSE']]):
+                             norm_c_prefill = current_input_feature_window[i_prefill, self.feature_to_idx['CLOSE']]
+                        elif 'OPEN' in self.feature_to_idx and pd.notnull(current_input_feature_window[i_prefill, self.feature_to_idx['OPEN']]):
+                             norm_c_prefill = current_input_feature_window[i_prefill, self.feature_to_idx['OPEN']] # Fallback
+
+                        if "log_return" in self.feature_to_idx:
+                            log_return_val_to_norm_prefill = 0.0
+                            if _local_prev_norm_close_for_prefill is not None and pd.notnull(norm_c_prefill) and \
+                               _local_prev_norm_close_for_prefill > 1e-9 and norm_c_prefill > 1e-9:
+                                log_return_val_to_norm_prefill = np.log(norm_c_prefill / _local_prev_norm_close_for_prefill)
+                            
+                            current_input_feature_window[i_prefill, self.feature_to_idx["log_return"]] = self._normalize_value(log_return_val_to_norm_prefill, "log_return")
+                        
+                        if pd.notnull(norm_c_prefill):
+                            _local_prev_norm_close_for_prefill = norm_c_prefill
+                    
+                    print("GeneratorPlugin: Finished pre-filling derived features in initial_full_feature_window.")
+                # --- END PRE-FILL ---
+                elif initial_full_feature_window is not None: # initial_datetimes_for_window was missing or mismatched
+                     print("GeneratorPlugin: Warning - initial_full_feature_window provided, but initial_datetimes_for_window is missing or mismatched. Cannot pre-fill derived features in the window.")
+
+            else: # Shape mismatch for initial_full_feature_window
                 raise ValueError(f"Shape mismatch for initial_full_feature_window. Expected {current_input_feature_window.shape}, got {initial_full_feature_window.shape}")
-        else:
-            print("GeneratorPlugin Warning: No initial_full_feature_window provided. Using zeros.")
+        else: # No initial_full_feature_window provided
+            print("GeneratorPlugin Warning: No initial_full_feature_window provided. Using zeros. TIs will be NaN initially.")
+
+        # Initialize self.previous_normalized_close for the main generation loop
+        # This should be based on the *last* tick of the (now potentially pre-filled) current_input_feature_window
+        if 'CLOSE' in self.feature_to_idx and current_input_feature_window.shape[0] > 0:
+            last_norm_close_in_window = current_input_feature_window[-1, self.feature_to_idx['CLOSE']]
+            if pd.notnull(last_norm_close_in_window):
+                self.previous_normalized_close = float(last_norm_close_in_window)
+                print(f"GeneratorPlugin: Initialized previous_normalized_close for main loop from window's last tick: {self.previous_normalized_close}")
+            elif self.initial_denormalized_close_anchor is not None: # Fallback to anchor if last window CLOSE is bad
+                self.previous_normalized_close = self._normalize_value(self.initial_denormalized_close_anchor, "CLOSE")
+                print(f"GeneratorPlugin: Initialized previous_normalized_close for main loop from initial_denormalized_close_anchor: {self.previous_normalized_close}")
+
 
         generated_sequence_all_features_list = []
 
+        # --- MAIN GENERATION LOOP ---
         for t in tqdm(range(sequence_length_T), desc="Generating synthetic sequence", unit="step", dynamic_ncols=True):
             current_tick_assembled_features = np.full(self.num_all_features, np.nan, dtype=np.float32)
 
@@ -823,10 +950,23 @@ class GeneratorPlugin:
 
             generated_sequence_all_features_list.append(current_tick_assembled_features)
 
-            current_input_feature_window = np.roll(current_input_feature_window, -1, axis=0)
-            current_input_feature_window[-1, :] = current_tick_assembled_features
+            # --- MODIFICATION: Ensure no NaNs are fed into the rolling window for the model ---
+            # current_tick_features_for_window = np.nan_to_num(current_tick_assembled_features, nan=0.01) # OLD
+            # The current_tick_assembled_features might have NaNs for TIs if history is too short.
+            # These NaNs should be replaced before updating current_input_feature_window.
+            
+            # Create a copy for the window update, replacing NaNs
+            current_tick_features_for_model_window_update = np.nan_to_num(current_tick_assembled_features.copy(), nan=0.01)
 
-            if len(ohlc_history_for_ti_list) > self.params["ti_calculation_min_lookback"] + 50: 
+
+            current_input_feature_window = np.roll(current_input_feature_window, -1, axis=0)
+            current_input_feature_window[-1, :] = current_tick_features_for_model_window_update # Use NaN-replaced version for model's input window
+        
+            # Manage ohlc_history_for_ti_list (append new denormalized OHLC, pop old)
+            # This was inside the TI calculation block, ensure it's correctly placed relative to history usage.
+            # The current ohlc_history_for_ti_list management seems okay, it appends the latest denormalized OHLC
+            # and trims if it gets too long. This happens *after* TIs for current tick are calculated.
+            if len(ohlc_history_for_ti_list) > min_ohlc_hist_len + 50: 
                 ohlc_history_for_ti_list.pop(0)
         
         final_generated_sequence = np.array(generated_sequence_all_features_list, dtype=np.float32)
