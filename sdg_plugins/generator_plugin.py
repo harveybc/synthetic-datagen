@@ -640,7 +640,8 @@ class GeneratorPlugin:
                  feeder_outputs_sequence: List[Dict[str, np.ndarray]],
                  sequence_length_T: int,
                  initial_full_feature_window: Optional[np.ndarray] = None,
-                 initial_datetimes_for_window: Optional[pd.Series] = None # NEW ARGUMENT
+                 initial_datetimes_for_window: Optional[pd.Series] = None,
+                 true_prev_close_for_initial_window_log_return: Optional[float] = None # NEW ARGUMENT
                 ) -> np.ndarray:
         """
         Genera una secuencia de variables base de manera autorregresiva usando el modelo secuencial cargado.
@@ -687,13 +688,19 @@ class GeneratorPlugin:
                     
                     print("GeneratorPlugin: Pre-filling derived features in initial_full_feature_window...")
                     _local_prev_norm_close_for_prefill = None
-                    # Try to get a close value from *before* the window for the first log_return.
-                    # This is hard. If not available, first log_return in window will be 0.
-                    # If the initial window is from the very start of data, there's no prior.
-                    # For simplicity, if the first row's CLOSE is valid, use it as its own previous for log_return=0.
-                    if 'CLOSE' in self.feature_to_idx and pd.notnull(current_input_feature_window[0, self.feature_to_idx['CLOSE']]):
+                    
+                    # --- MODIFIED: Initialize _local_prev_norm_close_for_prefill ---
+                    if true_prev_close_for_initial_window_log_return is not None and pd.notnull(true_prev_close_for_initial_window_log_return):
+                        _local_prev_norm_close_for_prefill = true_prev_close_for_initial_window_log_return
+                        print(f"DEBUG GeneratorPlugin: Pre-fill using true_prev_close_for_initial_window_log_return: {_local_prev_norm_close_for_prefill}")
+                    elif 'CLOSE' in self.feature_to_idx and pd.notnull(current_input_feature_window[0, self.feature_to_idx['CLOSE']]):
+                        # Fallback: if true previous close isn't available, use the first CLOSE in the window,
+                        # which means the first log_return in the window will be 0.
                         _local_prev_norm_close_for_prefill = current_input_feature_window[0, self.feature_to_idx['CLOSE']]
-
+                        print(f"DEBUG GeneratorPlugin: Pre-fill using fallback for _local_prev_norm_close_for_prefill (first CLOSE in window): {_local_prev_norm_close_for_prefill}")
+                    else:
+                        print("DEBUG GeneratorPlugin: Pre-fill: _local_prev_norm_close_for_prefill could not be initialized from true_prev or window's first CLOSE.")
+                    # --- END MODIFICATION ---
 
                     for i_prefill in range(decoder_input_window_size):
                         dt_obj_prefill = initial_datetimes_for_window.iloc[i_prefill]
@@ -874,24 +881,25 @@ class GeneratorPlugin:
             if "CLOSE" in self.feature_to_idx:
                 if pd.notnull(calculated_norm_close_from_obcbo):
                     norm_close = calculated_norm_close_from_obcbo
-                    if t < 2: print(f"DEBUG GeneratorPlugin (t={t}): norm_close set from calculated_norm_close_from_obcbo: {norm_close}")
-                elif t == 0 and self.initial_denormalized_close_anchor is not None:
-                    norm_close = self._normalize_value(self.initial_denormalized_close_anchor, "CLOSE")
-                    if t < 2: print(f"DEBUG GeneratorPlugin (t={t}): norm_close set from initial_anchor: {norm_close} (anchor: {self.initial_denormalized_close_anchor})")
-                elif pd.notnull(norm_open): # Fallback to norm_close = norm_open
+                # --- MODIFIED: CLOSE derivation for t=0 and fallbacks ---
+                elif t == 0: # First synthetic tick
+                    if pd.notnull(norm_open): # Try to use OPEN from decoder
+                        norm_close = norm_open
+                        if t < 2: print(f"DEBUG GeneratorPlugin t={t}: CLOSE from O+BCBO is NaN. Using norm_open: {norm_close} as CLOSE for first synthetic tick.")
+                    elif self.previous_normalized_close is not None and pd.notnull(self.previous_normalized_close): # Use previous actual close from end of real window
+                        norm_close = self.previous_normalized_close
+                        if t < 2: print(f"DEBUG GeneratorPlugin t={t}: CLOSE from O+BCBO is NaN, norm_open is NaN. Using self.previous_normalized_close: {norm_close} as CLOSE for first synthetic tick.")
+                    else: # Absolute last resort if decoder gives no OPEN and no previous_normalized_close
+                        norm_close = self._normalize_value(self.initial_denormalized_close_anchor, "CLOSE") if self.initial_denormalized_close_anchor is not None else 0.01
+                        if t < 2: print(f"DEBUG GeneratorPlugin t={t}: CLOSE from O+BCBO is NaN, norm_open is NaN, previous_normalized_close is None. Using initial_denormalized_close_anchor (fallback): {norm_close} as CLOSE.")
+                elif pd.notnull(norm_open): # Fallback to OPEN if CLOSE cannot be derived (for t > 0)
                     norm_close = norm_open
-                    if t < 2: print(f"DEBUG GeneratorPlugin (t={t}): norm_close set from fallback norm_open: {norm_close}")
-                else: # All strategies to determine norm_close failed, it remains NaN
-                    if t < 2: print(f"DEBUG GeneratorPlugin (t={t}): norm_close remains NaN after all strategies.")
+                else: # Last resort, use previous close if available (for t > 0)
+                    norm_close = self.previous_normalized_close if self.previous_normalized_close is not None else 0.01
+                # --- END MODIFICATION ---
 
-                if pd.notnull(norm_close):
-                    current_tick_assembled_features[self.feature_to_idx["CLOSE"]] = norm_close
-                    if t < 2: print(f"DEBUG GeneratorPlugin (t={t}): Assigned to current_tick_assembled_features['CLOSE']: {norm_close}")
-                else:
-                    # CLOSE remains NaN in current_tick_assembled_features, will be handled by placeholder logic in step 8
-                    if t < 2: print(f"DEBUG GeneratorPlugin (t={t}): current_tick_assembled_features['CLOSE'] remains NaN before step 8.")
-            elif t < 2:
-                 print(f"DEBUG GeneratorPlugin (t={t}): 'CLOSE' not in self.feature_to_idx. norm_close is {norm_close}.")
+            elif t < 2: # If 'CLOSE' is not even in feature_to_idx (config error)
+                 print(f"DEBUG GeneratorPlugin t={t}: 'CLOSE' not in self.feature_to_idx. Cannot derive norm_close.")
 
 
             # 2. Fill conditional features (sin/cos dates, fundamentals)
