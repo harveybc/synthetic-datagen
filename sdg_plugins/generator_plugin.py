@@ -12,8 +12,8 @@ Interfaz:
 
 """
 
-import numpy as np
-import pandas as pd
+import numpy as np # Make sure numpy is imported
+import pandas as pd # Make sure pandas is imported
 import tensorflow as tf # Ensure tensorflow is imported for tf.keras
 from tensorflow.keras.models import load_model, Model
 import pandas_ta as ta # Add pandas-ta
@@ -21,6 +21,7 @@ import os # For os.path.exists
 import zipfile # For checking .keras file format (zip)
 from tqdm.auto import tqdm # ADDED for the overall progress bar
 import json # For loading normalization params
+from typing import Dict, Any, List, Optional # ADD THIS LINE
 
 
 class GeneratorPlugin:
