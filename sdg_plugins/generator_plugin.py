@@ -636,7 +636,7 @@ class GeneratorPlugin:
 
                 if pd.notnull(norm_open) and pd.notnull(norm_bc_bo_for_calc):
                     denorm_open_val = self._denormalize_value(norm_open, "OPEN")
-                    denorm_bc_bo_val = self._denormalize_value(norm_bc_bo_calc, "BC-BO") # Assuming BC-BO is also normalized like other features
+                    denorm_bc_bo_val = self._denormalize_value(norm_bc_bo_for_calc, "BC-BO") # Assuming BC-BO is also normalized like other features
                     
                     if t < 2: # Print for the first 2 ticks
                         print(f"DEBUG GeneratorPlugin (t={t}): denorm_open_val: {denorm_open_val}, denorm_bc_bo_val: {denorm_bc_bo_val}")
