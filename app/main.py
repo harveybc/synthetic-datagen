@@ -679,33 +679,44 @@ def main():
             print("Skipping synthetic value generation as synthetic datetime series is empty.")
 
 
-        # 6. Create and Save Synthetic-Only DataFrame (using TARGET_CSV_COLUMNS)
+        # 6. Create Synthetic DataFrame (it will be combined later)
         df_synthetic_generated_full_features = pd.DataFrame(X_syn_generated_values_np, columns=generator_full_feature_names)
         if n_samples_synthetic > 0 and not final_synthetic_target_datetimes_series.empty:
-            # Ensure datetimes match the number of rows in X_syn_generated_values_np
             if len(final_synthetic_target_datetimes_series) == df_synthetic_generated_full_features.shape[0]:
-                # If DATE_TIME is already a column from generator_full_feature_names (as a placeholder), overwrite it.
-                # This is expected because config.py defines "DATE_TIME" in generator_full_feature_names_ordered.
                 if datetime_col_name in df_synthetic_generated_full_features.columns:
                     df_synthetic_generated_full_features[datetime_col_name] = final_synthetic_target_datetimes_series.values
                 else:
-                    # Fallback: if DATE_TIME was somehow not in generator_full_feature_names, then insert.
                     df_synthetic_generated_full_features.insert(0, datetime_col_name, final_synthetic_target_datetimes_series.values)
             else:
                 print(f"Warning: Mismatch between synthetic datetimes ({len(final_synthetic_target_datetimes_series)}) and generated values ({df_synthetic_generated_full_features.shape[0]}). Datetime column might be misaligned or omitted for synthetic data.")
         
-        output_df_synthetic_final = pd.DataFrame(columns=TARGET_CSV_COLUMNS)
+        # --- REMOVED SAVING OF SEPARATE SYNTHETIC-ONLY FILE ---
+        # output_df_synthetic_final = pd.DataFrame(columns=TARGET_CSV_COLUMNS)
+        # if not df_synthetic_generated_full_features.empty:
+        #     for col_target_name in TARGET_CSV_COLUMNS:
+        #         if col_target_name in df_synthetic_generated_full_features.columns:
+        #             output_df_synthetic_final[col_target_name] = df_synthetic_generated_full_features[col_target_name]
+        #         else: 
+        #             output_df_synthetic_final[col_target_name] = np.nan
+        
+        # synthetic_data_output_path = config.get("synthetic_data_output_file", "examples/results/generated_synthetic_data.csv") # This line is no longer needed
+        # os.makedirs(os.path.dirname(synthetic_data_output_path), exist_ok=True) # This line is no longer needed
+        # output_df_synthetic_final.to_csv(synthetic_data_output_path, index=False, na_rep='NaN') # This line is no longer needed
+        # print(f"✔︎ Synthetic-only data saved to {synthetic_data_output_path} (Shape: {output_df_synthetic_final.shape})") # This line is no longer needed
+        # --- END REMOVAL ---
+
+        # Instead, we will directly use df_synthetic_generated_full_features (after aligning its columns)
+        # for concatenation with the real data.
+
+        # Align synthetic data columns to TARGET_CSV_COLUMNS for consistent concatenation
+        output_df_synthetic_aligned = pd.DataFrame(columns=TARGET_CSV_COLUMNS)
         if not df_synthetic_generated_full_features.empty:
             for col_target_name in TARGET_CSV_COLUMNS:
                 if col_target_name in df_synthetic_generated_full_features.columns:
-                    output_df_synthetic_final[col_target_name] = df_synthetic_generated_full_features[col_target_name]
-                else: 
-                    output_df_synthetic_final[col_target_name] = np.nan
-        
-        synthetic_data_output_path = config.get("synthetic_data_output_file", "examples/results/generated_synthetic_data.csv")
-        os.makedirs(os.path.dirname(synthetic_data_output_path), exist_ok=True)
-        output_df_synthetic_final.to_csv(synthetic_data_output_path, index=False, na_rep='NaN')
-        print(f"✔︎ Synthetic-only data saved to {synthetic_data_output_path} (Shape: {output_df_synthetic_final.shape})")
+                    output_df_synthetic_aligned[col_target_name] = df_synthetic_generated_full_features[col_target_name]
+                else:
+                    output_df_synthetic_aligned[col_target_name] = np.nan # Fill missing target columns with NaN
+
 
         # 7. Create Real Data DataFrame for Output (using TARGET_CSV_COLUMNS)
         df_real_segment_processed_full_features = pd.DataFrame(X_real_segment_for_output_np, columns=processed_train_feature_names)
@@ -732,26 +743,24 @@ def main():
         
         print(f"DEBUG main.py: Real data segment for output DF shape: {output_df_real_final_segment.shape}")
 
+
         # 8. Combine and Save Final Output (Prepended)
-        if output_df_synthetic_final.empty and output_df_real_final_segment.empty:
+        # Use output_df_synthetic_aligned which has columns aligned to TARGET_CSV_COLUMNS
+        if output_df_synthetic_aligned.empty and output_df_real_final_segment.empty:
             print("WARNING: Both synthetic and real data segments are empty. Output file will be empty or header-only.")
             df_combined_prepended = pd.DataFrame(columns=TARGET_CSV_COLUMNS) 
-        elif output_df_synthetic_final.empty:
-            # df_combined_prepended = output_df_real_final_segment.reindex(columns=TARGET_CSV_COLUMNS) # .reindex is redundant
-            df_combined_prepended = output_df_real_final_segment
+        elif output_df_synthetic_aligned.empty:
+            df_combined_prepended = output_df_real_final_segment # Already aligned to TARGET_CSV_COLUMNS
         elif output_df_real_final_segment.empty:
-            # df_combined_prepended = output_df_synthetic_final.reindex(columns=TARGET_CSV_COLUMNS) # .reindex is redundant
-            df_combined_prepended = output_df_synthetic_final
+            df_combined_prepended = output_df_synthetic_aligned # Already aligned to TARGET_CSV_COLUMNS
         else:
             df_combined_prepended = pd.concat(
-                # [output_df_synthetic_final.reindex(columns=TARGET_CSV_COLUMNS), # .reindex is redundant
-                #  output_df_real_final_segment.reindex(columns=TARGET_CSV_COLUMNS)], # .reindex is redundant
-                [output_df_synthetic_final, 
+                [output_df_synthetic_aligned, 
                  output_df_real_final_segment], 
                 ignore_index=True
             )
         
-        final_output_path = config.get("output_file", "examples/results/prepended_data.csv")
+        final_output_path = config.get("output_file") # This is now the only output path for combined data
         os.makedirs(os.path.dirname(final_output_path), exist_ok=True)
         df_combined_prepended.to_csv(final_output_path, index=False, na_rep='NaN')
         print(f"✔︎ Combined data (synthetic prepended to real) saved to {final_output_path} (Shape: {df_combined_prepended.shape})")
