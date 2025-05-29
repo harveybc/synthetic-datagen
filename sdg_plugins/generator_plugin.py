@@ -614,16 +614,17 @@ class GeneratorPlugin:
             # NEW STRATEGY FOR norm_close:
             norm_close = np.nan
             if "CLOSE" in self.feature_to_idx:
-                if t == 0 and self.previous_normalized_close is None and self.initial_denormalized_close_anchor is not None:
-                    # Use anchor for the very first CLOSE if no history window was provided
+                # Prioritize initial_denormalized_close_anchor for the very first tick (t=0)
+                if t == 0 and self.initial_denormalized_close_anchor is not None:
                     norm_close = self._normalize_value(self.initial_denormalized_close_anchor, "CLOSE")
                     print(f"GeneratorPlugin: Step {t}, using initial_denormalized_close_anchor for CLOSE: {self.initial_denormalized_close_anchor} -> {norm_close}")
-                elif pd.notnull(norm_open):
+                elif pd.notnull(norm_open): # For t > 0, or if t=0 and anchor is None
                     norm_close = norm_open # Placeholder: CLOSE = OPEN
                     # print(f"GeneratorPlugin: Step {t}, setting norm_close = norm_open = {norm_close}")
                 else:
-                    # If norm_open is also NaN, norm_close remains NaN, to be filled by Step 8
-                    print(f"GeneratorPlugin: Step {t}, norm_open is NaN. norm_close will be NaN before fallback.")
+                    # If norm_open is also NaN (or t=0 and anchor is None and norm_open is NaN)
+                    print(f"GeneratorPlugin: Step {t}, norm_open is NaN (and/or anchor not used/available). norm_close will be NaN before fallback.")
+                    norm_close = np.nan # Ensure it's NaN if no other path taken
                 
                 if pd.notnull(norm_close):
                     current_tick_assembled_features[self.feature_to_idx["CLOSE"]] = norm_close
@@ -711,28 +712,27 @@ class GeneratorPlugin:
             # log_return is now calculated from the sequence of norm_close values.
             if "log_return" in self.feature_to_idx:
                 log_return_val_to_normalize = 0.0  # Default to 0 log return (no change)
-                if (self.previous_normalized_close is not None and
-                        self.previous_normalized_close > 1e-9 and  # Avoid division by zero or tiny numbers
-                        pd.notnull(norm_close) and
-                        norm_close > 1e-9): # Ensure current close is also valid
-                    
-                    # Denormalize previous and current close to calculate log_return on actual prices
-                    # This is more robust than calculating on normalized values if normalization is non-linear
-                    # or if min/max are very different, though simple ratio of normalized is often used.
-                    # For simplicity with current _normalize/_denormalize, let's try with normalized first.
-                    # If issues arise, switch to denormalized for ratio.
-                    ratio = norm_close / self.previous_normalized_close
-                    if ratio > 1e-9: # Ensure ratio is positive
-                        log_return_val_to_normalize = np.log(ratio)
-                    # else: ratio is zero or negative, log_return remains 0.0
+                # Use self.previous_normalized_close for log_return calculation.
+                # self.previous_normalized_close is initialized from initial_full_feature_window if available,
+                # or will be None for the first step if no window.
+                current_close_for_log_return = norm_close # Use the norm_close determined for the current step
                 
-                # Store the raw log_return; it will be normalized if normalization_params for "log_return" exist.
-                # The _normalize_value function handles this.
+                if (self.previous_normalized_close is not None and
+                        self.previous_normalized_close > 1e-9 and
+                        pd.notnull(current_close_for_log_return) and # Check the current step's CLOSE
+                        current_close_for_log_return > 1e-9):
+                    
+                    ratio = current_close_for_log_return / self.previous_normalized_close
+                    if ratio > 1e-9: 
+                        log_return_val_to_normalize = np.log(ratio)
+                
                 current_tick_assembled_features[self.feature_to_idx["log_return"]] = self._normalize_value(log_return_val_to_normalize, "log_return")
 
-            if pd.notnull(norm_close): # Update previous_normalized_close for the next step
+            # Update previous_normalized_close for the *next* step's log_return calculation
+            if pd.notnull(norm_close): 
                self.previous_normalized_close = norm_close
-
+            # If norm_close was NaN, previous_normalized_close remains its value from the prior step,
+            # or None if it was the first step and norm_close was NaN.
 
             # 7. Fill historical tick data (e.g., CLOSE_15m_tick_X)
             # This section is now mostly skipped if tick features are in decoder_output_feature_names.
