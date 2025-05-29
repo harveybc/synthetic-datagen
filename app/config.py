@@ -14,7 +14,7 @@ DEFAULT_VALUES = {
     "optimizer": "default_optimizer",
 
     # Data for evaluation
-    "real_data_file": "examples/data/phase_3/normalized_d4.csv",
+    #"real_data_file": "examples/data/phase_3/normalized_d4.csv",
     "x_train_file": "examples/data/phase_3/normalized_d4.csv",
     "y_train_file": "examples/data/phase_3/normalized_d4.csv",
     "x_validation_file": "examples/data/phase_3/normalized_d5.csv",
