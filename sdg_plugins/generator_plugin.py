@@ -594,42 +594,48 @@ class GeneratorPlugin:
                 raise ValueError(f"Unexpected decoder output shape: {generated_decoder_output_step_t.shape}.")
 
             # 1. Fill features from decoder output
-            # This now includes OPEN, HIGH, LOW, and all high-frequency ticks.
-            # CLOSE and log_return are NOT expected from the decoder with the current model.
-            for i, name in enumerate(self.params["decoder_output_feature_names"]): # Length is now 23
+            for i, name in enumerate(self.params["decoder_output_feature_names"]):
                 if name in self.feature_to_idx:
-                    current_tick_assembled_features[self.feature_to_idx[name]] = decoded_features_for_current_tick[i] # i will go up to 22
+                    current_tick_assembled_features[self.feature_to_idx[name]] = decoded_features_for_current_tick[i]
             
-            norm_open = current_tick_assembled_features[self.feature_to_idx[ohlc_names[0]]] if ohlc_names[0] in self.feature_to_idx else np.nan
-            norm_high = current_tick_assembled_features[self.feature_to_idx[ohlc_names[1]]] if ohlc_names[1] in self.feature_to_idx else np.nan
-            norm_low = current_tick_assembled_features[self.feature_to_idx[ohlc_names[2]]] if ohlc_names[2] in self.feature_to_idx else np.nan
-            
-            # log_return is NOT from decoder, so normalized_log_return_from_decoder will be effectively unused.
-            # normalized_log_return_from_decoder = np.nan # Explicitly set, or rely on it not being filled.
-            # if "log_return" in self.feature_to_idx and "log_return" in self.params["decoder_output_feature_names"]: # This condition will now be false
-            #    normalized_log_return_from_decoder = current_tick_assembled_features[self.feature_to_idx["log_return"]]
+            # Extract norm_open, norm_high, norm_low from decoder outputs (already in current_tick_assembled_features)
+            norm_open = current_tick_assembled_features[self.feature_to_idx[ohlc_names[0]]] if ohlc_names[0] in self.feature_to_idx and pd.notnull(current_tick_assembled_features[self.feature_to_idx[ohlc_names[0]]]) else np.nan
+            norm_high = current_tick_assembled_features[self.feature_to_idx[ohlc_names[1]]] if ohlc_names[1] in self.feature_to_idx and pd.notnull(current_tick_assembled_features[self.feature_to_idx[ohlc_names[1]]]) else np.nan
+            norm_low = current_tick_assembled_features[self.feature_to_idx[ohlc_names[2]]] if ohlc_names[2] in self.feature_to_idx and pd.notnull(current_tick_assembled_features[self.feature_to_idx[ohlc_names[2]]]) else np.nan
 
-            # REMOVED STEP 1.A: Derive CLOSE price using log_return from decoder, as log_return is not from decoder.
+            # 1.B. Calculate norm_close using OPEN and BC-BO if available from decoder
+            calculated_norm_close_from_obcbo = np.nan
+            if "OPEN" in self.feature_to_idx and "BC-BO" in self.feature_to_idx and "CLOSE" in self.feature_to_idx:
+                # norm_open is already extracted above
+                norm_bc_bo_for_calc = current_tick_assembled_features[self.feature_to_idx["BC-BO"]] if "BC-BO" in self.feature_to_idx and pd.notnull(current_tick_assembled_features[self.feature_to_idx["BC-BO"]]) else np.nan
 
-            # NEW STRATEGY FOR norm_close:
+                if pd.notnull(norm_open) and pd.notnull(norm_bc_bo_for_calc):
+                    denorm_open_val = self._denormalize_value(norm_open, "OPEN")
+                    denorm_bc_bo_val = self._denormalize_value(norm_bc_bo_for_calc, "BC-BO")
+                    
+                    if pd.notnull(denorm_open_val) and pd.notnull(denorm_bc_bo_val):
+                        denorm_close_val = denorm_open_val + denorm_bc_bo_val
+                        calculated_norm_close_from_obcbo = self._normalize_value(denorm_close_val, "CLOSE")
+
+            # Determine final norm_close for the current tick
             norm_close = np.nan
             if "CLOSE" in self.feature_to_idx:
-                # Prioritize initial_denormalized_close_anchor for the very first tick (t=0)
-                if t == 0 and self.initial_denormalized_close_anchor is not None:
+                if pd.notnull(calculated_norm_close_from_obcbo):
+                    norm_close = calculated_norm_close_from_obcbo
+                    # print(f"DEBUG: Step {t}, norm_close from OPEN+BC-BO: {norm_close:.4f}")
+                elif t == 0 and self.initial_denormalized_close_anchor is not None:
                     norm_close = self._normalize_value(self.initial_denormalized_close_anchor, "CLOSE")
-                    print(f"GeneratorPlugin: Step {t}, using initial_denormalized_close_anchor for CLOSE: {self.initial_denormalized_close_anchor} -> {norm_close}")
-                elif pd.notnull(norm_open): # For t > 0, or if t=0 and anchor is None
-                    norm_close = norm_open # Placeholder: CLOSE = OPEN
-                    # print(f"GeneratorPlugin: Step {t}, setting norm_close = norm_open = {norm_close}")
-                else:
-                    # If norm_open is also NaN (or t=0 and anchor is None and norm_open is NaN)
-                    print(f"GeneratorPlugin: Step {t}, norm_open is NaN (and/or anchor not used/available). norm_close will be NaN before fallback.")
-                    norm_close = np.nan # Ensure it's NaN if no other path taken
-                
+                    # print(f"DEBUG: Step {t}, norm_close from initial_anchor (OPEN+BC-BO failed): {norm_close:.4f}")
+                elif pd.notnull(norm_open): # Fallback to norm_close = norm_open
+                    norm_close = norm_open
+                    # print(f"DEBUG: Step {t}, norm_close fallback to norm_open (OPEN+BC-BO/anchor failed/NA): {norm_close:.4f}")
+                # else: norm_close remains np.nan if all above fail
+
                 if pd.notnull(norm_close):
                     current_tick_assembled_features[self.feature_to_idx["CLOSE"]] = norm_close
-            else:
-                norm_close = np.nan # CLOSE feature not in full list
+                # else: CLOSE remains NaN in current_tick_assembled_features, will be handled by placeholder logic
+            # else: 'CLOSE' not in feature_to_idx, so norm_close remains np.nan and is not set in features.
+
 
             # 2. Fill conditional features (sin/cos dates, fundamentals)
             cond_input_idx = 0
@@ -651,20 +657,18 @@ class GeneratorPlugin:
                 "day_of_month": dt_obj.day,
                 "hour_of_day": dt_obj.hour,
                 "day_of_week": dt_obj.dayofweek # Monday=0 to Sunday=6
-                # "day_of_year": dt_obj.dayofyear # If needed
             }
             for raw_feat_name, raw_val in raw_date_map.items():
                 if raw_feat_name in self.feature_to_idx:
-                    # These must be in normalization_params to be correctly normalized
                     current_tick_assembled_features[self.feature_to_idx[raw_feat_name]] = self._normalize_value(float(raw_val), raw_feat_name)
 
             # 4. Calculate and fill Technical Indicators
-            # This step now uses the derived norm_close
+            # Uses norm_open, norm_high, norm_low (from decoder) and norm_close (newly derived)
             current_ohlc_for_ti_calc_normalized = {
                 ohlc_names[0]: norm_open,
                 ohlc_names[1]: norm_high,
                 ohlc_names[2]: norm_low,
-                ohlc_names[3]: norm_close # Use the derived norm_close from new strategy
+                ohlc_names[3]: norm_close 
             }
             
             current_ohlc_values_for_ti_dict = {
@@ -685,148 +689,96 @@ class GeneratorPlugin:
                             if pd.notnull(denormalized_ti_val):
                                 normalized_ti_val = self._normalize_value(denormalized_ti_val, ti_name)
                                 current_tick_assembled_features[self.feature_to_idx[ti_name]] = normalized_ti_val
-                            # else: TI is NaN, will be handled by Step 8 if not filled by carry-forward logic below
-                # else: Not enough history for TIs, will be handled by Step 8
-            # else: Not all OHLC values were available (e.g., derived CLOSE was NaN), TIs handled by Step 8
 
-            # 5. Calculate and fill derived OHLC features (e.g., BC-BO)
-            # This step now uses the derived norm_close
-            if not np.isnan(norm_close) and not np.isnan(norm_open):
-                if "BC-BO" in self.feature_to_idx: 
-                    bc_bo_val = norm_close - norm_open
-                    current_tick_assembled_features[self.feature_to_idx["BC-BO"]] = self._normalize_value(bc_bo_val, "BC-BO")
-            if not np.isnan(norm_high) and not np.isnan(norm_low):
-                if "BH-BL" in self.feature_to_idx:
-                    bh_bl_val = norm_high - norm_low
-                    current_tick_assembled_features[self.feature_to_idx["BH-BL"]] = self._normalize_value(bh_bl_val, "BH-BL")
-            if not np.isnan(norm_high) and not np.isnan(norm_open):
-                if "BH-BO" in self.feature_to_idx:
-                    bh_bo_val = norm_high - norm_open
-                    current_tick_assembled_features[self.feature_to_idx["BH-BO"]] = self._normalize_value(bh_bo_val, "BH-BO")
-            if not np.isnan(norm_open) and not np.isnan(norm_low):
-                if "BO-BL" in self.feature_to_idx:
-                    bo_bl_val = norm_open - norm_low
-                    current_tick_assembled_features[self.feature_to_idx["BO-BL"]] = self._normalize_value(bo_bl_val, "BO-BL")
+            # 5. Calculate and fill derived OHLC features that are NOT direct decoder outputs
+            decoder_outputs_set = set(self.params.get("decoder_output_feature_names", []))
+            
+            potential_derived_ohlc_map = {
+                "BC-BO": lambda dn_o, dn_h, dn_l, dn_c: dn_c - dn_o if pd.notnull(dn_c) and pd.notnull(dn_o) else np.nan,
+                "BH-BL": lambda dn_o, dn_h, dn_l, dn_c: dn_h - dn_l if pd.notnull(dn_h) and pd.notnull(dn_l) else np.nan,
+                "BH-BO": lambda dn_o, dn_h, dn_l, dn_c: dn_h - dn_o if pd.notnull(dn_h) and pd.notnull(dn_o) else np.nan,
+                "BO-BL": lambda dn_o, dn_h, dn_l, dn_c: dn_o - dn_l if pd.notnull(dn_o) and pd.notnull(dn_l) else np.nan,
+            }
 
-            # 6. Calculate and fill log_return (REINSTATED AND MODIFIED)
-            # log_return is now calculated from the sequence of norm_close values.
+            # Denormalize the core OHLC values from current_tick_assembled_features
+            # (norm_open, norm_high, norm_low from decoder; norm_close derived and filled)
+            dn_o_step5 = self._denormalize_value(current_tick_assembled_features[self.feature_to_idx["OPEN"]], "OPEN") if "OPEN" in self.feature_to_idx and pd.notnull(current_tick_assembled_features[self.feature_to_idx["OPEN"]]) else np.nan
+            dn_h_step5 = self._denormalize_value(current_tick_assembled_features[self.feature_to_idx["HIGH"]], "HIGH") if "HIGH" in self.feature_to_idx and pd.notnull(current_tick_assembled_features[self.feature_to_idx["HIGH"]]) else np.nan
+            dn_l_step5 = self._denormalize_value(current_tick_assembled_features[self.feature_to_idx["LOW"]], "LOW") if "LOW" in self.feature_to_idx and pd.notnull(current_tick_assembled_features[self.feature_to_idx["LOW"]]) else np.nan
+            dn_c_step5 = self._denormalize_value(current_tick_assembled_features[self.feature_to_idx["CLOSE"]], "CLOSE") if "CLOSE" in self.feature_to_idx and pd.notnull(current_tick_assembled_features[self.feature_to_idx["CLOSE"]]) else np.nan
+
+            for feat_name, calc_func in potential_derived_ohlc_map.items():
+                if feat_name in self.feature_to_idx and feat_name not in decoder_outputs_set:
+                    val_denorm = calc_func(dn_o_step5, dn_h_step5, dn_l_step5, dn_c_step5)
+                    if pd.notnull(val_denorm):
+                        val_norm = self._normalize_value(val_denorm, feat_name)
+                        current_tick_assembled_features[self.feature_to_idx[feat_name]] = val_norm
+
+
+            # 6. Calculate and fill log_return
             if "log_return" in self.feature_to_idx:
-                log_return_val_to_normalize = 0.0  # Default to 0 log return (no change)
-                # Use self.previous_normalized_close for log_return calculation.
-                # self.previous_normalized_close is initialized from initial_full_feature_window if available,
-                # or will be None for the first step if no window.
-                current_close_for_log_return = norm_close # Use the norm_close determined for the current step
+                log_return_val_to_normalize = 0.0
+                current_close_for_log_return = norm_close 
                 
                 if (self.previous_normalized_close is not None and
-                        self.previous_normalized_close > 1e-9 and
-                        pd.notnull(current_close_for_log_return) and # Check the current step's CLOSE
-                        current_close_for_log_return > 1e-9):
+                        self.previous_normalized_close > 1e-9 and # Avoid log(0) or log(negative)
+                        pd.notnull(current_close_for_log_return) and
+                        current_close_for_log_return > 1e-9): # Avoid log(0) or log(negative)
                     
                     ratio = current_close_for_log_return / self.previous_normalized_close
-                    if ratio > 1e-9: 
+                    if ratio > 1e-9: # Ensure ratio is positive for log
                         log_return_val_to_normalize = np.log(ratio)
                 
                 current_tick_assembled_features[self.feature_to_idx["log_return"]] = self._normalize_value(log_return_val_to_normalize, "log_return")
 
-            # Update previous_normalized_close for the *next* step's log_return calculation
             if pd.notnull(norm_close): 
                self.previous_normalized_close = norm_close
-            # If norm_close was NaN, previous_normalized_close remains its value from the prior step,
-            # or None if it was the first step and norm_close was NaN.
+
 
             # 7. Fill historical tick data (e.g., CLOSE_15m_tick_X)
             # This section is now mostly skipped if tick features are in decoder_output_feature_names.
-            decoder_outputs_set = set(self.params.get("decoder_output_feature_names", []))
+            # decoder_outputs_set was defined in Step 5
             
-            needs_tick_derivation = False # Initialize
-            
-            # Determine if any tick-like features need derivation.
-            # These are features in full_feature_names_ordered that look like ticks 
-            # but are not present in decoder_outputs_set.
-            # Example prefixes, adjust if your tick naming patterns are different.
+            needs_tick_derivation = False 
             potential_tick_feature_prefixes = ["CLOSE_15m_tick_", "CLOSE_30m_tick_"]
-            
             current_full_feature_names = self.params.get("full_feature_names_ordered")
-            if current_full_feature_names: # Ensure the list exists
+
+            if current_full_feature_names:
                 for feat_name_full in current_full_feature_names:
-                    is_potential_tick_feature = False
-                    for prefix in potential_tick_feature_prefixes:
-                        if feat_name_full.startswith(prefix):
-                            is_potential_tick_feature = True
-                            break # Found a matching prefix for this feature
-                    
-                    if is_potential_tick_feature:
-                        # Check if this potential tick feature is in feature_to_idx (i.e., expected in the output)
-                        # AND not provided by the decoder.
-                        if feat_name_full in self.feature_to_idx and feat_name_full not in decoder_outputs_set:
-                            needs_tick_derivation = True
-                            print(f"GeneratorPlugin: Tick feature '{feat_name_full}' identified for derivation (not in decoder outputs).")
-                            break # Found one feature needing derivation, so set flag and stop checking.
+                    is_potential_tick_feature = any(feat_name_full.startswith(prefix) for prefix in potential_tick_feature_prefixes)
+                    if is_potential_tick_feature and feat_name_full in self.feature_to_idx and feat_name_full not in decoder_outputs_set:
+                        needs_tick_derivation = True
+                        # print(f"GeneratorPlugin: Tick feature '{feat_name_full}' identified for derivation.")
+                        break 
             
             if needs_tick_derivation:
-                # Define tick_configs here, as it's needed by the subsequent logic
-                # (which is assumed to be present in your executed file, causing the error).
                 tick_configs = [
-                    ("CLOSE_15m_tick_{}", 15, 8),  # (pattern, interval_minutes, num_sub_ticks)
+                    ("CLOSE_15m_tick_{}", 15, 8),
                     ("CLOSE_30m_tick_{}", 30, 8),
-                    # Add other tick configurations if necessary based on your feature names
                 ]
-                print(f"GeneratorPlugin: 'tick_configs' defined for deriving tick features: {tick_configs}")
-
-                # The user's executed file likely has the historical tick derivation logic here,
-                # which includes the loop: for pattern, _, num_sub_ticks in tick_configs:
-                # This is where the NameError for 'tick_configs' occurs if it's not defined above.
-                # Since the attached file has 'pass', I will keep 'pass' here.
-                # The critical fix is defining 'tick_configs' just above this comment block.
-                
-                # Example of how the user's code might look (leading to the error if tick_configs is undefined):
-                # num_generated_steps_for_ticks = len(generated_sequence_all_features_list)
-                # dataset_periodicity_str_for_ticks = self.params.get('dataset_periodicity', '1h').lower()
-                # main_interval_minutes = 0
-                # # ... logic to set main_interval_minutes based on dataset_periodicity_str_for_ticks ...
-
-                # for pattern, interval_minutes, num_sub_ticks in tick_configs: # THIS IS THE LINE CAUSING THE ERROR
-                #     if main_interval_minutes == 0 or main_interval_minutes % interval_minutes != 0:
-                #         continue
-                #     ticks_per_main_interval = main_interval_minutes // interval_minutes
-                #     for i_tick in range(1, num_sub_ticks + 1):
-                #         tick_feat_name = pattern.format(i_tick)
-                #         if tick_feat_name in self.feature_to_idx and tick_feat_name not in decoder_outputs_set:
-                #             # ... actual derivation logic for the tick feature ...
-                #             # val_to_fill = ...
-                #             # current_tick_assembled_features[self.feature_to_idx[tick_feat_name]] = val_to_fill
-                #             pass
-                pass # Placeholder for the actual tick derivation logic the user has in their executed file.
+                # print(f"GeneratorPlugin: 'tick_configs' defined for deriving tick features: {tick_configs}")
+                # ... (Actual tick derivation logic would go here if needed) ...
+                pass # Placeholder, as current config likely has ticks in decoder_output_feature_names
             
             # 7b. Fill DATE_TIME (placeholder float index) 
             if 'DATE_TIME' in self.feature_to_idx:
                 current_tick_assembled_features[self.feature_to_idx['DATE_TIME']] = np.float32(t)
 
             # 8. Placeholder for any remaining unfilled (NaN) features
-            # These are features in full_feature_names_ordered not covered above (e.g., STL, Wavelet, MTM, historical ticks if not from window)
             for i, feat_name in enumerate(self.params["full_feature_names_ordered"]):
                 if np.isnan(current_tick_assembled_features[i]):
-                    # Try to use the value from the previous step in the input window
                     prev_window_val = current_input_feature_window[-1, i]
-                    if pd.notnull(prev_window_val) and not np.isnan(prev_window_val): # Check if it's a valid number
+                    if pd.notnull(prev_window_val) and not np.isnan(prev_window_val):
                         current_tick_assembled_features[i] = prev_window_val
                     else:
-                        # Fallback: small random normalized value (0-1) or 0.5 as neutral
-                        # Avoid exact 0.0 if possible, as per user's request about zeros.
-                        current_tick_assembled_features[i] = np.random.uniform(0.01, 0.1) # Small, non-zero
-                        # Alternatively, if the feature has normalization params, use its mid-point
-                        # if self.normalization_params and feat_name in self.normalization_params:
-                        #    current_tick_assembled_features[i] = 0.5
-                        # else: # If no norm params, it's harder to pick a good default
-                        #    current_tick_assembled_features[i] = np.random.uniform(0.01, 0.1) 
-                    # print(f"GeneratorPlugin: Warning - Feature '{feat_name}' was not generated. Filled with placeholder: {current_tick_assembled_features[i]:.4f}")
+                        current_tick_assembled_features[i] = np.random.uniform(0.01, 0.1) 
 
             generated_sequence_all_features_list.append(current_tick_assembled_features)
 
             current_input_feature_window = np.roll(current_input_feature_window, -1, axis=0)
             current_input_feature_window[-1, :] = current_tick_assembled_features
 
-            if len(ohlc_history_for_ti_list) > self.params["ti_calculation_min_lookback"] + 50: # Buffer
+            if len(ohlc_history_for_ti_list) > self.params["ti_calculation_min_lookback"] + 50: 
                 ohlc_history_for_ti_list.pop(0)
         
         final_generated_sequence = np.array(generated_sequence_all_features_list, dtype=np.float32)
