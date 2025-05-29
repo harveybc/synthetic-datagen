@@ -940,24 +940,36 @@ def main():
         # Ensure all TARGET_CSV_COLUMNS are present, fill with a placeholder if missing from generation, and reorder
         output_df_final_structure = pd.DataFrame()
         
-        # --- DEBUG PRINT for raw_synthetic_df columns ---
-        print(f"DEBUG main.py: Columns in raw_synthetic_df before final structuring (first 30 of {len(raw_synthetic_df.columns)}): {list(raw_synthetic_df.columns[:30])}")
-        if "CLOSE" in raw_synthetic_df.columns:
-            print(f"DEBUG main.py: 'CLOSE' IS in raw_synthetic_df.columns. Value for first row: {raw_synthetic_df['CLOSE'].iloc[0] if not raw_synthetic_df.empty and 'CLOSE' in raw_synthetic_df else 'N/A or CLOSE missing'}")
-            # Also check a few values to ensure they are not all zero
-            if not raw_synthetic_df.empty and 'CLOSE' in raw_synthetic_df and len(raw_synthetic_df['CLOSE']) > 5:
-                print(f"DEBUG main.py: Sample CLOSE values from raw_synthetic_df: {raw_synthetic_df['CLOSE'].iloc[:5].tolist()}")
+        # --- DEBUG PRINTS for column alignment ---
+        # The following print statements replace the previous debug block that caused the NameError.
+        print(f"DEBUG main.py: eval_feature_names (from preprocessor, {len(eval_feature_names)} total, first 30): {eval_feature_names[:30]}")
+        print(f"DEBUG main.py: 'CLOSE' in eval_feature_names: {'CLOSE' in eval_feature_names}")
+        
+        print(f"DEBUG main.py: synthetic_feature_names (from generator, {len(synthetic_feature_names)} total, first 30): {synthetic_feature_names[:30]}")
+        print(f"DEBUG main.py: 'CLOSE' in synthetic_feature_names: {'CLOSE' in synthetic_feature_names}")
+
+        print(f"DEBUG main.py: common_features ({len(common_features)} total, first 30): {common_features[:30]}")
+        print(f"DEBUG main.py: 'CLOSE' in common_features: {'CLOSE' in common_features}")
+
+        # output_df_intermediate is final_synthetic_data_for_eval_aligned_df + DATE_TIME
+        # final_synthetic_data_for_eval_aligned_df has columns `common_features`
+        # So, output_df_intermediate has `common_features` + the datetime column.
+        print(f"DEBUG main.py: Columns in output_df_intermediate before final structuring (first 30 of {len(output_df_intermediate.columns)}): {list(output_df_intermediate.columns[:30])}")
+        if "CLOSE" in output_df_intermediate.columns:
+            print(f"DEBUG main.py: 'CLOSE' IS in output_df_intermediate.columns. Value for first row: {output_df_intermediate['CLOSE'].iloc[0] if not output_df_intermediate.empty and 'CLOSE' in output_df_intermediate else 'N/A or CLOSE missing'}")
+            if not output_df_intermediate.empty and 'CLOSE' in output_df_intermediate and len(output_df_intermediate['CLOSE']) > 5:
+                print(f"DEBUG main.py: Sample CLOSE values from output_df_intermediate: {output_df_intermediate['CLOSE'].iloc[:5].tolist()}")
         else:
-            print(f"DEBUG main.py: 'CLOSE' IS NOT in raw_synthetic_df.columns. This is unexpected.")
-            print(f"DEBUG main.py: Full list of synthetic_feature_names used for raw_synthetic_df (first 30 of {len(synthetic_feature_names)}): {synthetic_feature_names[:30]}")
-        # --- END DEBUG PRINT ---
+            print(f"DEBUG main.py: 'CLOSE' IS NOT in output_df_intermediate.columns. This is where the problem likely lies if 'CLOSE' was expected for the final CSV.")
+        # --- END DEBUG PRINTS ---
 
         for col_target_name in TARGET_CSV_COLUMNS:
-            if col_target_name in raw_synthetic_df.columns:
-                output_df_final_structure[col_target_name] = raw_synthetic_df[col_target_name]
+            if col_target_name in output_df_intermediate.columns: # Check against the correct DataFrame
+                output_df_final_structure[col_target_name] = output_df_intermediate[col_target_name]
             else:
                 # This is where the warning "Column 'CLOSE' from target CSV structure was not found..." comes from
-                print(f"WARNING: Column '{col_target_name}' from target CSV structure was not found in generated data (raw_synthetic_df columns checked). Filling with 0.0 for output CSV.")
+                # Ensure the print statement here correctly refers to the DataFrame being checked.
+                print(f"WARNING: Column '{col_target_name}' from target CSV structure was not found in generated data (checked columns of output_df_intermediate). Filling with 0.0 for output CSV.")
                 output_df_final_structure[col_target_name] = 0.0 
 
         output_df_final_structure.to_csv(synthetic_data_output_file, index=False, na_rep='NaN') # Explicitly state na_rep
