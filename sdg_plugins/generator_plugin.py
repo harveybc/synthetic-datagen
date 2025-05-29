@@ -463,10 +463,13 @@ class GeneratorPlugin:
         Returns a DataFrame containing only the calculated TI columns for the last row.
         Assumes ohlc_history_df has columns named as in self.params["ohlc_feature_names"] (e.g., OPEN, HIGH, LOW, CLOSE).
         """
-        if ohlc_history_df.empty or len(ohlc_history_df) < 2:
-            nan_df = pd.DataFrame(columns=self.params["ti_feature_names"], index=[0]).astype(np.float32)
-            nan_df = nan_df.fillna(np.nan)
-            return nan_df
+        # Early exit if ohlc_history_df is too short for any meaningful calculation or empty.
+        # Most TIs require at least a few data points. A check for < 2 is a basic guard.
+        # Specific length checks will be done per indicator.
+        if ohlc_history_df.empty:
+            nan_placeholder_df = pd.DataFrame(columns=self.params["ti_feature_names"], index=[0]).astype(np.float32)
+            nan_placeholder_df = nan_placeholder_df.fillna(np.nan)
+            return nan_placeholder_df
 
         ohlc_map = {
             self.params["ohlc_feature_names"][0]: 'open',
@@ -474,50 +477,136 @@ class GeneratorPlugin:
             self.params["ohlc_feature_names"][2]: 'low',
             self.params["ohlc_feature_names"][3]: 'close'
         }
+        # Ensure input DataFrame has the expected columns before renaming
+        missing_ohlc_cols = [col for col in self.params["ohlc_feature_names"] if col not in ohlc_history_df.columns]
+        if missing_ohlc_cols:
+            print(f"GeneratorPlugin: Warning (_calculate_technical_indicators) - Missing OHLC columns in input: {missing_ohlc_cols}. TIs will be NaN.")
+            nan_placeholder_df = pd.DataFrame(columns=self.params["ti_feature_names"], index=[0]).astype(np.float32)
+            nan_placeholder_df = nan_placeholder_df.fillna(np.nan)
+            return nan_placeholder_df
+            
         df = ohlc_history_df.rename(columns=ohlc_map)
 
-        ti_df = pd.DataFrame(index=df.index)
+        # Initialize a DataFrame to store results, aligned with the input df's index
+        # This helps in correctly selecting the .iloc[[-1]] later.
+        ti_df_results = pd.DataFrame(index=df.index)
         p = self.params["ti_params"]
         ti_names_to_calculate = self.params["ti_feature_names"]
 
-        # Calculate TIs using pandas_ta, checking if they are requested
+        # RSI
+        rsi_len = p.get("rsi_length", 14)
         if 'RSI' in ti_names_to_calculate:
-            ti_df['RSI'] = ta.rsi(df['close'], length=p.get("rsi_length", 14))
-        if any(x in ti_names_to_calculate for x in ['MACD', 'MACD_Histogram', 'MACD_Signal']):
-            macd_output = ta.macd(df['close'], fast=p.get("macd_fast", 12), slow=p.get("macd_slow", 26), signal=p.get("macd_signal", 9))
-            if macd_output is not None and not macd_output.empty:
-                if 'MACD' in ti_names_to_calculate: ti_df['MACD'] = macd_output.iloc[:,0]
-                if 'MACD_Histogram' in ti_names_to_calculate: ti_df['MACD_Histogram'] = macd_output.iloc[:,1]
-                if 'MACD_Signal' in ti_names_to_calculate: ti_df['MACD_Signal'] = macd_output.iloc[:,2]
-        if 'EMA' in ti_names_to_calculate:
-            ti_df['EMA'] = ta.ema(df['close'], length=p.get("ema_length", 14))
-        if any(x in ti_names_to_calculate for x in ['Stochastic_%K', 'Stochastic_%D']):
-            stoch_output = ta.stoch(df['high'], df['low'], df['close'], k=p.get("stoch_k", 14), d=p.get("stoch_d", 3), smooth_k=p.get("stoch_smooth_k", 3))
-            if stoch_output is not None and not stoch_output.empty:
-                if 'Stochastic_%K' in ti_names_to_calculate: ti_df['Stochastic_%K'] = stoch_output.iloc[:,0]
-                if 'Stochastic_%D' in ti_names_to_calculate: ti_df['Stochastic_%D'] = stoch_output.iloc[:,1]
-        if any(x in ti_names_to_calculate for x in ['ADX', 'DI+', 'DI-']):
-            adx_output = ta.adx(df['high'], df['low'], df['close'], length=p.get("adx_length", 14))
-            if adx_output is not None and not adx_output.empty:
-                if 'ADX' in ti_names_to_calculate: ti_df['ADX'] = adx_output.iloc[:,0]
-                if 'DI+' in ti_names_to_calculate: ti_df['DI+'] = adx_output.iloc[:,1]
-                if 'DI-' in ti_names_to_calculate: ti_df['DI-'] = adx_output.iloc[:,2]
-        if 'ATR' in ti_names_to_calculate:
-            ti_df['ATR'] = ta.atr(df['high'], df['low'], df['close'], length=p.get("atr_length", 14))
-        if 'CCI' in ti_names_to_calculate:
-            ti_df['CCI'] = ta.cci(df['high'], df['low'], df['close'], length=p.get("cci_length", 14))
-        if 'WilliamsR' in ti_names_to_calculate:
-            ti_df['WilliamsR'] = ta.willr(df['high'], df['low'], df['close'], length=p.get("willr_length", 14))
-        if 'Momentum' in ti_names_to_calculate:
-            ti_df['Momentum'] = ta.mom(df['close'], length=p.get("mom_length", 14))
-        if 'ROC' in ti_names_to_calculate:
-            ti_df['ROC'] = ta.roc(df['close'], length=p.get("roc_length", 14))
+            if len(df['close']) >= rsi_len:
+                ti_df_results['RSI'] = ta.rsi(df['close'], length=rsi_len)
+            else:
+                ti_df_results['RSI'] = np.nan
 
-        for ti_name in self.params["ti_feature_names"]:
-            if ti_name not in ti_df.columns:
-                ti_df[ti_name] = np.nan
+        # MACD
+        macd_fast = p.get("macd_fast", 12)
+        macd_slow = p.get("macd_slow", 26)
+        macd_signal = p.get("macd_signal", 9)
+        min_len_macd = macd_slow + macd_signal # Approximate min length for all MACD components
+        if any(x in ti_names_to_calculate for x in ['MACD', 'MACD_Histogram', 'MACD_Signal']):
+            if len(df['close']) >= min_len_macd:
+                macd_output = ta.macd(df['close'], fast=macd_fast, slow=macd_slow, signal=macd_signal)
+                if macd_output is not None and not macd_output.empty:
+                    if 'MACD' in ti_names_to_calculate: ti_df_results['MACD'] = macd_output.iloc[:,0]
+                    if 'MACD_Histogram' in ti_names_to_calculate: ti_df_results['MACD_Histogram'] = macd_output.iloc[:,1]
+                    if 'MACD_Signal' in ti_names_to_calculate: ti_df_results['MACD_Signal'] = macd_output.iloc[:,2]
+            # If too short, NaNs will be filled by the final loop
+
+        # Stochastic
+        stoch_k_period = p.get("stoch_k", 14)
+        stoch_d_period = p.get("stoch_d", 3)
+        stoch_smooth_k_period = p.get("stoch_smooth_k", 3)
+        # Min length for stoch_k is stoch_k_period.
+        if any(x in ti_names_to_calculate for x in ['Stochastic_%K', 'Stochastic_%D']):
+            if len(df['high']) >= stoch_k_period:
+                try:
+                    stoch_output = ta.stoch(df['high'], df['low'], df['close'], k=stoch_k_period, d=stoch_d_period, smooth_k=stoch_smooth_k_period)
+                    if stoch_output is not None and not stoch_output.empty:
+                        if 'Stochastic_%K' in ti_names_to_calculate: ti_df_results['Stochastic_%K'] = stoch_output.iloc[:,0]
+                        if 'Stochastic_%D' in ti_names_to_calculate: ti_df_results['Stochastic_%D'] = stoch_output.iloc[:,1]
+                except Exception as e_stoch:
+                    print(f"GeneratorPlugin: Warning - Error during ta.stoch calculation: {e_stoch}. Input df len: {len(df['high'])}. Filling with NaNs.")
+            # If too short or error, NaNs will be filled by the final loop
+
+        # ADX
+        adx_len = p.get("adx_length", 14)
+        min_len_adx = adx_len * 2 # ADX often needs more history
+        if any(x in ti_names_to_calculate for x in ['ADX', 'DI+', 'DI-']):
+            if len(df['high']) >= min_len_adx:
+                adx_output = ta.adx(df['high'], df['low'], df['close'], length=adx_len)
+                if adx_output is not None and not adx_output.empty:
+                    if 'ADX' in ti_names_to_calculate: ti_df_results['ADX'] = adx_output.iloc[:,0]
+                    if 'DI+' in ti_names_to_calculate: ti_df_results['DI+'] = adx_output.iloc[:,1]
+                    if 'DI-' in ti_names_to_calculate: ti_df_results['DI-'] = adx_output.iloc[:,2]
+
+        # ATR
+        atr_len = p.get("atr_length", 14)
+        if 'ATR' in ti_names_to_calculate:
+            if len(df['high']) >= atr_len:
+                 ti_df_results['ATR'] = ta.atr(df['high'], df['low'], df['close'], length=atr_len)
+
+        # CCI
+        cci_len = p.get("cci_length", 14)
+        if 'CCI' in ti_names_to_calculate:
+            if len(df['high']) >= cci_len:
+                ti_df_results['CCI'] = ta.cci(df['high'], df['low'], df['close'], length=cci_len)
         
-        return ti_df[self.params["ti_feature_names"]].iloc[[-1]].reset_index(drop=True).astype(np.float32)
+        # Williams %R
+        willr_len = p.get("willr_length", 14)
+        if 'WilliamsR' in ti_names_to_calculate:
+            if len(df['high']) >= willr_len:
+                ti_df_results['WilliamsR'] = ta.willr(df['high'], df['low'], df['close'], length=willr_len)
+
+        # Momentum
+        mom_len = p.get("mom_length", 14)
+        if 'Momentum' in ti_names_to_calculate:
+            if len(df['close']) >= mom_len + 1: # Momentum needs length+1 samples
+                ti_df_results['Momentum'] = ta.mom(df['close'], length=mom_len)
+        
+        # ROC
+        roc_len = p.get("roc_length", 14)
+        if 'ROC' in ti_names_to_calculate:
+            if len(df['close']) >= roc_len + 1: # ROC needs length+1 samples
+                ti_df_results['ROC'] = ta.roc(df['close'], length=roc_len)
+
+        # EMA
+        ema_len = p.get("ema_length", 14)
+        if 'EMA' in ti_names_to_calculate:
+            if len(df['close']) >= ema_len:
+                ti_df_results['EMA'] = ta.ema(df['close'], length=ema_len)
+
+        # Ensure all requested TI columns exist in ti_df_results, filling with NaN if not calculated
+        for ti_name in self.params["ti_feature_names"]:
+            if ti_name not in ti_df_results.columns:
+                ti_df_results[ti_name] = np.nan
+        
+        # Select only the requested TIs and return the last row.
+        # If ohlc_history_df was very short (e.g. 1 row), ti_df_results will also have 1 row.
+        # iloc[[-1]] correctly gets the last row.
+        if ti_df_results.empty: # Should not happen if df was not empty
+            nan_placeholder_df = pd.DataFrame(columns=self.params["ti_feature_names"], index=[0]).astype(np.float32)
+            nan_placeholder_df = nan_placeholder_df.fillna(np.nan)
+            return nan_placeholder_df
+
+        # Ensure all target columns are present before selecting, to avoid KeyError
+        final_ti_columns_present = [col for col in self.params["ti_feature_names"] if col in ti_df_results.columns]
+        
+        if not final_ti_columns_present: # No TIs could be put into ti_df_results
+             nan_placeholder_df = pd.DataFrame(columns=self.params["ti_feature_names"], index=[0]).astype(np.float32)
+             nan_placeholder_df = nan_placeholder_df.fillna(np.nan)
+             return nan_placeholder_df
+
+        # Return the last row of the calculated TIs
+        last_row_tis = ti_df_results[final_ti_columns_present].iloc[[-1]].reset_index(drop=True)
+        
+        # Reindex to ensure all originally requested TIs are present, filling missing ones with NaN
+        # This is important if some TIs were calculated but others (due to column name issues or other) were not.
+        last_row_tis_reindexed = last_row_tis.reindex(columns=self.params["ti_feature_names"], fill_value=np.nan)
+        
+        return last_row_tis_reindexed.astype(np.float32)
 
     # ADD THIS HELPER METHOD (adapted from FeederPlugin)
     def _get_scaled_date_features_for_plugin(self, datetime_obj: pd.Timestamp) -> np.ndarray:
