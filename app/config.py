@@ -13,9 +13,9 @@ DEFAULT_VALUES = {
     "evaluator": "default_evaluator",
     "optimizer": "default_optimizer",
 
-    # Data for evaluation
-    "real_data_file": "examples/data/phase_3/normalized_d4.csv",
-    "x_train_file": "examples/data/phase_3/normalized_d4.csv",
+    # Data for evaluation and base for generation
+    # "real_data_file": "examples/data/phase_3/normalized_d4.csv", # REMOVED - Redundant, use x_train_file
+    "x_train_file": "examples/data/phase_3/normalized_d4.csv", # Primary data source
     "y_train_file": "examples/data/phase_3/normalized_d4.csv",
     "x_validation_file": "examples/data/phase_3/normalized_d5.csv",
     "y_validation_file": "examples/data/phase_3/normalized_d5.csv",
@@ -49,7 +49,7 @@ DEFAULT_VALUES = {
     "feeder_max_hour_of_day": 23,
     "feeder_max_day_of_week": 6,
     "feeder_max_day_of_year": 366, # ADDED
-    "feeder_context_vector_dim": 64, 
+    "feeder_context_vector_dim": 64, # CHANGED from 16 to 64 to match Generator/main config
     "feeder_context_vector_strategy": "zeros",
     "feeder_copula_kde_bw_method": None,
 
@@ -107,7 +107,7 @@ DEFAULT_VALUES = {
     "generator_decoder_input_name_window": "input_x_window",          
     "generator_decoder_input_name_conditions": "decoder_input_conditions", 
     "generator_decoder_input_name_context": "decoder_input_h_context",   
-    "context_vector_dim": 64, 
+    "context_vector_dim": 64, # This is the main config value, Feeder should align
 
     # --- Parameters for EvaluatorPlugin ---
     "evaluator_metrics": ["mmd", "acf", "wasserstein", "kstest", "discriminative_score", "predictive_score", "visual"],
