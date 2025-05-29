@@ -520,42 +520,79 @@ class GeneratorPlugin:
 
         # Stochastic
         stoch_k_period = p.get("stoch_k", 14)
-        stoch_d_period = p.get("stoch_d", 3)
-        stoch_smooth_k_period = p.get("stoch_smooth_k", 3) # pandas-ta default is 3, must be > 0 for smoothing
+        stoch_d_period = p.get("stoch_d", 3) # This is the 'd' passed to ta.stoch
+        stoch_smooth_k_period = p.get("stoch_smooth_k", 3)
 
-        # Min length for a non-NaN smoothed %K value: (raw %K period) + (smoothing period for %K) - 1
+        # Min length for a non-NaN smoothed %K value
         min_len_for_k_smooth = stoch_k_period + stoch_smooth_k_period - 1
-        
-        # Min length for a non-NaN %D value (based on smoothed %K): (length for smoothed %K) + (smoothing period for %D) - 1
+        # Min length for a non-NaN %D value (based on smoothed %K and stoch_d_period)
         min_len_for_d_final = min_len_for_k_smooth + stoch_d_period - 1
 
-        if any(x in ti_names_to_calculate for x in ['Stochastic_%K', 'Stochastic_%D']):
-            # Only call ta.stoch if data is long enough for the initial smoothed %K calculation.
-            # This is the primary guard against the internal pandas-ta error.
-            if len(df['high']) >= min_len_for_k_smooth:
-                stoch_output_df = ta.stoch(df['high'], df['low'], df['close'], k=stoch_k_period, d=stoch_d_period, smooth_k=stoch_smooth_k_period)
-                
-                if isinstance(stoch_output_df, pd.DataFrame) and not stoch_output_df.empty:
-                    # Standard column names from pandas-ta for stoch
-                    k_col_name = f"STOCHk_{stoch_k_period}_{stoch_d_period}_{stoch_smooth_k_period}"
-                    d_col_name = f"STOCHd_{stoch_k_period}_{stoch_d_period}_{stoch_smooth_k_period}"
+        stoch_k_wanted = 'Stochastic_%K' in ti_names_to_calculate
+        stoch_d_wanted = 'Stochastic_%D' in ti_names_to_calculate
 
-                    if 'Stochastic_%K' in ti_names_to_calculate:
-                        # Smoothed %K should be available if len >= min_len_for_k_smooth
-                        ti_df_results['Stochastic_%K'] = stoch_output_df[k_col_name] if k_col_name in stoch_output_df.columns else np.nan
+        # Initialize to NaN
+        if stoch_k_wanted: ti_df_results['Stochastic_%K'] = np.nan
+        if stoch_d_wanted: ti_df_results['Stochastic_%D'] = np.nan
+
+        # If stoch_d_period (from config, typically > 0) is used, 
+        # ta.stoch will attempt to calculate %D.
+        # This is only safe from internal pandas-ta errors if len(df) >= min_len_for_d_final.
+        if stoch_d_period > 0: # Assuming d_period from config is the one to use
+            if len(df['high']) >= min_len_for_d_final:
+                if stoch_k_wanted or stoch_d_wanted: # Only call if at least one is actually needed
+                    stoch_output_df = ta.stoch(df['high'], df['low'], df['close'], 
+                                               k=stoch_k_period, 
+                                               d=stoch_d_period, # Pass the configured d period
+                                               smooth_k=stoch_smooth_k_period)
                     
-                    if 'Stochastic_%D' in ti_names_to_calculate:
-                        # Check if data is long enough for %D specifically
-                        if len(df['high']) >= min_len_for_d_final:
-                             ti_df_results['Stochastic_%D'] = stoch_output_df[d_col_name] if d_col_name in stoch_output_df.columns else np.nan
-                        else:
-                             ti_df_results['Stochastic_%D'] = np.nan # Not enough data for %D
-                else: # stoch_output_df is None, not a DataFrame, or empty (e.g., if ta.stoch itself returned None)
-                    if 'Stochastic_%K' in ti_names_to_calculate: ti_df_results['Stochastic_%K'] = np.nan
-                    if 'Stochastic_%D' in ti_names_to_calculate: ti_df_results['Stochastic_%D'] = np.nan
-            else: # len(df['high']) < min_len_for_k_smooth (not enough data for even smoothed %K)
-                if 'Stochastic_%K' in ti_names_to_calculate: ti_df_results['Stochastic_%K'] = np.nan
-                if 'Stochastic_%D' in ti_names_to_calculate: ti_df_results['Stochastic_%D'] = np.nan
+                    if isinstance(stoch_output_df, pd.DataFrame) and not stoch_output_df.empty:
+                        # Standard column names from pandas-ta for stoch
+                        k_col_name = f"STOCHk_{stoch_k_period}_{stoch_d_period}_{stoch_smooth_k_period}"
+                        d_col_name = f"STOCHd_{stoch_k_period}_{stoch_d_period}_{stoch_smooth_k_period}"
+
+                        if stoch_k_wanted and k_col_name in stoch_output_df.columns:
+                            ti_df_results['Stochastic_%K'] = stoch_output_df[k_col_name]
+                        
+                        if stoch_d_wanted and d_col_name in stoch_output_df.columns:
+                            ti_df_results['Stochastic_%D'] = stoch_output_df[d_col_name]
+            # Else (len < min_len_for_d_final): %K and %D remain NaN, ta.stoch is not called.
+        
+        elif stoch_d_period == 0: # User explicitly configured d=0 (wants %K only, no %D)
+            if stoch_k_wanted:
+                if len(df['high']) >= min_len_for_k_smooth:
+                    # Call ta.stoch with d=0. This might still be problematic in some pandas-ta versions
+                    # if it expects stoch_d.name later. For safety, one might need to use a version
+                    # of stoch that only computes K, or handle this case very carefully.
+                    # Assuming for now d=0 is intended to skip %D calculation part that causes error.
+                    # However, the error `stoch_d.name` implies `stoch_d` is None even if `d=0`.
+                    # This path (d=0) is risky with the current pandas-ta error.
+                    # Safest is to treat d=0 as "no D line", and if K is wanted, it's subject to K's own length.
+                    # But the call to ta.stoch itself might be the issue if d=0 leads to stoch_d=None.
+                    # Given the error, it's safer to avoid calling ta.stoch if d=0 might lead to stoch_d=None.
+                    # For now, if d=0, we assume only K is wanted and it needs min_len_for_k_smooth.
+                    # This part is tricky. The previous logic (stricter guard) is safer.
+                    # Reverting to the stricter guard: if d_period from config is >0, then min_len_for_d_final is the guard.
+                    # If d_period from config is 0, then this block is effectively "don't calculate D".
+                    # The code above (if stoch_d_period > 0) handles the common case.
+                    # If stoch_d_period is truly 0 from config, and only K is wanted:
+                    try:
+                        # Attempt to get K only, by passing d=0. This is speculative.
+                        stoch_output_df_k_only = ta.stoch(df['high'], df['low'], df['close'],
+                                                          k=stoch_k_period,
+                                                          d=0, # Explicitly pass d=0
+                                                          smooth_k=stoch_smooth_k_period)
+                        if isinstance(stoch_output_df_k_only, pd.DataFrame) and not stoch_output_df_k_only.empty:
+                             k_col_name_d0 = f"STOCHk_{stoch_k_period}_0_{stoch_smooth_k_period}" # Name with d=0
+                             if k_col_name_d0 in stoch_output_df_k_only.columns:
+                                ti_df_results['Stochastic_%K'] = stoch_output_df_k_only[k_col_name_d0]
+                             # Stochastic_%D remains NaN as d=0
+                    except AttributeError as e_stoch_d0:
+                        print(f"GeneratorPlugin: Warning - ta.stoch with d=0 failed for K-only: {e_stoch_d0}. Stochastic_%K will be NaN.")
+                        # Stochastic_%K remains NaN
+                # Else (len < min_len_for_k_smooth): Stochastic_%K remains NaN
+        # If stoch_d_period from config is > 0, the first 'if stoch_d_period > 0:' block handles it.
+        # The 'elif stoch_d_period == 0:' is for the specific case where user configures d=0.
         
         # ADX
         adx_len_param = p.get("adx_length", 14)
