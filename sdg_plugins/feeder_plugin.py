@@ -397,9 +397,9 @@ class FeederPlugin:
         if idx_pos == 0: # datetime_obj is before the first known real datetime
             # print(f"FeederPlugin: Warning - Requested datetime {datetime_obj} is before any known fundamental data. Using first available.")
             # Use the first available fundamental data point or NaNs if preferred
-            # For now, using first available. Could also return NaNs.
-            # return self._real_fundamental_features_df_scaled.iloc[0].values
-            return np.full(len(self.params["fundamental_feature_names_for_conditioning"]), np.nan, dtype=np.float32)
+            # For ahora, usando el primer disponible. También podría devolver NaNs.
+            # return self._real_fundamental_features_df_scaled.iloc[0].values # MAKE SURE THIS LINE IS COMMENTED OR REMOVED
+            return np.full(len(self.params["fundamental_feature_names_for_conditioning"]), np.nan, dtype=np.float32) # THIS LINE SHOULD BE ACTIVE
 
 
         # idx_pos is the insertion point, so index idx_pos-1 is the latest known data at or before datetime_obj

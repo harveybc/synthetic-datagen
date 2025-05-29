@@ -588,8 +588,13 @@ class GeneratorPlugin:
             context_h_t = feeder_step_output.get("context_h", np.zeros((1,1))) 
             if context_h_t.ndim == 1: context_h_t = np.expand_dims(context_h_t, axis=0)
 
+            # Prepare the current window input for the model
+            # The model expects a batch dimension, so expand dims for current_input_feature_window
+            current_window_for_model = np.expand_dims(current_input_feature_window, axis=0)
+
             decoder_inputs = {
                 self.params["decoder_input_name_latent"]: zt,
+                self.params["decoder_input_name_window"]: current_window_for_model, # ADDED THIS LINE
                 self.params["decoder_input_name_conditions"]: conditional_data_t,
                 self.params["decoder_input_name_context"]: context_h_t
             }
@@ -631,25 +636,19 @@ class GeneratorPlugin:
 
                 if pd.notnull(norm_open) and pd.notnull(norm_bc_bo_for_calc):
                     denorm_open_val = self._denormalize_value(norm_open, "OPEN")
-                    denorm_bc_bo_val = self._denormalize_value(norm_bc_bo_for_calc, "BC-BO")
+                    denorm_bc_bo_val = self._denormalize_value(norm_bc_bo_calc, "BC-BO") # Assuming BC-BO is also normalized like other features
                     
-                    if t < 2:
-                        print(f"DEBUG GeneratorPlugin (t={t}): denorm_open_val: {denorm_open_val}")
-                        print(f"DEBUG GeneratorPlugin (t={t}): denorm_bc_bo_val: {denorm_bc_bo_val}")
+                    if t < 2: # Print for the first 2 ticks
+                        print(f"DEBUG GeneratorPlugin (t={t}): denorm_open_val: {denorm_open_val}, denorm_bc_bo_val: {denorm_bc_bo_val}")
 
                     if pd.notnull(denorm_open_val) and pd.notnull(denorm_bc_bo_val):
-                        denorm_close_val = denorm_open_val + denorm_bc_bo_val
-                        calculated_norm_close_from_obcbo = self._normalize_value(denorm_close_val, "CLOSE")
-                        if t < 2:
-                            print(f"DEBUG GeneratorPlugin (t={t}): denorm_close_val (sum): {denorm_close_val}")
-                            print(f"DEBUG GeneratorPlugin (t={t}): calculated_norm_close_from_obcbo: {calculated_norm_close_from_obcbo}")
-                            if self.normalization_params and "CLOSE" in self.normalization_params:
-                                norm_p = self.normalization_params["CLOSE"]
-                                print(f"DEBUG GeneratorPlugin (t={t}): CLOSE norm_params: min={norm_p.get('min')}, max={norm_p.get('max')}")
-                            else:
-                                print(f"DEBUG GeneratorPlugin (t={t}): CLOSE norm_params: Not found or normalization_params not loaded.")
+                        # Corrected logic: CLOSE = OPEN + (BC-BO)
+                        denormalized_close_candidate = denorm_open_val + denorm_bc_bo_val
+                        calculated_norm_close_from_obcbo = self._normalize_value(denormalized_close_candidate, "CLOSE")
+
+                        if t < 2: print(f"DEBUG GeneratorPlugin (t={t}): calculated_norm_close_from_obcbo (from OPEN+BCBO): {calculated_norm_close_from_obcbo}, denormalized_candidate: {denormalized_close_candidate}")
                     elif t < 2:
-                        print(f"DEBUG GeneratorPlugin (t={t}): Skipping denorm_close_val calculation due to NaN in denorm_open_val or denorm_bc_bo_val.")
+                        print(f"DEBUG GeneratorPlugin (t={t}): Skipping CLOSE calculation from OPEN+BCBO due to NaN in denorm_open_val or denorm_bc_bo_val.")
                 elif t < 2:
                     print(f"DEBUG GeneratorPlugin (t={t}): Skipping denormalization due to NaN in norm_open or norm_bc_bo_for_calc.")
                 # --- END DEBUG PRINTS for CLOSE calculation ---
