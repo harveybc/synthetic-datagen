@@ -581,6 +581,15 @@ def main():
         else:
             raise TypeError(f"Preprocessor 'x_train' output is of unexpected type: {type(X_train_processed_full_anytype)}")
 
+        # --- ADDED: Handle 3D preprocessor output for x_train ---
+        if X_train_processed_full_np.ndim == 3:
+            print(f"DEBUG main.py: X_train_processed_full_np is 3D {X_train_processed_full_np.shape}. Taking last element of sequence dimension.")
+            # Assume (num_samples, sequence_length, num_features) -> (num_samples, num_features)
+            # This takes the features from the last time step of each sequence.
+            X_train_processed_full_np = X_train_processed_full_np[:, -1, :]
+            print(f"DEBUG main.py: X_train_processed_full_np reshaped to 2D: {X_train_processed_full_np.shape}")
+        # --- END ADDED ---
+
         if not processed_train_feature_names and X_train_processed_full_np.ndim > 1 and X_train_processed_full_np.shape[0] > 0:
             num_feats = X_train_processed_full_np.shape[-1]
             processed_train_feature_names = [f"feature_{i}" for i in range(num_feats)]
@@ -762,6 +771,14 @@ def main():
                     X_real_eval_source_np = X_real_eval_source_anytype.astype(np.float32)
                 else:
                     raise TypeError(f"Preprocessor eval output ('x_test' or 'x_validation') is of unexpected type: {type(X_real_eval_source_anytype)}")
+
+                # --- ADDED: Handle 3D preprocessor output for eval data ---
+                if X_real_eval_source_np.ndim == 3:
+                    print(f"DEBUG main.py: X_real_eval_source_np is 3D {X_real_eval_source_np.shape}. Taking last element of sequence dimension.")
+                    # Assume (num_samples, sequence_length, num_features) -> (num_samples, num_features)
+                    X_real_eval_source_np = X_real_eval_source_np[:, -1, :]
+                    print(f"DEBUG main.py: X_real_eval_source_np reshaped to 2D: {X_real_eval_source_np.shape}")
+                # --- END ADDED ---
 
                 if not eval_feature_names and X_real_eval_source_np.ndim > 1 and X_real_eval_source_np.shape[0] > 0: 
                     eval_feature_names = [f"feature_{i}" for i in range(X_real_eval_source_np.shape[-1])]
