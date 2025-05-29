@@ -684,7 +684,13 @@ def main():
         if n_samples_synthetic > 0 and not final_synthetic_target_datetimes_series.empty:
             # Ensure datetimes match the number of rows in X_syn_generated_values_np
             if len(final_synthetic_target_datetimes_series) == df_synthetic_generated_full_features.shape[0]:
-                df_synthetic_generated_full_features.insert(0, datetime_col_name, final_synthetic_target_datetimes_series.values)
+                # If DATE_TIME is already a column from generator_full_feature_names (as a placeholder), overwrite it.
+                # This is expected because config.py defines "DATE_TIME" in generator_full_feature_names_ordered.
+                if datetime_col_name in df_synthetic_generated_full_features.columns:
+                    df_synthetic_generated_full_features[datetime_col_name] = final_synthetic_target_datetimes_series.values
+                else:
+                    # Fallback: if DATE_TIME was somehow not in generator_full_feature_names, then insert.
+                    df_synthetic_generated_full_features.insert(0, datetime_col_name, final_synthetic_target_datetimes_series.values)
             else:
                 print(f"Warning: Mismatch between synthetic datetimes ({len(final_synthetic_target_datetimes_series)}) and generated values ({df_synthetic_generated_full_features.shape[0]}). Datetime column might be misaligned or omitted for synthetic data.")
         
@@ -705,7 +711,13 @@ def main():
         df_real_segment_processed_full_features = pd.DataFrame(X_real_segment_for_output_np, columns=processed_train_feature_names)
         if num_real_rows_for_output > 0 and not datetimes_real_segment_for_output.empty:
             if len(datetimes_real_segment_for_output) == df_real_segment_processed_full_features.shape[0]:
-                df_real_segment_processed_full_features.insert(0, datetime_col_name, datetimes_real_segment_for_output.values)
+                # For the real data segment, 'processed_train_feature_names' (from preprocessor)
+                # typically does NOT include 'DATE_TIME', so 'insert' is correct here.
+                if datetime_col_name not in df_real_segment_processed_full_features.columns:
+                    df_real_segment_processed_full_features.insert(0, datetime_col_name, datetimes_real_segment_for_output.values)
+                else:
+                    # This case would be unusual if preprocessor doesn't output DATE_TIME as a feature
+                    df_real_segment_processed_full_features[datetime_col_name] = datetimes_real_segment_for_output.values
             else:
                 print(f"Warning: Mismatch between real datetimes ({len(datetimes_real_segment_for_output)}) and real segment values ({df_real_segment_processed_full_features.shape[0]}). Datetime column might be misaligned or omitted for real data segment.")
 
