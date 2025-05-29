@@ -530,8 +530,11 @@ def main():
     try:
         # Configuration for paths and sizes
         x_train_file_path = config["x_train_file"]
+        if not x_train_file_path or not os.path.exists(x_train_file_path): # Added check for existence
+            raise FileNotFoundError(f"x_train_file not found or not configured: {x_train_file_path}")
+            
         max_steps_train_real = config["max_steps_train"] # How much of x_train_file to use
-        n_samples_synthetic = config["n_samples"]       # How many synthetic samples to generate
+        n_samples_synthetic = config.get("n_samples", config.get("num_synthetic_samples_to_generate", 0)) # Use n_samples, fallback
         datetime_col_name = config.get("datetime_col_name", "DATE_TIME")
         dataset_periodicity = config.get("dataset_periodicity", "1h")
         decoder_input_window_size = generator_plugin.params.get("decoder_input_window_size")
@@ -539,248 +542,296 @@ def main():
         if not generator_full_feature_names:
             raise ValueError("GeneratorPlugin 'full_feature_names_ordered' is not configured.")
 
-        # 1. Load and Preprocess the full x_train_file to get features for the initial window
-        print(f"Preprocessing full '{x_train_file_path}' to extract initial window for generator...")
-        config_for_train_preprocessing = config.copy()
-        # Ensure preprocessor targets x_train_file for its primary data source
-        # This might involve setting 'real_data_file' or specific keys the preprocessor uses
-        # For stl_preprocessor, it uses 'real_data_file', 'x_train_file', etc. from config.
-        # We want it to process the content of `x_train_file_path`.
-        # A simple way is to ensure the relevant keys in `config_for_train_preprocessing` point to `x_train_file_path`.
-        # Note: The preprocessor might also use x_validation_file, x_test_file for its internal logic
-        # if it's designed to output multiple datasets. We are interested in its processing of x_train_file.
-
-        # --- Create a temporary config for preprocessor to focus on x_train_file ---
-        # This ensures that when preprocessor_plugin.run_preprocessing is called,
-        # it primarily processes the x_train_file_path for 'x_train' output.
-        temp_config_for_preprocessing_x_train = config.copy()
-        temp_config_for_preprocessing_x_train['real_data_file'] = x_train_file_path # stl_preprocessor uses this
-        temp_config_for_preprocessing_x_train['x_train_file'] = x_train_file_path
-        # Nullify other data file paths for this specific call if they might interfere,
-        # or ensure your preprocessor correctly prioritizes/isolates x_train processing.
-        temp_config_for_preprocessing_x_train['x_validation_file'] = None 
-        temp_config_for_preprocessing_x_train['x_test_file'] = None
-        temp_config_for_preprocessing_x_train['y_train_file'] = None # If y_train is not needed for x_train feature processing
-        temp_config_for_preprocessing_x_train['y_validation_file'] = None
-        temp_config_for_preprocessing_x_train['y_test_file'] = None
+        # 1. Load and Preprocess the full x_train_file to get features for the initial window and real segment
+        print(f"Preprocessing full '{x_train_file_path}' to extract initial window for generator and real segment...")
         
-        # Apply workarounds for preprocessor if necessary (similar to eval data preprocessing)
-        # WORKAROUND 1 (STL Window)
-        if not temp_config_for_preprocessing_x_train.get('use_stl', False):
-            if 'stl_window' in preprocessor_plugin.plugin_params or 'stl_window' in temp_config_for_preprocessing_x_train:
-                temp_config_for_preprocessing_x_train['stl_window'] = 0 # Disable if use_stl is false
-        # WORKAROUND 2 (Even Rows) - This is complex, ensure your x_train_file is robust or handle carefully
-        # For simplicity, this example assumes x_train_file_path is suitable or preprocessor handles it.
-
-        train_datasets_processed = preprocessor_plugin.run_preprocessing(config=temp_config_for_preprocessing_x_train)
+        # --- Corrected Preprocessor Call for x_train_file ---
+        # Pass a copy of the main config. The preprocessor should be robust enough
+        # to handle its configured sources or ignore irrelevant ones for this task.
+        # We are primarily interested in its 'x_train' related outputs.
+        config_for_full_train_preprocessing = config.copy()
         
-        X_train_processed_full_np = train_datasets_processed.get("x_train")
-        datetimes_train_processed_full_series = pd.Series(pd.to_datetime(train_datasets_processed.get("x_train_dates")))
-        processed_train_feature_names = train_datasets_processed.get("feature_names", [])
-
-        if X_train_processed_full_np is None or datetimes_train_processed_full_series.empty:
-            raise ValueError(f"Failed to preprocess '{x_train_file_path}' or extract 'x_train' data and dates.")
-        if not processed_train_feature_names:
-             # Attempt to get from DataFrame columns if X_train_processed_full_np is a DataFrame
-            if isinstance(X_train_processed_full_np, pd.DataFrame):
-                processed_train_feature_names = list(X_train_processed_full_np.columns)
-            else: # Fallback if it's an ndarray and feature_names wasn't in datasets
-                num_feats = X_train_processed_full_np.shape[1]
-                processed_train_feature_names = [f"feature_{i}" for i in range(num_feats)]
-                print(f"Warning: Using generic feature names for processed x_train data as 'feature_names' not in preprocessor output.")
-
-        if isinstance(X_train_processed_full_np, pd.DataFrame):
-            X_train_processed_full_np = X_train_processed_full_np.values
+        # Apply workarounds for preprocessor if necessary (e.g., STL window)
+        # This part is from your existing code, ensure preprocessor_plugin has plugin_params
+        if hasattr(preprocessor_plugin, 'plugin_params'): # Check if preprocessor_plugin has plugin_params
+            if not config_for_full_train_preprocessing.get('use_stl', False):
+                if 'stl_window' in preprocessor_plugin.plugin_params or 'stl_window' in config_for_full_train_preprocessing:
+                    config_for_full_train_preprocessing['stl_window'] = 0 
         
+        print(f"DEBUG main.py: Calling preprocessor_plugin.run_preprocessing with full config for x_train_file: {x_train_file_path}")
+        all_processed_datasets = preprocessor_plugin.run_preprocessing(config=config_for_full_train_preprocessing)
+        
+        X_train_processed_full_anytype = all_processed_datasets.get("x_train")
+        datetimes_train_processed_full_anytype = all_processed_datasets.get("x_train_dates")
+        processed_train_feature_names = all_processed_datasets.get("feature_names", []) 
+
+        if X_train_processed_full_anytype is None:
+            raise ValueError(f"Preprocessor did not return 'x_train' data after processing '{x_train_file_path}'. Check preprocessor logic and output keys.")
+        if datetimes_train_processed_full_anytype is None:
+            raise ValueError(f"Preprocessor did not return 'x_train_dates' after processing '{x_train_file_path}'.")
+
+        datetimes_train_processed_full_series = pd.Series(pd.to_datetime(datetimes_train_processed_full_anytype))
+
+        if isinstance(X_train_processed_full_anytype, pd.DataFrame):
+            if not processed_train_feature_names: 
+                processed_train_feature_names = list(X_train_processed_full_anytype.columns)
+            X_train_processed_full_np = X_train_processed_full_anytype.values.astype(np.float32)
+        elif isinstance(X_train_processed_full_anytype, np.ndarray):
+            X_train_processed_full_np = X_train_processed_full_anytype.astype(np.float32)
+        else:
+            raise TypeError(f"Preprocessor 'x_train' output is of unexpected type: {type(X_train_processed_full_anytype)}")
+
+        if not processed_train_feature_names and X_train_processed_full_np.ndim > 1 and X_train_processed_full_np.shape[0] > 0:
+            num_feats = X_train_processed_full_np.shape[-1]
+            processed_train_feature_names = [f"feature_{i}" for i in range(num_feats)]
+            print(f"Warning: Using generic feature names for processed x_train data as 'feature_names' not in preprocessor output or derivable from DataFrame.")
+        
+        print(f"DEBUG main.py: Processed x_train data shape: {X_train_processed_full_np.shape}, Num features: {len(processed_train_feature_names)}, First few features: {processed_train_feature_names[:5]}")
+
         if X_train_processed_full_np.shape[0] < decoder_input_window_size:
             raise ValueError(f"Processed x_train data (length {X_train_processed_full_np.shape[0]}) is shorter than decoder window size ({decoder_input_window_size}). Cannot extract initial window.")
 
         # 2. Prepare initial_full_feature_window from the END of processed x_train_file
-        # Ensure features align with generator_full_feature_names
         df_temp_processed_train = pd.DataFrame(X_train_processed_full_np, columns=processed_train_feature_names)
-        initial_window_raw_df = df_temp_processed_train.iloc[-decoder_input_window_size:]
+        initial_window_raw_df_from_processed_train = df_temp_processed_train.iloc[-decoder_input_window_size:]
         
-        initial_full_feature_window_for_gen = np.full((decoder_input_window_size, len(generator_full_feature_names)), np.nan, dtype=np.float32)
-        initial_window_df_aligned = pd.DataFrame(initial_full_feature_window_for_gen, columns=generator_full_feature_names)
+        initial_full_feature_window_for_gen_df = pd.DataFrame(
+            np.nan, 
+            index=range(decoder_input_window_size), 
+            columns=generator_full_feature_names
+        ).astype(np.float32)
 
-        for col_name in generator_full_feature_names:
-            if col_name in initial_window_raw_df.columns:
-                initial_window_df_aligned[col_name] = initial_window_raw_df[col_name].values
-            elif col_name == datetime_col_name: # Handle DATE_TIME if it's a feature for generator
-                 # This assumes generator expects numerical representation or it's handled internally
-                 # For now, filling with index if needed, or NaN. Generator usually gets datetimes via feeder.
-                 pass # Typically DATE_TIME as a feature in the window is just its float index or similar
+        for col_name_gen in generator_full_feature_names:
+            if col_name_gen in initial_window_raw_df_from_processed_train.columns:
+                initial_full_feature_window_for_gen_df[col_name_gen] = initial_window_raw_df_from_processed_train[col_name_gen].values
         
-        initial_full_feature_window_for_gen = initial_window_df_aligned.fillna(0.0).values # Fill NaNs, e.g. with 0
+        initial_full_feature_window_for_gen = initial_full_feature_window_for_gen_df.fillna(0.0).values 
         print(f"Prepared initial_full_feature_window for generator with shape: {initial_full_feature_window_for_gen.shape} from end of processed {x_train_file_path}")
-        # GeneratorPlugin's initial_denormalized_close_anchor is already loaded from x_train_file's end.
-
+        
         # 3. Prepare Real Data Segment for Final Output (from START of processed x_train_file)
         num_real_rows_for_output = min(max_steps_train_real, X_train_processed_full_np.shape[0])
         X_real_segment_for_output_np = X_train_processed_full_np[:num_real_rows_for_output]
         datetimes_real_segment_for_output = datetimes_train_processed_full_series.iloc[:num_real_rows_for_output].reset_index(drop=True)
         
-        if datetimes_real_segment_for_output.empty:
-            raise ValueError("Real data segment for output is empty or has no datetimes.")
-        first_dt_real_segment = datetimes_real_segment_for_output.iloc[0]
+        first_dt_real_segment = pd.Timestamp.now(tz='UTC') # Default if no real rows, make it timezone-aware
+        if not datetimes_real_segment_for_output.empty:
+            first_dt_real_segment = datetimes_real_segment_for_output.iloc[0]
+        elif num_real_rows_for_output > 0 : 
+             raise ValueError("Real data segment for output has no datetimes, but rows were expected.")
         
-        print(f"Real data segment for output: {num_real_rows_for_output} rows, starting {first_dt_real_segment}")
+        print(f"Real data segment for output: {num_real_rows_for_output} rows, starting {first_dt_real_segment if num_real_rows_for_output > 0 else 'N/A (no real rows)'}")
 
         # 4. Generate Datetimes for Synthetic Data (to be Prepended)
         time_delta = pd.to_timedelta(pd.tseries.frequencies.to_offset(dataset_periodicity) or pd.Timedelta(hours=1))
         
-        final_synthetic_target_datetimes_objs = generate_synthetic_datetimes_before_real(
-            real_start_dt=first_dt_real_segment,
-            num_synthetic_samples=n_samples_synthetic,
-            time_delta_val=time_delta,
-            periodicity_str_val=dataset_periodicity
-        )
-        if len(final_synthetic_target_datetimes_objs) != n_samples_synthetic:
-            raise ValueError(f"Generated {len(final_synthetic_target_datetimes_objs)} synthetic datetimes, but expected {n_samples_synthetic}.")
+        final_synthetic_target_datetimes_objs = []
+        if n_samples_synthetic > 0:
+            final_synthetic_target_datetimes_objs = generate_synthetic_datetimes_before_real( 
+                real_start_dt=first_dt_real_segment, 
+                num_synthetic_samples=n_samples_synthetic,
+                time_delta_val=time_delta,
+                periodicity_str_val=dataset_periodicity
+            )
+            if len(final_synthetic_target_datetimes_objs) != n_samples_synthetic:
+                raise ValueError(f"Generated {len(final_synthetic_target_datetimes_objs)} synthetic datetimes, but expected {n_samples_synthetic}.")
         
-        final_synthetic_target_datetimes_series = pd.Series(final_synthetic_target_datetimes_objs)
-        print(f"Generated {len(final_synthetic_target_datetimes_series)} datetimes for synthetic data, from {final_synthetic_target_datetimes_series.iloc[0]} to {final_synthetic_target_datetimes_series.iloc[-1]}.")
+        final_synthetic_target_datetimes_series = pd.Series(final_synthetic_target_datetimes_objs, dtype='datetime64[ns]')
+        if n_samples_synthetic > 0 and not final_synthetic_target_datetimes_series.empty:
+            print(f"Generated {len(final_synthetic_target_datetimes_series)} datetimes for synthetic data, from {final_synthetic_target_datetimes_series.iloc[0]} to {final_synthetic_target_datetimes_series.iloc[-1]}.")
+        elif n_samples_synthetic > 0 and final_synthetic_target_datetimes_series.empty:
+             print("Warning: Requested synthetic samples but generated empty datetime series.")
+        else:
+            print("No synthetic samples requested (n_samples_synthetic is 0).")
 
-        # 5. Generate Synthetic Values
-        print(f"Generating feeder outputs for {n_samples_synthetic} synthetic steps...")
-        feeder_outputs_sequence_synthetic = feeder_plugin.generate(
-            n_ticks_to_generate=n_samples_synthetic,
-            target_datetimes=final_synthetic_target_datetimes_series
-        )
+        # 5. Generate Synthetic Values (only if n_samples_synthetic > 0)
+        X_syn_generated_values_np = np.array([]).reshape(0, len(generator_full_feature_names)) 
+        if n_samples_synthetic > 0 and not final_synthetic_target_datetimes_series.empty:
+            print(f"Generating feeder outputs for {n_samples_synthetic} synthetic steps...")
+            feeder_outputs_sequence_synthetic = feeder_plugin.generate(
+                n_ticks_to_generate=n_samples_synthetic,
+                target_datetimes=final_synthetic_target_datetimes_series
+            )
 
-        print("Generating synthetic feature values via GeneratorPlugin...")
-        generated_full_sequence_batch = generator_plugin.generate(
-            feeder_outputs_sequence=feeder_outputs_sequence_synthetic,
-            sequence_length_T=n_samples_synthetic,
-            initial_full_feature_window=initial_full_feature_window_for_gen
-        )
-        X_syn_generated_values_np = generated_full_sequence_batch[0] # Shape: (n_samples_synthetic, num_all_features_gen)
-
-        # 6. Create and Save Synthetic-Only DataFrame
-        df_synthetic_generated = pd.DataFrame(X_syn_generated_values_np, columns=generator_full_feature_names)
-        df_synthetic_generated.insert(0, datetime_col_name, final_synthetic_target_datetimes_series)
-        
-        output_df_synthetic_final = pd.DataFrame()
-        for col_target_name in TARGET_CSV_COLUMNS:
-            if col_target_name in df_synthetic_generated.columns:
-                output_df_synthetic_final[col_target_name] = df_synthetic_generated[col_target_name]
+            print("Generating synthetic feature values via GeneratorPlugin...")
+            generated_output_from_plugin = generator_plugin.generate(
+                feeder_outputs_sequence=feeder_outputs_sequence_synthetic,
+                sequence_length_T=n_samples_synthetic,
+                initial_full_feature_window=initial_full_feature_window_for_gen
+            )
+            if isinstance(generated_output_from_plugin, list) and len(generated_output_from_plugin) == 1 and isinstance(generated_output_from_plugin[0], np.ndarray):
+                 X_syn_generated_values_np = generated_output_from_plugin[0]
+            elif isinstance(generated_output_from_plugin, np.ndarray) and generated_output_from_plugin.ndim == 3 and generated_output_from_plugin.shape[0] == 1 : 
+                 X_syn_generated_values_np = generated_output_from_plugin[0]
+            elif isinstance(generated_output_from_plugin, np.ndarray) and generated_output_from_plugin.ndim == 2 and generated_output_from_plugin.shape[0] == n_samples_synthetic :
+                 X_syn_generated_values_np = generated_output_from_plugin
             else:
-                output_df_synthetic_final[col_target_name] = 0.0 # Or np.nan
+                raise TypeError(f"Unexpected output type or shape from generator_plugin.generate: {type(generated_output_from_plugin)}, shape if np.array: {getattr(generated_output_from_plugin, 'shape', 'N/A')}")
+        elif n_samples_synthetic > 0:
+            print("Skipping synthetic value generation as synthetic datetime series is empty.")
+
+
+        # 6. Create and Save Synthetic-Only DataFrame (using TARGET_CSV_COLUMNS)
+        df_synthetic_generated_full_features = pd.DataFrame(X_syn_generated_values_np, columns=generator_full_feature_names)
+        if n_samples_synthetic > 0 and not final_synthetic_target_datetimes_series.empty:
+            # Ensure datetimes match the number of rows in X_syn_generated_values_np
+            if len(final_synthetic_target_datetimes_series) == df_synthetic_generated_full_features.shape[0]:
+                df_synthetic_generated_full_features.insert(0, datetime_col_name, final_synthetic_target_datetimes_series.values)
+            else:
+                print(f"Warning: Mismatch between synthetic datetimes ({len(final_synthetic_target_datetimes_series)}) and generated values ({df_synthetic_generated_full_features.shape[0]}). Datetime column might be misaligned or omitted for synthetic data.")
+        
+        output_df_synthetic_final = pd.DataFrame(columns=TARGET_CSV_COLUMNS)
+        if not df_synthetic_generated_full_features.empty:
+            for col_target_name in TARGET_CSV_COLUMNS:
+                if col_target_name in df_synthetic_generated_full_features.columns:
+                    output_df_synthetic_final[col_target_name] = df_synthetic_generated_full_features[col_target_name]
+                else: 
+                    output_df_synthetic_final[col_target_name] = np.nan
         
         synthetic_data_output_path = config.get("synthetic_data_output_file", "examples/results/generated_synthetic_data.csv")
         os.makedirs(os.path.dirname(synthetic_data_output_path), exist_ok=True)
         output_df_synthetic_final.to_csv(synthetic_data_output_path, index=False, na_rep='NaN')
-        print(f"✔︎ Synthetic-only data saved to {synthetic_data_output_path}")
+        print(f"✔︎ Synthetic-only data saved to {synthetic_data_output_path} (Shape: {output_df_synthetic_final.shape})")
 
-        # 7. Create Real Data DataFrame for Output
-        # Features for real segment should match generator_full_feature_names if possible, or processed_train_feature_names
-        # For consistency, try to use generator_full_feature_names
-        df_real_segment_processed = pd.DataFrame(X_real_segment_for_output_np, columns=processed_train_feature_names)
-        df_real_segment_processed.insert(0, datetime_col_name, datetimes_real_segment_for_output)
-
-        output_df_real_final_segment = pd.DataFrame()
-        for col_target_name in TARGET_CSV_COLUMNS:
-            if col_target_name in df_real_segment_processed.columns:
-                output_df_real_final_segment[col_target_name] = df_real_segment_processed[col_target_name]
+        # 7. Create Real Data DataFrame for Output (using TARGET_CSV_COLUMNS)
+        df_real_segment_processed_full_features = pd.DataFrame(X_real_segment_for_output_np, columns=processed_train_feature_names)
+        if num_real_rows_for_output > 0 and not datetimes_real_segment_for_output.empty:
+            if len(datetimes_real_segment_for_output) == df_real_segment_processed_full_features.shape[0]:
+                df_real_segment_processed_full_features.insert(0, datetime_col_name, datetimes_real_segment_for_output.values)
             else:
-                # If a column in TARGET_CSV_COLUMNS is not in processed real data (e.g. a purely synthetic one)
-                output_df_real_final_segment[col_target_name] = 0.0 # Or np.nan
+                print(f"Warning: Mismatch between real datetimes ({len(datetimes_real_segment_for_output)}) and real segment values ({df_real_segment_processed_full_features.shape[0]}). Datetime column might be misaligned or omitted for real data segment.")
+
+
+        output_df_real_final_segment = pd.DataFrame(columns=TARGET_CSV_COLUMNS)
+        if not df_real_segment_processed_full_features.empty:
+            for col_target_name in TARGET_CSV_COLUMNS:
+                if col_target_name in df_real_segment_processed_full_features.columns:
+                    output_df_real_final_segment[col_target_name] = df_real_segment_processed_full_features[col_target_name]
+                else: 
+                    output_df_real_final_segment[col_target_name] = np.nan
+        
+        print(f"DEBUG main.py: Real data segment for output DF shape: {output_df_real_final_segment.shape}")
 
         # 8. Combine and Save Final Output (Prepended)
-        df_combined_prepended = pd.concat([output_df_synthetic_final, output_df_real_final_segment], ignore_index=True)
+        if output_df_synthetic_final.empty and output_df_real_final_segment.empty:
+            print("WARNING: Both synthetic and real data segments are empty. Output file will be empty or header-only.")
+            df_combined_prepended = pd.DataFrame(columns=TARGET_CSV_COLUMNS) 
+        elif output_df_synthetic_final.empty:
+            df_combined_prepended = output_df_real_final_segment.reindex(columns=TARGET_CSV_COLUMNS)
+        elif output_df_real_final_segment.empty:
+            df_combined_prepended = output_df_synthetic_final.reindex(columns=TARGET_CSV_COLUMNS)
+        else:
+            df_combined_prepended = pd.concat(
+                [output_df_synthetic_final.reindex(columns=TARGET_CSV_COLUMNS), 
+                 output_df_real_final_segment.reindex(columns=TARGET_CSV_COLUMNS)], 
+                ignore_index=True
+            )
         
         final_output_path = config.get("output_file", "examples/results/prepended_data.csv")
         os.makedirs(os.path.dirname(final_output_path), exist_ok=True)
         df_combined_prepended.to_csv(final_output_path, index=False, na_rep='NaN')
-        print(f"✔︎ Combined data (synthetic prepended to real) saved to {final_output_path}")
+        print(f"✔︎ Combined data (synthetic prepended to real) saved to {final_output_path} (Shape: {df_combined_prepended.shape})")
 
         # 9. Proceed with Evaluation (using x_test or x_validation as per original logic)
         print("\n▶ Starting independent evaluation process using evaluation dataset (e.g., x_test)...")
-        # This part reuses some logic from the original main script for evaluation setup
-        # Preprocess real data for evaluation (e.g., x_test)
-        config_for_eval_preprocessing = config.copy() 
-        # Apply workarounds if needed (similar to above)
-        # ... (Workaround logic for stl_window, even rows for eval files)
-        # Ensure preprocessor uses x_test_file or x_validation_file
-        config_for_eval_preprocessing['real_data_file'] = config.get('x_test_file') # Or x_validation_file
-        config_for_eval_preprocessing['x_train_file'] = None # Avoid reprocessing x_train here
         
-        eval_datasets = preprocessor_plugin.run_preprocessing(config=config_for_eval_preprocessing)
-        
-        X_real_eval_source = eval_datasets.get("x_test", eval_datasets.get("x_validation"))
-        datetimes_eval_source = pd.Series(pd.to_datetime(eval_datasets.get("x_test_dates", eval_datasets.get("x_val_dates"))))
-        eval_feature_names = eval_datasets.get("feature_names", [])
-
-        if X_real_eval_source is None or datetimes_eval_source.empty:
-            print("WARNING: No suitable x_test or x_validation data found from preprocessor for evaluation. Skipping evaluation.")
+        eval_data_source_path = config.get('x_test_file', config.get('x_validation_file'))
+        if not eval_data_source_path or not os.path.exists(eval_data_source_path):
+            print(f"WARNING: Evaluation data source (x_test_file or x_validation_file: '{eval_data_source_path}') not found or not configured. Skipping evaluation.")
         else:
-            if isinstance(X_real_eval_source, pd.DataFrame): X_real_eval_source = X_real_eval_source.values
-            if not eval_feature_names: 
-                eval_feature_names = [f"feature_{i}" for i in range(X_real_eval_source.shape[1])]
-
-            # For evaluation, we need synthetic data of the same length and features as X_real_eval_source
-            # We can generate a new batch of synthetic data for this purpose, or use a portion of
-            # X_syn_generated_values_np if its style is considered representative.
-            # For a fair evaluation of the generator's quality, generate fresh data matching eval data length.
+            config_for_eval_preprocessing = config.copy()
+            if hasattr(preprocessor_plugin, 'plugin_params'): # Check if preprocessor_plugin has plugin_params
+                if not config_for_eval_preprocessing.get('use_stl', False):
+                     if 'stl_window' in preprocessor_plugin.plugin_params or 'stl_window' in config_for_eval_preprocessing:
+                        config_for_eval_preprocessing['stl_window'] = 0
             
-            num_eval_samples = X_real_eval_source.shape[0]
-            print(f"Generating {num_eval_samples} synthetic samples for evaluation against processed eval data...")
+            print(f"DEBUG main.py: Calling preprocessor_plugin.run_preprocessing for evaluation data: {eval_data_source_path}")
+            eval_datasets = preprocessor_plugin.run_preprocessing(config=config_for_eval_preprocessing)
             
-            # Use datetimes from the evaluation set for this generation
-            feeder_outputs_for_eval = feeder_plugin.generate(
-                n_ticks_to_generate=num_eval_samples,
-                target_datetimes=datetimes_eval_source
-            )
-            # Use a generic initial window for this separate evaluation generation
-            # or the same one used for prepending if style consistency is desired.
-            # For simplicity, using a new zero window or the previously prepared one.
-            initial_window_for_eval_gen = np.zeros((decoder_input_window_size, len(generator_full_feature_names)), dtype=np.float32)
-            # A better approach might be to use a segment from the start of X_real_eval_source if available and long enough.
-            if X_real_eval_source.shape[0] >= decoder_input_window_size and X_real_eval_source.shape[1] == len(generator_full_feature_names):
-                 # This assumes X_real_eval_source has the same full features as generator expects.
-                 # This might require X_real_eval_source to be the output of the preprocessor that aligns with generator_full_feature_names
-                 # For now, let's assume eval_feature_names from preprocessor output of x_test matches generator_full_feature_names
-                 # This is a strong assumption.
-                 if X_real_eval_source.shape[1] == len(generator_full_feature_names):
-                    initial_window_for_eval_gen = X_real_eval_source[:decoder_input_window_size, :] # Example: use start of eval data
-                 else: # Fallback if feature counts don't match
-                    print(f"Warning: Eval data feature count ({X_real_eval_source.shape[1]}) "
-                          f"differs from generator's expected ({len(generator_full_feature_names)}). Using zero window for eval generation.")
-            
-            generated_eval_batch = generator_plugin.generate(
-                feeder_outputs_sequence=feeder_outputs_for_eval,
-                sequence_length_T=num_eval_samples,
-                initial_full_feature_window=initial_window_for_eval_gen # Or the one from x_train end
-            )
-            X_syn_for_eval_np = generated_eval_batch[0]
+            X_real_eval_source_anytype = eval_datasets.get("x_test", eval_datasets.get("x_validation"))
+            datetimes_eval_source_anytype = eval_datasets.get("x_test_dates", eval_datasets.get("x_val_dates")) 
+            eval_feature_names = eval_datasets.get("feature_names", []) 
 
-            df_syn_for_eval = pd.DataFrame(X_syn_for_eval_np, columns=generator_full_feature_names)
-            df_real_for_eval = pd.DataFrame(X_real_eval_source, columns=eval_feature_names)
+            if X_real_eval_source_anytype is None or datetimes_eval_source_anytype is None:
+                print(f"WARNING: No suitable x_test or x_validation data found from preprocessor output for path '{eval_data_source_path}'. Skipping evaluation.")
+            else:
+                datetimes_eval_source = pd.Series(pd.to_datetime(datetimes_eval_source_anytype))
+                if isinstance(X_real_eval_source_anytype, pd.DataFrame):
+                    if not eval_feature_names: eval_feature_names = list(X_real_eval_source_anytype.columns)
+                    X_real_eval_source_np = X_real_eval_source_anytype.values.astype(np.float32)
+                elif isinstance(X_real_eval_source_anytype, np.ndarray):
+                    X_real_eval_source_np = X_real_eval_source_anytype.astype(np.float32)
+                else:
+                    raise TypeError(f"Preprocessor eval output ('x_test' or 'x_validation') is of unexpected type: {type(X_real_eval_source_anytype)}")
 
-            # Align columns for evaluation
-            common_features_eval = [f_name for f_name in eval_feature_names if f_name in df_syn_for_eval.columns]
-            if not common_features_eval:
-                raise ValueError("No common features between synthetic data for eval and real eval data.")
+                if not eval_feature_names and X_real_eval_source_np.ndim > 1 and X_real_eval_source_np.shape[0] > 0: 
+                    eval_feature_names = [f"feature_{i}" for i in range(X_real_eval_source_np.shape[-1])]
+                
+                num_eval_samples = X_real_eval_source_np.shape[0]
+                if num_eval_samples == 0:
+                    print("WARNING: Evaluation data source is empty. Skipping evaluation generation.")
+                else:
+                    print(f"Generating {num_eval_samples} synthetic samples for evaluation against processed eval data...")
+                    
+                    feeder_outputs_for_eval = feeder_plugin.generate(
+                        n_ticks_to_generate=num_eval_samples,
+                        target_datetimes=datetimes_eval_source 
+                    )
+                    
+                    initial_window_for_eval_gen_df = pd.DataFrame(
+                        np.nan, 
+                        index=range(decoder_input_window_size), 
+                        columns=generator_full_feature_names
+                    ).astype(np.float32)
 
-            df_syn_for_eval_aligned = df_syn_for_eval[common_features_eval]
-            df_real_for_eval_aligned = df_real_for_eval[common_features_eval]
-            
-            print(f"Shape of synthetic data for evaluation: {df_syn_for_eval_aligned.shape}")
-            print(f"Shape of real data for evaluation: {df_real_for_eval_aligned.shape}")
+                    if X_real_eval_source_np.shape[0] >= decoder_input_window_size:
+                        df_temp_processed_eval = pd.DataFrame(X_real_eval_source_np, columns=eval_feature_names)
+                        initial_window_raw_df_from_eval = df_temp_processed_eval.iloc[:decoder_input_window_size] 
+                        for col_name_gen_eval in generator_full_feature_names:
+                            if col_name_gen_eval in initial_window_raw_df_from_eval.columns:
+                                initial_window_for_eval_gen_df[col_name_gen_eval] = initial_window_raw_df_from_eval[col_name_gen_eval].values
+                    
+                    initial_window_for_eval_gen = initial_window_for_eval_gen_df.fillna(0.0).values
+                    
+                    generated_eval_output = generator_plugin.generate(
+                        feeder_outputs_sequence=feeder_outputs_for_eval,
+                        sequence_length_T=num_eval_samples,
+                        initial_full_feature_window=initial_window_for_eval_gen
+                    )
+                    if isinstance(generated_eval_output, list) and len(generated_eval_output) == 1 and isinstance(generated_eval_output[0], np.ndarray):
+                        X_syn_for_eval_np = generated_eval_output[0]
+                    elif isinstance(generated_eval_output, np.ndarray) and generated_eval_output.ndim == 3 and generated_eval_output.shape[0] == 1 : 
+                        X_syn_for_eval_np = generated_eval_output[0]
+                    elif isinstance(generated_eval_output, np.ndarray) and generated_eval_output.ndim == 2 and generated_eval_output.shape[0] == num_eval_samples :
+                        X_syn_for_eval_np = generated_eval_output
+                    else:
+                        raise TypeError(f"Unexpected output type or shape from generator_plugin.generate for eval: {type(generated_eval_output)}")
 
-            print("Evaluating synthetic data (independent batch) via EvaluatorPlugin...")
-            metrics = evaluator_plugin.evaluate(
-                synthetic_data=df_syn_for_eval_aligned.values,
-                real_data_processed=df_real_for_eval_aligned.values,
-                feature_names=common_features_eval,
-                config=config 
-            )
-            print("✔︎ Evaluation completed.")
-            metrics_output_file = config.get("metrics_file", "examples/results/evaluation_metrics.json") # Use a different name if needed
-            os.makedirs(os.path.dirname(metrics_output_file), exist_ok=True)
-            with open(metrics_output_file, "w") as f:
-                json.dump(metrics, f, indent=4, cls=NpEncoder)
-            print(f"✔︎ Evaluation metrics saved to {metrics_output_file}")
+                    df_syn_for_eval_full_features = pd.DataFrame(X_syn_for_eval_np, columns=generator_full_feature_names)
+                    df_real_for_eval_processed_features = pd.DataFrame(X_real_eval_source_np, columns=eval_feature_names)
+
+                    common_features_eval = [f_name for f_name in eval_feature_names if f_name in df_syn_for_eval_full_features.columns]
+                    if not common_features_eval:
+                        raise ValueError("No common features between synthetic data for eval (generator output) and real eval data (preprocessor output).")
+
+                    df_syn_for_eval_aligned = df_syn_for_eval_full_features[common_features_eval]
+                    df_real_for_eval_aligned = df_real_for_eval_processed_features[common_features_eval]
+                    
+                    print(f"Shape of synthetic data for evaluation (aligned): {df_syn_for_eval_aligned.shape}")
+                    print(f"Shape of real data for evaluation (aligned): {df_real_for_eval_aligned.shape}")
+
+                    print("Evaluating synthetic data (independent batch) via EvaluatorPlugin...")
+                    metrics = evaluator_plugin.evaluate(
+                        synthetic_data=df_syn_for_eval_aligned.values,
+                        real_data_processed=df_real_for_eval_aligned.values,
+                        feature_names=common_features_eval,
+                        config=config 
+                    )
+                    print("✔︎ Evaluation completed.")
+                    metrics_output_file = config.get("metrics_file", "examples/results/evaluation_metrics.json") 
+                    os.makedirs(os.path.dirname(metrics_output_file), exist_ok=True)
+                    with open(metrics_output_file, "w") as f:
+                        json.dump(metrics, f, indent=4)
+                    print(f"✔︎ Evaluation metrics saved to {metrics_output_file}")
 
     except Exception as e:
         print(f"❌ Synthetic data generation, prepending, or evaluation failed: {e}")
