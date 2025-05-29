@@ -204,15 +204,20 @@ class GeneratorPlugin:
         
         old_model_file = self.params.get("sequential_model_file")
         old_norm_file = self.params.get("generator_normalization_params_file")
-        # old_initial_close_file is no longer a plugin-specific param
         old_full_feature_names = self.params.get("full_feature_names_ordered")
 
-        # Determine the file path for initial CLOSE anchor from the main config (kwargs)
-        # or fall back to existing main config values if not in kwargs.
-        # This path is NOT stored in self.params directly.
-        current_config_for_initial_close = kwargs # Prioritize kwargs
-        initial_close_file_path_candidate = current_config_for_initial_close.get(
-            "x_train_file", current_config_for_initial_close.get("real_data_file")
+        # --- MODIFICATION: Update self.main_config first ---
+        # This ensures that if kwargs contains updates to main config keys (like x_train_file),
+        # they are reflected in self.main_config before deriving paths from it.
+        if hasattr(self, 'main_config') and self.main_config is not None:
+            self.main_config.update(kwargs) 
+        else: # Should not happen if __init__ ran correctly and self.main_config was set
+            print("GeneratorPlugin: Warning - self.main_config not found or is None during set_params. Initializing from kwargs.")
+            self.main_config = kwargs.copy()
+
+        # Determine the file path for initial CLOSE anchor from the (potentially updated) main config
+        initial_close_file_path_candidate = self.main_config.get(
+            "x_train_file", self.main_config.get("real_data_file") # Uses updated self.main_config
         )
 
         for param_key_short in self.plugin_params.keys():
@@ -250,18 +255,23 @@ class GeneratorPlugin:
             
         # Reload initial close anchor if the source file path from main config might have changed
         # or if it hasn't been loaded yet.
-        # We don't store the path in self.params, so we check if the candidate path is valid
-        # and if the anchor is None.
-        if initial_close_file_path_candidate and self.initial_denormalized_close_anchor is None:
-            self._load_initial_close_anchor(initial_close_file_path_candidate)
-        elif not initial_close_file_path_candidate and self.initial_denormalized_close_anchor is not None:
-            # This case is tricky: if the path in main config becomes None, should we reset?
-            # For now, if it was loaded, keep it unless explicitly told to reload with a new path.
-            # If the intent is to clear it if the path is removed from main config,
-            # we'd need to track the path used to load it.
-            # Simpler: it's loaded once at init or if path changes and anchor is None.
-            pass
+        # We track the path used to load it with self._last_initial_close_file_path
+        
+        # --- Refined logic for initial_close_anchor reload ---
+        last_loaded_path_attr = '_last_initial_close_file_path'
+        current_last_loaded_path = getattr(self, last_loaded_path_attr, None)
 
+        if initial_close_file_path_candidate:
+            if self.initial_denormalized_close_anchor is None or \
+               current_last_loaded_path != initial_close_file_path_candidate:
+                print(f"GeneratorPlugin: Reloading initial close anchor. Reason: Anchor is None ({self.initial_denormalized_close_anchor is None}) or path changed (current: '{initial_close_file_path_candidate}', last: '{current_last_loaded_path}').")
+                self._load_initial_close_anchor(initial_close_file_path_candidate)
+                setattr(self, last_loaded_path_attr, initial_close_file_path_candidate)
+        elif not initial_close_file_path_candidate and self.initial_denormalized_close_anchor is not None:
+            print("GeneratorPlugin: Warning - x_train_file path for initial close anchor became None, but anchor was already loaded. Keeping existing anchor. Clearing last loaded path.")
+            setattr(self, last_loaded_path_attr, None) 
+            # Optionally, consider clearing self.initial_denormalized_close_anchor here if the policy is to nullify it
+            # when the path is removed. For now, it's kept if already loaded.
 
         if self.params.get("full_feature_names_ordered") != old_full_feature_names or \
            any(key in kwargs for key in ["decoder_output_feature_names", "ohlc_feature_names", 
