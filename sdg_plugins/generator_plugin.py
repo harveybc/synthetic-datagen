@@ -903,12 +903,12 @@ class GeneratorPlugin:
             feeder_step_output = feeder_outputs_sequence[t]
             zt_original = feeder_step_output["Z"] 
             
-            if zt_original.ndim == 2:
-                zt = np.expand_dims(zt_original, axis=0)
+            if zt_original.ndim == 2: # Expected (seq_len, features)
+                zt = np.expand_dims(zt_original, axis=0) # Add batch dim -> (1, seq_len, features)
             elif zt_original.ndim == 3 and zt_original.shape[0] == 1: 
-                zt = zt_original
+                zt = zt_original # Already has batch dim
             else:
-                raise ValueError(f"Unexpected shape for zt from Feeder: {zt_original.shape}.")
+                raise ValueError(f"Unexpected shape for zt from Feeder: {zt_original.shape}. Expected 2D (seq, feat) or 3D (1, seq, feat).")
 
             conditional_data_t = feeder_step_output["conditional_data"] 
             if conditional_data_t.ndim == 1: conditional_data_t = np.expand_dims(conditional_data_t, axis=0)
@@ -916,86 +916,58 @@ class GeneratorPlugin:
             context_h_t = feeder_step_output.get("context_h", np.zeros((1,1))) 
             if context_h_t.ndim == 1: context_h_t = np.expand_dims(context_h_t, axis=0)
 
-            # Prepare the current window input for the model
-            # The model expects a batch dimension, so expand dims for current_input_feature_window
-            # current_window_for_model = np.expand_dims(current_input_feature_window, axis=0) # This line was part of the problematic version
+            # --- CORRECTED MODEL INPUT ASSEMBLY ---
+            # The Keras model (sequence_conv_transpose_cvae_decoder) expects inputs in the order:
+            # 1. Latent (decoder_input_z_seq)
+            # 2. Context (decoder_input_h_context)
+            # 3. Conditions (decoder_input_conditions)
+            # The window input (input_x_window) is intentionally not fed based on previous "working" logic.
 
-            # --- REVERTED MODEL INPUTS ---
-            # This matches the structure from the "working" version you provided in the prompt,
-            # donde el window en sí NO se pasa como una entrada directa a sequential_model.predict()
-            decoder_inputs = {
-                self.params["decoder_input_name_latent"]: zt,
-                # self.params["decoder_input_name_window"]: current_window_for_model, # REMOVED THIS LINE
-                self.params["decoder_input_name_conditions"]: conditional_data_t,
-                self.params["decoder_input_name_context"]: context_h_t
-            }
-            
-            # pack inputs as a list in the same order as model.inputs
-            # This part needs to be careful if the model truly doesn't expect the window.
-            # We should only feed what the model *expects*.
-            # Let's check if the model's input names actually include the window input.
-            # If the "working" model didn't use it, its `model_ins` list wouldn't contain `decoder_input_name_window`.
-
-            model_ins_names_expected = [inp.name.split(':')[0] for inp in self.sequential_model.inputs]
+            model_input_names_in_order = [inp.name.split(':')[0] for inp in self.sequential_model.inputs]
             to_feed = []
-            
-            # Check for latent input
-            if self.params["decoder_input_name_latent"] in model_ins_names_expected:
-                to_feed.append(decoder_inputs[self.params["decoder_input_name_latent"]])
-            elif self.params["decoder_input_name_latent"] in decoder_inputs: # It was provided but model doesn't list it
-                 print(f"GeneratorPlugin: Warning - Latent input '{self.params['decoder_input_name_latent']}' provided but not found in model.inputs. Skipping.")
 
+            # Map the configured parameter names (which hold the actual model layer names) to the data variables
+            data_for_model_inputs = {
+                self.params["decoder_input_name_latent"]: zt,
+                self.params["decoder_input_name_context"]: context_h_t,
+                self.params["decoder_input_name_conditions"]: conditional_data_t,
+                # self.params["decoder_input_name_window"]: current_window_for_model # Window is not fed
+            }
 
-            # Check for window input - THIS IS THE KEY DIFFERENCE
-            # If the "working" model didn't expect it, this should NOT be added.
-            # The version from your prompt implies the window was NOT a direct model input.
-            # So, we should NOT add `decoder_inputs[self.params["decoder_input_name_window"]]` here.
-            # However, the current code has `decoder_input_name_window` in `self.params`.
-            # This suggests a configuration mismatch if the model doesn't expect it.
-            # For now, let's strictly follow the "working" version's implication: DON'T feed the window if it wasn't before.
+            expected_fed_input_count = 0
+            for model_input_name in model_input_names_in_order:
+                if model_input_name == self.params.get("decoder_input_name_window"):
+                    # This input is the window, which we decided not to feed directly.
+                    print(f"GeneratorPlugin: Intentionally skipping model input '{model_input_name}' as it is configured as the window input.")
+                    continue # Skip adding this to `to_feed`
 
-            # Check for conditions input
-            if self.params["decoder_input_name_conditions"] in model_ins_names_expected:
-                to_feed.append(decoder_inputs[self.params["decoder_input_name_conditions"]])
-            elif self.params["decoder_input_name_conditions"] in decoder_inputs:
-                 print(f"GeneratorPlugin: Warning - Conditions input '{self.params['decoder_input_name_conditions']}' provided but not found in model.inputs. Skipping.")
-
-            # Check for context input
-            if self.params["decoder_input_name_context"] in model_ins_names_expected:
-                to_feed.append(decoder_inputs[self.params["decoder_input_name_context"]])
-            elif self.params["decoder_input_name_context"] in decoder_inputs:
-                 print(f"GeneratorPlugin: Warning - Context input '{self.params['decoder_input_name_context']}' provided but not found in model.inputs. Skipping.")
-
-            if not to_feed:
-                raise ValueError("GeneratorPlugin: No inputs could be matched to the model's expected inputs. Check decoder_input_name parameters and model structure.")
-
-            # Ensure the number of items in `to_feed` matches the number of model inputs
-            if len(to_feed) != len(self.sequential_model.inputs):
-                expected_input_names = [inp.name.split(':')[0] for inp in self.sequential_model.inputs]
-                fed_input_keys = []
-                if self.params["decoder_input_name_latent"] in model_ins_names_expected: fed_input_keys.append(self.params["decoder_input_name_latent"])
-                if self.params["decoder_input_name_conditions"] in model_ins_names_expected: fed_input_keys.append(self.params["decoder_input_name_conditions"])
-                if self.params["decoder_input_name_context"] in model_ins_names_expected: fed_input_keys.append(self.params["decoder_input_name_context"])
+                expected_fed_input_count += 1
+                found_data_for_this_model_input = False
+                for config_param_name_key, data_variable in data_for_model_inputs.items():
+                    # config_param_name_key is e.g., "generator_decoder_input_name_latent"
+                    # self.params[config_param_name_key] is the actual model layer name e.g., "decoder_input_z_seq"
+                    if self.params[config_param_name_key] == model_input_name:
+                        to_feed.append(data_variable)
+                        found_data_for_this_model_input = True
+                        break
                 
-                # Check if the window input is unexpectedly expected by the model
-                window_input_name_cfg = self.params.get("decoder_input_name_window")
-                if window_input_name_cfg in expected_input_names and window_input_name_cfg not in fed_input_keys:
-                     # This is the conflict: model expects window, but "working" logic didn't provide it.
-                     # This implies the model file might have changed, or the "working" assumption is incomplete.
-                     # For now, we stick to "don't feed window if it wasn't before".
-                     # This error will trigger if the loaded model *does* expect the window input.
-                     raise ValueError(
-                        f"GeneratorPlugin: Model expects window input '{window_input_name_cfg}', but current logic (based on 'working' version) does not provide it. "
-                        f"Mismatch between assumed 'working' model structure and loaded model. "
-                        f"Model expects: {expected_input_names}. Attempting to feed: {fed_input_keys} (excluding window)."
+                if not found_data_for_this_model_input:
+                    raise ValueError(
+                        f"GeneratorPlugin: Model expects input '{model_input_name}', but no corresponding data was found or configured. "
+                        f"Ensure self.params['decoder_input_name_...'] for latent, context, and conditions "
+                        f"match model layer names and are keys in data_for_model_inputs."
                     )
-
+            
+            if len(to_feed) != expected_fed_input_count:
                 raise ValueError(
-                    f"GeneratorPlugin: Number of inputs to feed ({len(to_feed)}) does not match number of model inputs ({len(self.sequential_model.inputs)}). "
-                    f"Model expects: {expected_input_names}. Attempting to feed based on keys: {fed_input_keys}."
+                    f"GeneratorPlugin: Mismatch in the number of inputs prepared for the model. "
+                    f"Prepared to feed {len(to_feed)} inputs. Model expects {expected_fed_input_count} non-window inputs. "
+                    f"Model input names (in order from model): {model_input_names_in_order}. "
+                    f"Configured window input name: {self.params.get('decoder_input_name_window')}."
                 )
             
-            # If the code reaches here, `to_feed` should align with what the model expects, *excluding* the window if that's the correct "working" logic.
+            # --- End corrected model input assembly ---
+            
             generated_decoder_output_step_t = self.sequential_model.predict(to_feed, verbose=0)
             
             if generated_decoder_output_step_t.ndim == 3 and generated_decoder_output_step_t.shape[1] == 1:
