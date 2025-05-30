@@ -444,12 +444,12 @@ def main():
         real_start_dt: pd.Timestamp,
         num_synthetic_samples: int,
         time_delta_val: timedelta,
-        periodicity_str_val: str
+        periodicity_str_val: str # ADDED periodicity_str_val
     ) -> list[pd.Timestamp]:
         """
         Generates a list of 'num_synthetic_samples' datetime objects in chronological order,
         ending such that the next tick after the last synthetic datetime would lead into 'real_start_dt'.
-        Skips weekends.
+        Skips weekends if periodicity_str_val is not 'daily'.
         """
         if num_synthetic_samples == 0:
             return []
@@ -457,46 +457,40 @@ def main():
         generated_datetimes_reversed = [] # Store in reverse chronological order first
         current_reference_dt = real_start_dt
 
-        # Determine the target time of day for 'daily' periodicity from real_start_dt
         daily_target_time = None
         if periodicity_str_val == "daily":
-            daily_target_time = real_start_dt.time()
+            daily_target_time = current_reference_dt.time()
 
-        for _ in range(num_synthetic_samples):
-            # Calculate the datetime one tick before current_reference_dt
-            prev_dt_candidate = current_reference_dt - time_delta_val
+        count = 0
+        max_iterations = num_synthetic_samples * 7 + 10 # Generous buffer for weekend skips
+        iterations = 0
+
+        while count < num_synthetic_samples and iterations < max_iterations:
+            iterations += 1
+            current_candidate_dt = current_reference_dt - time_delta_val
+            is_weekend = current_candidate_dt.dayofweek >= 5 # Saturday (5) or Sunday (6)
 
             if periodicity_str_val == "daily":
-                # For daily, ensure the time component matches daily_target_time
-                # and that the date is a weekday.
-                prev_dt_candidate = prev_dt_candidate.replace(
-                    hour=daily_target_time.hour,
-                    minute=daily_target_time.minute,
-                    second=daily_target_time.second,
-                    microsecond=0
-                )
-                while prev_dt_candidate.weekday() >= 5: # Monday is 0, Saturday is 5, Sunday is 6
-                    prev_dt_candidate -= timedelta(days=1)
-                    # Re-apply target time after day change
-                    prev_dt_candidate = prev_dt_candidate.replace(
+                if not is_weekend:
+                    current_candidate_dt = current_candidate_dt.replace(
                         hour=daily_target_time.hour,
                         minute=daily_target_time.minute,
                         second=daily_target_time.second,
-                        microsecond=0
+                        microsecond=daily_target_time.microsecond
                     )
-            else: # For hourly, minutely, etc.
-                # Preserve the time of day from the simple subtraction,
-                # then adjust the date part if it falls on a weekend.
-                target_h, target_m, target_s = prev_dt_candidate.hour, prev_dt_candidate.minute, prev_dt_candidate.second
-                while prev_dt_candidate.weekday() >= 5:
-                    prev_dt_candidate -= timedelta(days=1) # Move to the previous day
-                # After finding a weekday, set the time to what it was after the initial timedelta subtraction.
-                prev_dt_candidate = prev_dt_candidate.replace(hour=target_h, minute=target_m, second=target_s, microsecond=0)
+                    generated_datetimes_reversed.append(current_candidate_dt)
+                    count += 1
+            else: # For non-daily (e.g., hourly, minutely)
+                if not is_weekend:
+                    generated_datetimes_reversed.append(current_candidate_dt)
+                    count += 1
+            
+            current_reference_dt = current_candidate_dt
 
-            generated_datetimes_reversed.append(prev_dt_candidate)
-            current_reference_dt = prev_dt_candidate # The next iteration calculates the tick before this new dt
-
-        return list(reversed(generated_datetimes_reversed)) # Return in chronological order
+        if count < num_synthetic_samples:
+            print(f"WARN main.py: generate_synthetic_datetimes_before_real only generated {count}/{num_synthetic_samples} datetimes. Check data range and periodicity.")
+        
+        return list(reversed(generated_datetimes_reversed))
 
     # --- (The old generate_datetime_column function can be removed or kept if used elsewhere) ---
 
@@ -530,17 +524,75 @@ def main():
     try:
         # Configuration for paths and sizes
         x_train_file_path = config["x_train_file"]
-        if not x_train_file_path or not os.path.exists(x_train_file_path): # Added check for existence
-            raise FileNotFoundError(f"x_train_file not found or not configured: {x_train_file_path}")
+        if not x_train_file_path or not os.path.exists(x_train_file_path):            
+            print(f"ERROR main.py: x_train_file '{x_train_file_path}' not found or not specified. Exiting.")
+            sys.exit(1)
             
-        max_steps_train_real = config["max_steps_train"] # How much of x_train_file to use
-        n_samples_synthetic = config.get("n_samples", config.get("num_synthetic_samples_to_generate", 0)) # Use n_samples, fallback
+        max_steps_train_real = config["max_steps_train"] 
+        n_samples_synthetic = config.get("n_samples", config.get("num_synthetic_samples_to_generate", 0))
         datetime_col_name = config.get("datetime_col_name", "DATE_TIME")
         dataset_periodicity = config.get("dataset_periodicity", "1h")
         decoder_input_window_size = generator_plugin.params.get("decoder_input_window_size")
-        generator_full_feature_names = generator_plugin.params.get("full_feature_names_ordered", [])
-        if not generator_full_feature_names:
-            raise ValueError("GeneratorPlugin 'full_feature_names_ordered' is not configured.")
+        generator_full_feature_names_for_df_creation = generator_plugin.params.get("full_feature_names_ordered", []) # Used for DataFrame creation
+        if not generator_full_feature_names_for_df_creation or "DATE_TIME" not in generator_full_feature_names_for_df_creation:
+            print(f"ERROR main.py: 'generator_full_feature_names_ordered' must be set in config and include 'DATE_TIME'. Current: {generator_full_feature_names_for_df_creation}")
+            sys.exit(1)
+
+        # --- Determine the first datetime from real data (x_train_file) for prepending ---
+        first_real_datetime_str_for_prepending = None
+        try:
+            # Read only the first data row to get the datetime
+            df_for_first_dt = pd.read_csv(x_train_file_path, usecols=[datetime_col_name], nrows=1, header=0 if config.get("feeder_real_data_file_has_header", True) else None)
+            if not df_for_first_dt.empty and (datetime_col_name in df_for_first_dt.columns or isinstance(datetime_col_name, int)):
+                col_to_access = datetime_col_name if isinstance(datetime_col_name, str) and datetime_col_name in df_for_first_dt.columns else (df_for_first_dt.columns[datetime_col_name] if isinstance(datetime_col_name, int) and datetime_col_name < len(df_for_first_dt.columns) else None)
+                if col_to_access is not None:
+                    first_real_datetime_str_for_prepending = str(df_for_first_dt.iloc[0][col_to_access])
+                    print(f"DEBUG main.py: First datetime string from '{x_train_file_path}' for prepending: {first_real_datetime_str_for_prepending}")
+                else:
+                    print(f"WARN main.py: Could not access datetime column '{datetime_col_name}' in '{x_train_file_path}'.")
+            else:
+                print(f"WARN main.py: Could not read first datetime from '{x_train_file_path}'. DataFrame empty or column missing.")
+        except Exception as e_dt_read:
+            print(f"WARN main.py: Error reading first datetime from '{x_train_file_path}': {e_dt_read}")
+
+        if first_real_datetime_str_for_prepending is None:
+            print("ERROR main.py: Cannot determine first real datetime for prepending. Using current time as fallback for synthetic generation start (will not be prepended).")
+            # Fallback: generate synthetic data starting from 'now' if real start is unknown
+            synthetic_start_dt_str = config.get("start_datetime") or datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            target_datetimes_for_generation_str = generate_datetime_column(
+                start_datetime_str=synthetic_start_dt_str,
+                num_samples=n_samples_synthetic,
+                periodicity_str=dataset_periodicity
+            )
+            target_datetimes_for_generation = pd.Series(pd.to_datetime(target_datetimes_for_generation_str))
+            real_data_segment_df = pd.DataFrame(columns=generator_full_feature_names_for_df_creation) # Empty DF
+        else:
+            first_real_dt_obj_for_prepending = pd.to_datetime(first_real_datetime_str_for_prepending)
+            print(f"DEBUG main.py: First real datetime object for prepending: {first_real_dt_obj_for_prepending}")
+
+            time_delta_map = {
+                "1h": timedelta(hours=1), "1H": timedelta(hours=1),
+                "15min": timedelta(minutes=15), "15T": timedelta(minutes=15), "15m": timedelta(minutes=15),
+                "1min": timedelta(minutes=1), "1T": timedelta(minutes=1), "1m": timedelta(minutes=1),
+                "daily": timedelta(days=1), "1D": timedelta(days=1)
+            }
+            generation_time_delta = time_delta_map.get(dataset_periodicity)
+            if not generation_time_delta:
+                print(f"ERROR main.py: Invalid dataset_periodicity '{dataset_periodicity}' for prepending. Exiting.")
+                sys.exit(1)
+
+            synthetic_target_datetimes_objs = generate_synthetic_datetimes_before_real(
+                real_start_dt=first_real_dt_obj_for_prepending,
+                num_synthetic_samples=n_samples_synthetic,
+                time_delta_val=generation_time_delta,
+                periodicity_str_val=dataset_periodicity
+            )
+            target_datetimes_for_generation = pd.Series(synthetic_target_datetimes_objs)
+            if n_samples_synthetic > 0 and target_datetimes_for_generation.empty:
+                print(f"WARN main.py: No synthetic datetimes were generated for prepending. Check 'n_samples' and date logic.")
+            elif not target_datetimes_for_generation.empty:
+                 print(f"DEBUG main.py: Generated {len(target_datetimes_for_generation)} synthetic datetimes for prepending. First: {target_datetimes_for_generation.iloc[0]}, Last: {target_datetimes_for_generation.iloc[-1]}")
+
 
         # 1. Load and Preprocess the full x_train_file to get features for the initial window and real segment
         print(f"Preprocessing full '{x_train_file_path}' to extract initial window for generator and real segment...")
@@ -570,7 +622,12 @@ def main():
         if datetimes_train_processed_full_anytype is None:
             raise ValueError(f"Preprocessor did not return 'x_train_dates' after processing '{x_train_file_path}'.")
 
-        datetimes_train_processed_full_series = pd.Series(pd.to_datetime(datetimes_train_processed_full_anytype))
+        # Ensure datetimes_train_processed_full_series is pandas Series of Timestamps
+        if not isinstance(datetimes_train_processed_full_anytype, pd.Series) or not pd.api.types.is_datetime64_any_dtype(datetimes_train_processed_full_anytype):
+            datetimes_train_processed_full_series = pd.Series(pd.to_datetime(datetimes_train_processed_full_anytype))
+        else:
+            datetimes_train_processed_full_series = datetimes_train_processed_full_anytype
+
 
         if isinstance(X_train_processed_full_anytype, pd.DataFrame):
             if not processed_train_feature_names: 
@@ -607,10 +664,10 @@ def main():
         initial_full_feature_window_for_gen_df = pd.DataFrame(
             np.nan, 
             index=range(decoder_input_window_size), 
-            columns=generator_full_feature_names
+            columns=generator_full_feature_names_for_df_creation
         ).astype(np.float32)
 
-        for col_name_gen in generator_full_feature_names:
+        for col_name_gen in generator_full_feature_names_for_df_creation:
             if col_name_gen in initial_window_raw_df_from_processed_train.columns:
                 initial_full_feature_window_for_gen_df[col_name_gen] = initial_window_raw_df_from_processed_train[col_name_gen].values
         
@@ -640,7 +697,7 @@ def main():
         
         first_dt_real_segment = pd.Timestamp.now(tz='UTC') # Default if no real rows, make it timezone-aware
         if not datetimes_real_segment_for_output.empty:
-            first_dt_real_segment = datetimes_real_segment_for_output.iloc[0]
+            first_dt_real_segment = datetimes_real_segment.iloc[0]
         elif num_real_rows_for_output > 0 : 
              raise ValueError("Real data segment for output has no datetimes, but rows were expected.")
         
@@ -669,7 +726,7 @@ def main():
             print("No synthetic samples requested (n_samples_synthetic is 0).")
 
         # 5. Generate Synthetic Values (only if n_samples_synthetic > 0)
-        X_syn_generated_values_np = np.array([]).reshape(0, len(generator_full_feature_names)) 
+        X_syn_generated_values_np = np.array([]).reshape(0, len(generator_full_feature_names_for_df_creation)) 
         if n_samples_synthetic > 0 and not final_synthetic_target_datetimes_series.empty:
             print(f"Generating feeder outputs for {n_samples_synthetic} synthetic steps...")
             feeder_outputs_sequence_synthetic = feeder_plugin.generate(
@@ -712,7 +769,7 @@ def main():
 
 
         # 6. Create Synthetic DataFrame (it will be combined later)
-        df_synthetic_generated_full_features = pd.DataFrame(X_syn_generated_values_np, columns=generator_full_feature_names)
+        df_synthetic_generated_full_features = pd.DataFrame(X_syn_generated_values_np, columns=generator_full_feature_names_for_df_creation)
         if n_samples_synthetic > 0 and not final_synthetic_target_datetimes_series.empty:
             if len(final_synthetic_target_datetimes_series) == df_synthetic_generated_full_features.shape[0]:
                 if datetime_col_name in df_synthetic_generated_full_features.columns:
@@ -822,8 +879,7 @@ if __name__ == "__main__":
     # import sys # Already imported globally
     # import traceback # Already imported globally
     # import json # Already imported globally
-    from datetime import datetime, timedelta
-    # ... other necessary global imports for main ...
+    from datetime import datetime, timedelta # Ensure this is imported at the top
 
     try:
         main()
