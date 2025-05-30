@@ -697,7 +697,7 @@ def main():
         
         first_dt_real_segment = pd.Timestamp.now(tz='UTC') # Default if no real rows, make it timezone-aware
         if not datetimes_real_segment_for_output.empty:
-            first_dt_real_segment = datetimes_real_segment.iloc[0]
+            first_dt_real_segment = datetimes_real_segment_for_output.iloc[0]
         elif num_real_rows_for_output > 0 : 
              raise ValueError("Real data segment for output has no datetimes, but rows were expected.")
         
