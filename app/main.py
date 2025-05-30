@@ -692,7 +692,7 @@ def main():
         
         # 3. Prepare Real Data Segment for Final Output (from START of processed x_train_file)
         num_real_rows_for_output = min(max_steps_train_real, X_train_processed_full_np.shape[0])
-        X_real_segment_for_output_np = X_train_processed_full_np[:num_real_rows_for_output]
+        # X_real_segment_for_output_np = X_train_processed_full_np[:num_real_rows_for_output] # This was using processed data
         datetimes_real_segment_for_output = datetimes_train_processed_full_series.iloc[:num_real_rows_for_output].reset_index(drop=True)
         
         first_dt_real_segment = pd.Timestamp.now(tz='UTC') # Default if no real rows, make it timezone-aware
@@ -804,31 +804,44 @@ def main():
                 if col_target_name in df_synthetic_generated_full_features.columns:
                     output_df_synthetic_aligned[col_target_name] = df_synthetic_generated_full_features[col_target_name]
                 else:
-                    output_df_synthetic_aligned[col_target_name] = np.nan # Fill missing target columns with NaN
+                    # This case should ideally not happen if TARGET_CSV_COLUMNS includes all generated features
+                    # or if generator_full_feature_names_ordered is a superset and aligns well.
+                    # print(f"DEBUG main.py: Synthetic segment - Column '{col_target_name}' not in generated data. Filling with NaN.")
+                    output_df_synthetic_aligned[col_target_name] = pd.Series([np.nan] * len(df_synthetic_generated_full_features))
 
 
-        # 7. Create Real Data DataFrame for Output (using TARGET_CSV_COLUMNS)
-        df_real_segment_processed_full_features = pd.DataFrame(X_real_segment_for_output_np, columns=processed_train_feature_names)
-        if num_real_rows_for_output > 0 and not datetimes_real_segment_for_output.empty:
-            if len(datetimes_real_segment_for_output) == df_real_segment_processed_full_features.shape[0]:
-                # For the real data segment, 'processed_train_feature_names' (from preprocessor)
-                # typically does NOT include 'DATE_TIME', so 'insert' is correct here.
-                if datetime_col_name not in df_real_segment_processed_full_features.columns:
-                    df_real_segment_processed_full_features.insert(0, datetime_col_name, datetimes_real_segment_for_output.values)
-                else:
-                    # This case would be unusual if preprocessor doesn't output DATE_TIME as a feature
-                    df_real_segment_processed_full_features[datetime_col_name] = datetimes_real_segment_for_output.values
-            else:
-                print(f"Warning: Mismatch between real datetimes ({len(datetimes_real_segment_for_output)}) and real segment values ({df_real_segment_processed_full_features.shape[0]}). Datetime column might be misaligned or omitted for real data segment.")
+        # 7. Create Real DataFrame for Output (using TARGET_CSV_COLUMNS)
+        # --- MODIFIED TO READ RAW DATA FOR THE REAL SEGMENT ---
+        output_df_real_final_segment = pd.DataFrame(columns=TARGET_CSV_COLUMNS) # Initialize empty
+        if num_real_rows_for_output > 0:
+            try:
+                print(f"DEBUG main.py: Reading raw data from '{x_train_file_path}' for real segment output ({num_real_rows_for_output} rows).")
+                # Read the exact number of rows needed from the original x_train_file
+                # TARGET_CSV_COLUMNS should match the columns in x_train_file.
+                df_raw_real_segment = pd.read_csv(
+                    x_train_file_path,
+                    nrows=num_real_rows_for_output,
+                    header=0, # Assuming x_train_file always has a header
+                    usecols=TARGET_CSV_COLUMNS, # Read only the columns we need for the output
+                    low_memory=False # Added to handle potential mixed type warnings if any
+                )
 
+                # Ensure DATE_TIME is string for consistency with synthetic part before to_csv
+                if datetime_col_name in df_raw_real_segment.columns:
+                    # Convert to datetime objects first to handle various input formats, then to string
+                    df_raw_real_segment[datetime_col_name] = pd.to_datetime(df_raw_real_segment[datetime_col_name]).dt.strftime('%Y-%m-%d %H:%M:%S')
+                
+                # Assign directly to output_df_real_final_segment, ensuring column order
+                output_df_real_final_segment = df_raw_real_segment[TARGET_CSV_COLUMNS]
 
-        output_df_real_final_segment = pd.DataFrame(columns=TARGET_CSV_COLUMNS)
-        if not df_real_segment_processed_full_features.empty:
-            for col_target_name in TARGET_CSV_COLUMNS:
-                if col_target_name in df_real_segment_processed_full_features.columns:
-                    output_df_real_final_segment[col_target_name] = df_real_segment_processed_full_features[col_target_name]
-                else: 
-                    output_df_real_final_segment[col_target_name] = np.nan
+            except Exception as e_raw_read:
+                print(f"ERROR main.py: Failed to read or process raw real data segment from '{x_train_file_path}': {e_raw_read}")
+                traceback.print_exc()
+                # Fallback to empty or handle error appropriately
+                output_df_real_final_segment = pd.DataFrame(columns=TARGET_CSV_COLUMNS)
+        else:
+            print("DEBUG main.py: No real rows requested for output (num_real_rows_for_output is 0).")
+        # --- END MODIFICATION ---
         
         print(f"DEBUG main.py: Real data segment for output DF shape: {output_df_real_final_segment.shape}")
 
