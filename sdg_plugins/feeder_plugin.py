@@ -381,6 +381,7 @@ class FeederPlugin:
         Retrieves scaled fundamental features for a given datetime.
         Assumes self._real_datetimes_pd_series and self._real_fundamental_features_df_scaled are populated.
         Uses forward-fill if exact datetime match is not found.
+        For datetimes before the first known real data, uses the first available real data point.
         """
         if self._real_datetimes_pd_series is None or self._real_fundamental_features_df_scaled is None or \
            self._real_fundamental_features_df_scaled.empty:
@@ -395,11 +396,9 @@ class FeederPlugin:
         idx_pos = self._real_datetimes_pd_series.searchsorted(datetime_obj, side='right')
         
         if idx_pos == 0: # datetime_obj is before the first known real datetime
-            # print(f"FeederPlugin: Warning - Requested datetime {datetime_obj} is before any known fundamental data. Using first available.")
-            # Use the first available fundamental data point or NaNs if preferred.
-            # REVERTING to output NaNs for this case.
-            # return self._real_fundamental_features_df_scaled.iloc[0].values.astype(np.float32) # OLD LINE (my previous suggestion)
-            return np.full(len(self.params["fundamental_feature_names_for_conditioning"]), np.nan, dtype=np.float32) # NEW LINE - Reverted to NaN output
+            # print(f"FeederPlugin: Info - Requested datetime {datetime_obj} is before any known fundamental data. Using first available data point.")
+            # Use the first available fundamental data point.
+            return self._real_fundamental_features_df_scaled.iloc[0].values.astype(np.float32) # CHANGED: Use first available instead of NaN
 
 
         # idx_pos is the insertion point, so index idx_pos-1 is the latest known data at or before datetime_obj
