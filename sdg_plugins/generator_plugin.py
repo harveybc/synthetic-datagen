@@ -918,23 +918,84 @@ class GeneratorPlugin:
 
             # Prepare the current window input for the model
             # The model expects a batch dimension, so expand dims for current_input_feature_window
-            current_window_for_model = np.expand_dims(current_input_feature_window, axis=0)
+            # current_window_for_model = np.expand_dims(current_input_feature_window, axis=0) # This line was part of the problematic version
 
+            # --- REVERTED MODEL INPUTS ---
+            # This matches the structure from the "working" version you provided in the prompt,
+            # donde el window en sí NO se pasa como una entrada directa a sequential_model.predict()
             decoder_inputs = {
                 self.params["decoder_input_name_latent"]: zt,
-                self.params["decoder_input_name_window"]: current_window_for_model, # ADDED THIS LINE
+                # self.params["decoder_input_name_window"]: current_window_for_model, # REMOVED THIS LINE
                 self.params["decoder_input_name_conditions"]: conditional_data_t,
                 self.params["decoder_input_name_context"]: context_h_t
             }
             
             # pack inputs as a list in the same order as model.inputs
-            model_ins = self.sequential_model.inputs
+            # This part needs to be careful if the model truly doesn't expect the window.
+            # We should only feed what the model *expects*.
+            # Let's check if the model's input names actually include the window input.
+            # If the "working" model didn't use it, its `model_ins` list wouldn't contain `decoder_input_name_window`.
+
+            model_ins_names_expected = [inp.name.split(':')[0] for inp in self.sequential_model.inputs]
             to_feed = []
-            for inp in model_ins:
-                name = inp.name.split(':')[0]
-                if name not in decoder_inputs:
-                    raise KeyError(f"GeneratorPlugin: model expects input '{name}' but it was not provided")
-                to_feed.append(decoder_inputs[name])
+            
+            # Check for latent input
+            if self.params["decoder_input_name_latent"] in model_ins_names_expected:
+                to_feed.append(decoder_inputs[self.params["decoder_input_name_latent"]])
+            elif self.params["decoder_input_name_latent"] in decoder_inputs: # It was provided but model doesn't list it
+                 print(f"GeneratorPlugin: Warning - Latent input '{self.params['decoder_input_name_latent']}' provided but not found in model.inputs. Skipping.")
+
+
+            # Check for window input - THIS IS THE KEY DIFFERENCE
+            # If the "working" model didn't expect it, this should NOT be added.
+            # The version from your prompt implies the window was NOT a direct model input.
+            # So, we should NOT add `decoder_inputs[self.params["decoder_input_name_window"]]` here.
+            # However, the current code has `decoder_input_name_window` in `self.params`.
+            # This suggests a configuration mismatch if the model doesn't expect it.
+            # For now, let's strictly follow the "working" version's implication: DON'T feed the window if it wasn't before.
+
+            # Check for conditions input
+            if self.params["decoder_input_name_conditions"] in model_ins_names_expected:
+                to_feed.append(decoder_inputs[self.params["decoder_input_name_conditions"]])
+            elif self.params["decoder_input_name_conditions"] in decoder_inputs:
+                 print(f"GeneratorPlugin: Warning - Conditions input '{self.params['decoder_input_name_conditions']}' provided but not found in model.inputs. Skipping.")
+
+            # Check for context input
+            if self.params["decoder_input_name_context"] in model_ins_names_expected:
+                to_feed.append(decoder_inputs[self.params["decoder_input_name_context"]])
+            elif self.params["decoder_input_name_context"] in decoder_inputs:
+                 print(f"GeneratorPlugin: Warning - Context input '{self.params['decoder_input_name_context']}' provided but not found in model.inputs. Skipping.")
+
+            if not to_feed:
+                raise ValueError("GeneratorPlugin: No inputs could be matched to the model's expected inputs. Check decoder_input_name parameters and model structure.")
+
+            # Ensure the number of items in `to_feed` matches the number of model inputs
+            if len(to_feed) != len(self.sequential_model.inputs):
+                expected_input_names = [inp.name.split(':')[0] for inp in self.sequential_model.inputs]
+                fed_input_keys = []
+                if self.params["decoder_input_name_latent"] in model_ins_names_expected: fed_input_keys.append(self.params["decoder_input_name_latent"])
+                if self.params["decoder_input_name_conditions"] in model_ins_names_expected: fed_input_keys.append(self.params["decoder_input_name_conditions"])
+                if self.params["decoder_input_name_context"] in model_ins_names_expected: fed_input_keys.append(self.params["decoder_input_name_context"])
+                
+                # Check if the window input is unexpectedly expected by the model
+                window_input_name_cfg = self.params.get("decoder_input_name_window")
+                if window_input_name_cfg in expected_input_names and window_input_name_cfg not in fed_input_keys:
+                     # This is the conflict: model expects window, but "working" logic didn't provide it.
+                     # This implies the model file might have changed, or the "working" assumption is incomplete.
+                     # For now, we stick to "don't feed window if it wasn't before".
+                     # This error will trigger if the loaded model *does* expect the window input.
+                     raise ValueError(
+                        f"GeneratorPlugin: Model expects window input '{window_input_name_cfg}', but current logic (based on 'working' version) does not provide it. "
+                        f"Mismatch between assumed 'working' model structure and loaded model. "
+                        f"Model expects: {expected_input_names}. Attempting to feed: {fed_input_keys} (excluding window)."
+                    )
+
+                raise ValueError(
+                    f"GeneratorPlugin: Number of inputs to feed ({len(to_feed)}) does not match number of model inputs ({len(self.sequential_model.inputs)}). "
+                    f"Model expects: {expected_input_names}. Attempting to feed based on keys: {fed_input_keys}."
+                )
+            
+            # If the code reaches here, `to_feed` should align with what the model expects, *excluding* the window if that's the correct "working" logic.
             generated_decoder_output_step_t = self.sequential_model.predict(to_feed, verbose=0)
             
             if generated_decoder_output_step_t.ndim == 3 and generated_decoder_output_step_t.shape[1] == 1:
@@ -1081,7 +1142,7 @@ class GeneratorPlugin:
             # Denormalize the core OHLC values from current_tick_assembled_features
             # (norm_open, norm_high, norm_low from decoder; norm_close derived and filled)
             dn_o_step5 = self._denormalize_value(current_tick_assembled_features[self.feature_to_idx["OPEN"]], "OPEN") if "OPEN" in self.feature_to_idx and pd.notnull(current_tick_assembled_features[self.feature_to_idx["OPEN"]]) else np.nan
-            dn_h_step5 = self._denormalize_value(current_tick_assembled_features[self.feature_to_idx["HIGH"]], "HIGH") if "HIGH" in self.feature_to_idx and pd.notnull(current_tick_assembled_features[self.feature_to_idx["HIGH"]]) else np.nan
+            dn_h_step5 = self._denormalize_value(current_tick_assembled_features[self.feature_to_idx["HIGH"]], "HIGH") if "HIGH" in self.feature_to_idx and pd.notnull(current_tick_assembled_features[self.feature_toIdx["HIGH"]]) else np.nan
             dn_l_step5 = self._denormalize_value(current_tick_assembled_features[self.feature_to_idx["LOW"]], "LOW") if "LOW" in self.feature_to_idx and pd.notnull(current_tick_assembled_features[self.feature_to_idx["LOW"]]) else np.nan
             dn_c_step5 = self._denormalize_value(current_tick_assembled_features[self.feature_to_idx["CLOSE"]], "CLOSE") if "CLOSE" in self.feature_to_idx and pd.notnull(current_tick_assembled_features[self.feature_to_idx["CLOSE"]]) else np.nan
 
@@ -1170,13 +1231,14 @@ class GeneratorPlugin:
 
 
             current_input_feature_window = np.roll(current_input_feature_window, -1, axis=0)
+            # current_input_feature_window[-1, :] = current_tick_assembled_features # This was from the prompt's "working" version
             current_input_feature_window[-1, :] = current_tick_features_for_model_window_update # Use NaN-replaced version for model's input window
         
             # Manage ohlc_history_for_ti_list (append new denormalized OHLC, pop old)
             # This was inside the TI calculation block, ensure it's correctly placed relative to history usage.
             # The current ohlc_history_for_ti_list management seems okay, it appends the latest denormalized OHLC
             # and trims if it gets too long. This happens *after* TIs for current tick are calculated.
-            if len(ohlc_history_for_ti_list) > min_ohlc_hist_len + 50: 
+            if len(ohlc_history_for_ti_list) > min_ohlc_hist_len + 50: # Corrected from self.params["ti_calculation_min_lookback"]
                 ohlc_history_for_ti_list.pop(0)
         
         final_generated_sequence = np.array(generated_sequence_all_features_list, dtype=np.float32)
