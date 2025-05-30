@@ -569,13 +569,10 @@ class GeneratorPlugin:
                     # This path (d=0) is risky with the current pandas-ta error.
                     # Safest is to treat d=0 as "no D line", and if K is wanted, it's subject to K's own length.
                     # But the call to ta.stoch itself might be the issue if d=0 leads to stoch_d=None.
-                    # Given the error, it's safer to avoid calling ta.stoch if d=0 might lead to stoch_d=None.
                     # For now, if d=0, we assume only K is wanted and it needs min_len_for_k_smooth.
                     # This part is tricky. The previous logic (stricter guard) is safer.
                     # Reverting to the stricter guard: if d_period from config is >0, then min_len_for_d_final is the guard.
                     # If d_period from config is 0, then this block is effectively "don't calculate D".
-                    # The code above (if stoch_d_period > 0) handles the common case.
-                    # If stoch_d_period is truly 0 from config, and only K is wanted:
                     try:
                         # Attempt to get K only, by passing d=0. This is speculative.
                         stoch_output_df_k_only = ta.stoch(df['high'], df['low'], df['close'],
@@ -930,7 +927,15 @@ class GeneratorPlugin:
                 self.params["decoder_input_name_context"]: context_h_t
             }
             
-            generated_decoder_output_step_t = self.sequential_model.predict(decoder_inputs, verbose=0)
+            # pack inputs as a list in the same order as model.inputs
+            model_ins = self.sequential_model.inputs
+            to_feed = []
+            for inp in model_ins:
+                name = inp.name.split(':')[0]
+                if name not in decoder_inputs:
+                    raise KeyError(f"GeneratorPlugin: model expects input '{name}' but it was not provided")
+                to_feed.append(decoder_inputs[name])
+            generated_decoder_output_step_t = self.sequential_model.predict(to_feed, verbose=0)
             
             if generated_decoder_output_step_t.ndim == 3 and generated_decoder_output_step_t.shape[1] == 1:
                 decoded_features_for_current_tick = generated_decoder_output_step_t[0, 0, :]
