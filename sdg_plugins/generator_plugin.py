@@ -932,29 +932,28 @@ class GeneratorPlugin:
                 self.params["decoder_input_name_latent"]: zt,
                 self.params["decoder_input_name_context"]: context_h_t,
                 self.params["decoder_input_name_conditions"]: conditional_data_t,
-                # The window data (self.params["decoder_input_name_window"]) is not included here
-                # as it's not meant to be fed directly to the model in this logic.
             }
 
             configured_window_input_name = self.params.get("decoder_input_name_window")
             
             expected_fed_input_count = 0
-            for model_input_name in model_input_names_in_order: # Iterate through what the model *expects*
+            # Loop through the input names *expected by the model* in their defined order.
+            for model_input_name in model_input_names_in_order:
                 if model_input_name == configured_window_input_name:
                     # This input is the window, which we decided not to feed directly.
-                    print(f"GeneratorPlugin: Intentionally skipping model input '{model_input_name}' as it is configured as the window input.")
+                    # print(f"GeneratorPlugin: Intentionally skipping model input '{model_input_name}' as it is configured as the window input.")
                     continue # Skip adding this to to_feed
 
                 # This input is expected by the model and is not the window input.
-                # We count how many such inputs the model has.
                 expected_fed_input_count += 1 
                 
+                # Check if we have prepared data for this specific model input name.
                 if model_input_name in available_data_for_model:
                     to_feed.append(available_data_for_model[model_input_name])
                 else:
-                    # This case means the model expects an input (e.g., "some_other_input")
-                    # for which we haven't prepared data in `available_data_for_model`.
-                    # This would happen if the model's input layer name doesn't match any of the
+                    # Error: Model expects an input (e.g., "some_other_input_layer_name")
+                    # but this name was not found as a key in our `available_data_for_model` dictionary.
+                    # This means the model's actual input layer name does not match any of the
                     # values provided by self.params["decoder_input_name_latent"],
                     # self.params["decoder_input_name_context"], or self.params["decoder_input_name_conditions"].
                     raise ValueError(
@@ -963,30 +962,26 @@ class GeneratorPlugin:
                         f"Ensure the model's input layer names match the values configured in "
                         f"self.params['decoder_input_name_latent'], self.params['decoder_input_name_context'], "
                         f"and self.params['decoder_input_name_conditions']. "
-                        f"Available keys in prepared data (actual model input names): {list(available_data_for_model.keys())}"
+                        f"Available keys in prepared data (actual model input names derived from self.params): {list(available_data_for_model.keys())}"
                     )
             
+            # After iterating through all model inputs, check if we prepared the correct number of inputs.
             if len(to_feed) != expected_fed_input_count:
-                # This check ensures that for every non-window input the model expects,
-                # we have found and added corresponding data to `to_feed`.
-                # If this error occurs, it means some expected model inputs (that are not the window)
-                # were not found in `available_data_for_model`.
-                fed_input_names = []
-                temp_available_data = {
-                    self.params["decoder_input_name_latent"]: "latent_data",
-                    self.params["decoder_input_name_context"]: "context_data",
-                    self.params["decoder_input_name_conditions"]: "conditions_data",
-                }
-                for model_input_name_check in model_input_names_in_order:
-                    if model_input_name_check != configured_window_input_name and model_input_name_check in temp_available_data:
-                        fed_input_names.append(model_input_name_check)
+                # This error means that for some non-window inputs the model expected,
+                # we did not find a match in `available_data_for_model`.
+                
+                # For debugging, list the names we *would* have fed if they matched.
+                potential_fed_names = []
+                for name_in_model_order in model_input_names_in_order:
+                    if name_in_model_order != configured_window_input_name and name_in_model_order in available_data_for_model:
+                        potential_fed_names.append(name_in_model_order)
 
                 raise ValueError(
                     f"GeneratorPlugin: Mismatch in the number of inputs prepared for the model. "
-                    f"Prepared to feed {len(to_feed)} inputs (based on names: {fed_input_names}). "
+                    f"Prepared to feed {len(to_feed)} inputs (based on matching names: {potential_fed_names}). "
                     f"Model expects {expected_fed_input_count} non-window inputs. "
-                    f"Model input names (in order from model): {model_input_names_in_order}. "
-                    f"Configured window input name: {configured_window_input_name}."
+                    f"Model input names (in order from Keras model): {model_input_names_in_order}. "
+                    f"Configured window input name (skipped): {configured_window_input_name}."
                 )
             
             # --- End corrected model input assembly ---
@@ -1149,15 +1144,6 @@ class GeneratorPlugin:
                         current_tick_assembled_features[self.feature_to_idx[feat_name]] = val_norm
 
 
-
-
-
-
-
-
-
-
-
             # 6. Calculate and fill log_return
             if "log_return" in self.feature_to_idx:
                 log_return_val_to_normalize = 0.0
@@ -1254,12 +1240,12 @@ class GeneratorPlugin:
 
         return np.expand_dims(final_generated_sequence, axis=0)
 
-
-
-
-
-
-
-            raise TypeError(f"new_model debe ser un modelo Keras, se recibió {type(new_model)}")        if not isinstance(new_model, Model):        """        Actualiza el modelo del generador. Usado por GANTrainerPlugin después del entrenamiento de GAN.        """    def update_model(self, new_model: Model):        print("GeneratorPlugin: Actualizando sequential_model con una nueva instancia de modelo.")
+    def update_model(self, new_model: Model):
+        """
+        Actualiza el modelo del generador. Usado por GANTrainerPlugin después del entrenamiento de GAN.
+        """
+        if not isinstance(new_model, Model):
+            raise TypeError(f"new_model debe ser un modelo Keras, se recibió {type(new_model)}")
+        print("GeneratorPlugin: Actualizando sequential_model con una nueva instancia de modelo.")
         self.sequential_model = new_model
         self.model = new_model # Mantener la alias de self.model consistente
