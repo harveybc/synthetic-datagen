@@ -1132,7 +1132,7 @@ class GeneratorPlugin:
             # Denormalize the core OHLC values from current_tick_assembled_features
             # (norm_open, norm_high, norm_low from decoder; norm_close derived and filled)
             dn_o_step5 = self._denormalize_value(current_tick_assembled_features[self.feature_to_idx["OPEN"]], "OPEN") if "OPEN" in self.feature_to_idx and pd.notnull(current_tick_assembled_features[self.feature_to_idx["OPEN"]]) else np.nan
-            dn_h_step5 = self._denormalize_value(current_tick_assembled_features[self.feature_to_idx["HIGH"]], "HIGH") if "HIGH" in self.feature_to_idx and pd.notnull(current_tick_assembled_features[self.feature_toIdx["HIGH"]]) else np.nan
+            dn_h_step5 = self._denormalize_value(current_tick_assembled_features[self.feature_to_idx["HIGH"]], "HIGH") if "HIGH" in self.feature_to_idx and pd.notnull(current_tick_assembled_features[self.feature_to_idx["HIGH"]]) else np.nan
             dn_l_step5 = self._denormalize_value(current_tick_assembled_features[self.feature_to_idx["LOW"]], "LOW") if "LOW" in self.feature_to_idx and pd.notnull(current_tick_assembled_features[self.feature_to_idx["LOW"]]) else np.nan
             dn_c_step5 = self._denormalize_value(current_tick_assembled_features[self.feature_to_idx["CLOSE"]], "CLOSE") if "CLOSE" in self.feature_to_idx and pd.notnull(current_tick_assembled_features[self.feature_to_idx["CLOSE"]]) else np.nan
 
