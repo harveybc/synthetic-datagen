@@ -31,7 +31,7 @@ DEFAULT_VALUES = {
     "dataset_periodicity": "1h", 
 
      # Generation parameters
-    "n_samples": 50400,
+    "n_samples": 25200,
     "max_steps_train": 25200,
     "latent_shape": [18, 32], 
     "batch_size": 32, 
@@ -142,7 +142,7 @@ DEFAULT_VALUES = {
     "start_datetime": None, 
     "output_file": "examples/results/phase_4_2/normalized_d4_25200_synthetic_25200_prepended_o.csv",
     #"synthetic_data_output_file": "examples/results/phase_4_2/normalized_d4_25200_synthetic_25200_prepended.csv",
-    "metrics_file": "examples/results/phase_4_2/normalized_d4_25200_synthetic_50400_metrics.json",
+    "metrics_file": "examples/results/phase_4_2/normalized_d4_25200_synthetic_25200_metrics.json",
     "save_config": "examples/results/phase_4_2/config_out.json",
     "save_log": "examples/results/phase_4_2/debug_out.json",
     "quiet_mode": False,
