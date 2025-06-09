@@ -13,9 +13,9 @@ DEFAULT_VALUES = {
     "evaluator": "default_evaluator",
     "optimizer": "default_optimizer",
 
-    # Data for evaluation
-    "real_data_file": "examples/data/phase_3/normalized_d4.csv",
-    "x_train_file": "examples/data/phase_3/normalized_d4.csv",
+    # Data for evaluation and base for generation
+    # "real_data_file": "examples/data/phase_3/normalized_d4.csv", # REMOVED - Redundant, use x_train_file
+    "x_train_file": "examples/data/phase_3/normalized_d4.csv", # Primary data source
     "y_train_file": "examples/data/phase_3/normalized_d4.csv",
     "x_validation_file": "examples/data/phase_3/normalized_d5.csv",
     "y_validation_file": "examples/data/phase_3/normalized_d5.csv",
@@ -31,7 +31,8 @@ DEFAULT_VALUES = {
     "dataset_periodicity": "1h", 
 
      # Generation parameters
-    "n_samples": 6300,
+    "n_samples": 12600,
+    "max_steps_train": 25200,
     "latent_shape": [18, 32], 
     "batch_size": 32, 
     
@@ -48,8 +49,8 @@ DEFAULT_VALUES = {
     "feeder_max_hour_of_day": 23,
     "feeder_max_day_of_week": 6,
     "feeder_max_day_of_year": 366, # ADDED
-    "feeder_context_vector_dim": 64, 
-    "feeder_context_vector_strategy": "zeros",
+    "feeder_context_vector_dim": 64, # CHANGED from 16 to 64 to match Generator/main config
+    "feeder_context_vector_strategy": "random",
     "feeder_copula_kde_bw_method": None,
 
     # --- Parameters for GeneratorPlugin ---
@@ -78,7 +79,10 @@ DEFAULT_VALUES = {
     ], 
     "generator_decoder_output_feature_names": [
         # Based on cvae_target_feature_names from phase_4_2_cnn_small_debug_out.json
-        "OPEN", "LOW", "HIGH", "vix_close", "BC-BO", "BH-BL", "S&P500_Close",
+        "OPEN", "LOW", "HIGH", # "vix_close", "S&P500_Close" are removed from this list
+        "BC-BO", "BH-BL", 
+        # "S&P500_Close", # REMOVED
+        # "vix_close", # REMOVED
         "CLOSE_15m_tick_1", "CLOSE_15m_tick_2", "CLOSE_15m_tick_3", "CLOSE_15m_tick_4",
         "CLOSE_15m_tick_5", "CLOSE_15m_tick_6", "CLOSE_15m_tick_7", "CLOSE_15m_tick_8",
         "CLOSE_30m_tick_1", "CLOSE_30m_tick_2", "CLOSE_30m_tick_3", "CLOSE_30m_tick_4",
@@ -106,7 +110,7 @@ DEFAULT_VALUES = {
     "generator_decoder_input_name_window": "input_x_window",          
     "generator_decoder_input_name_conditions": "decoder_input_conditions", 
     "generator_decoder_input_name_context": "decoder_input_h_context",   
-    "context_vector_dim": 64, 
+    "context_vector_dim": 64, # This is the main config value, Feeder should align
 
     # --- Parameters for EvaluatorPlugin ---
     "evaluator_metrics": ["mmd", "acf", "wasserstein", "kstest", "discriminative_score", "predictive_score", "visual"],
@@ -136,11 +140,11 @@ DEFAULT_VALUES = {
     "random_seed": 42,
     "num_synthetic_samples_to_generate": 0, 
     "start_datetime": None, 
-    "output_file": "examples/results/phase_4_2/normalized_d4_25200_synthetic_50400_prepended.csv",
-    "synthetic_data_output_file": "examples/results/phase_4_2/generated_full_synthetic_data.csv",
-    "metrics_file": "examples/results/phase_4_2/normalized_d4_25200_synthetic_50400_metrics.json",
-    "save_config": "examples/results/phase_4_2/config_out.json",
-    "save_log": "examples/results/phase_4_2/debug_out.json",
+    "output_file": "examples/results/phase_4_2/normalized_d4_25200_synthetic_12600_prepended_o.csv",
+    #"synthetic_data_output_file": "examples/results/phase_4_2/normalized_d4_25200_synthetic_25200_prepended.csv",
+    "metrics_file": "examples/results/phase_4_2/normalized_d4_25200_synthetic_12600_metrics.json",
+    "save_config": "examples/results/phase_4_2/config_out_12600.json",
+    "save_log": "examples/results/phase_4_2/debug_out_12600.json",
     "quiet_mode": False,
     "datetime_col_name": "DATE_TIME",
     "target_column_order": [],

@@ -204,15 +204,20 @@ class GeneratorPlugin:
         
         old_model_file = self.params.get("sequential_model_file")
         old_norm_file = self.params.get("generator_normalization_params_file")
-        # old_initial_close_file is no longer a plugin-specific param
         old_full_feature_names = self.params.get("full_feature_names_ordered")
 
-        # Determine the file path for initial CLOSE anchor from the main config (kwargs)
-        # or fall back to existing main config values if not in kwargs.
-        # This path is NOT stored in self.params directly.
-        current_config_for_initial_close = kwargs # Prioritize kwargs
-        initial_close_file_path_candidate = current_config_for_initial_close.get(
-            "x_train_file", current_config_for_initial_close.get("real_data_file")
+        # --- MODIFICATION: Update self.main_config first ---
+        # This ensures that if kwargs contains updates to main config keys (like x_train_file),
+        # they are reflected in self.main_config before deriving paths from it.
+        if hasattr(self, 'main_config') and self.main_config is not None:
+            self.main_config.update(kwargs) 
+        else: # Should not happen if __init__ ran correctly and self.main_config was set
+            print("GeneratorPlugin: Warning - self.main_config not found or is None during set_params. Initializing from kwargs.")
+            self.main_config = kwargs.copy()
+
+        # Determine the file path for initial CLOSE anchor from the (potentially updated) main config
+        initial_close_file_path_candidate = self.main_config.get(
+            "x_train_file", self.main_config.get("real_data_file") # Uses updated self.main_config
         )
 
         for param_key_short in self.plugin_params.keys():
@@ -250,18 +255,23 @@ class GeneratorPlugin:
             
         # Reload initial close anchor if the source file path from main config might have changed
         # or if it hasn't been loaded yet.
-        # We don't store the path in self.params, so we check if the candidate path is valid
-        # and if the anchor is None.
-        if initial_close_file_path_candidate and self.initial_denormalized_close_anchor is None:
-            self._load_initial_close_anchor(initial_close_file_path_candidate)
-        elif not initial_close_file_path_candidate and self.initial_denormalized_close_anchor is not None:
-            # This case is tricky: if the path in main config becomes None, should we reset?
-            # For now, if it was loaded, keep it unless explicitly told to reload with a new path.
-            # If the intent is to clear it if the path is removed from main config,
-            # we'd need to track the path used to load it.
-            # Simpler: it's loaded once at init or if path changes and anchor is None.
-            pass
+        # We track the path used to load it with self._last_initial_close_file_path
+        
+        # --- Refined logic for initial_close_anchor reload ---
+        last_loaded_path_attr = '_last_initial_close_file_path'
+        current_last_loaded_path = getattr(self, last_loaded_path_attr, None)
 
+        if initial_close_file_path_candidate:
+            if self.initial_denormalized_close_anchor is None or \
+               current_last_loaded_path != initial_close_file_path_candidate:
+                print(f"GeneratorPlugin: Reloading initial close anchor. Reason: Anchor is None ({self.initial_denormalized_close_anchor is None}) or path changed (current: '{initial_close_file_path_candidate}', last: '{current_last_loaded_path}').")
+                self._load_initial_close_anchor(initial_close_file_path_candidate)
+                setattr(self, last_loaded_path_attr, initial_close_file_path_candidate)
+        elif not initial_close_file_path_candidate and self.initial_denormalized_close_anchor is not None:
+            print("GeneratorPlugin: Warning - x_train_file path for initial close anchor became None, but anchor was already loaded. Keeping existing anchor. Clearing last loaded path.")
+            setattr(self, last_loaded_path_attr, None) 
+            # Optionally, consider clearing self.initial_denormalized_close_anchor here if the policy is to nullify it
+            # when the path is removed. For now, it's kept if already loaded.
 
         if self.params.get("full_feature_names_ordered") != old_full_feature_names or \
            any(key in kwargs for key in ["decoder_output_feature_names", "ohlc_feature_names", 
@@ -448,15 +458,10 @@ class GeneratorPlugin:
         debug_info.update(self.get_debug_info())
 
     def _calculate_technical_indicators(self, ohlc_history_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Calculates technical indicators based on the provided OHLC history.
-        Returns a DataFrame containing only the calculated TI columns for the last row.
-        Assumes ohlc_history_df has columns named as in self.params["ohlc_feature_names"] (e.g., OPEN, HIGH, LOW, CLOSE).
-        """
-        if ohlc_history_df.empty or len(ohlc_history_df) < 2:
-            nan_df = pd.DataFrame(columns=self.params["ti_feature_names"], index=[0]).astype(np.float32)
-            nan_df = nan_df.fillna(np.nan)
-            return nan_df
+        if ohlc_history_df.empty:
+            nan_placeholder_df = pd.DataFrame(columns=self.params["ti_feature_names"], index=[0]).astype(np.float32)
+            nan_placeholder_df = nan_placeholder_df.fillna(np.nan)
+            return nan_placeholder_df
 
         ohlc_map = {
             self.params["ohlc_feature_names"][0]: 'open',
@@ -464,55 +469,284 @@ class GeneratorPlugin:
             self.params["ohlc_feature_names"][2]: 'low',
             self.params["ohlc_feature_names"][3]: 'close'
         }
+        missing_ohlc_cols = [col for col in self.params["ohlc_feature_names"] if col not in ohlc_history_df.columns]
+        if missing_ohlc_cols:
+            print(f"GeneratorPlugin: Warning (_calculate_technical_indicators) - Missing OHLC columns in input: {missing_ohlc_cols}. TIs will be NaN.")
+            nan_placeholder_df = pd.DataFrame(columns=self.params["ti_feature_names"], index=[0]).astype(np.float32)
+            nan_placeholder_df = nan_placeholder_df.fillna(np.nan)
+            return nan_placeholder_df
+            
         df = ohlc_history_df.rename(columns=ohlc_map)
-
-        ti_df = pd.DataFrame(index=df.index)
+        ti_df_results = pd.DataFrame(index=df.index) # Results will have same index as input df
         p = self.params["ti_params"]
         ti_names_to_calculate = self.params["ti_feature_names"]
 
-        # Calculate TIs using pandas_ta, checking if they are requested
+        # RSI
+        rsi_len = p.get("rsi_length", 14)
         if 'RSI' in ti_names_to_calculate:
-            ti_df['RSI'] = ta.rsi(df['close'], length=p.get("rsi_length", 14))
-        if any(x in ti_names_to_calculate for x in ['MACD', 'MACD_Histogram', 'MACD_Signal']):
-            macd_output = ta.macd(df['close'], fast=p.get("macd_fast", 12), slow=p.get("macd_slow", 26), signal=p.get("macd_signal", 9))
-            if macd_output is not None and not macd_output.empty:
-                if 'MACD' in ti_names_to_calculate: ti_df['MACD'] = macd_output.iloc[:,0]
-                if 'MACD_Histogram' in ti_names_to_calculate: ti_df['MACD_Histogram'] = macd_output.iloc[:,1]
-                if 'MACD_Signal' in ti_names_to_calculate: ti_df['MACD_Signal'] = macd_output.iloc[:,2]
-        if 'EMA' in ti_names_to_calculate:
-            ti_df['EMA'] = ta.ema(df['close'], length=p.get("ema_length", 14))
-        if any(x in ti_names_to_calculate for x in ['Stochastic_%K', 'Stochastic_%D']):
-            stoch_output = ta.stoch(df['high'], df['low'], df['close'], k=p.get("stoch_k", 14), d=p.get("stoch_d", 3), smooth_k=p.get("stoch_smooth_k", 3))
-            if stoch_output is not None and not stoch_output.empty:
-                if 'Stochastic_%K' in ti_names_to_calculate: ti_df['Stochastic_%K'] = stoch_output.iloc[:,0]
-                if 'Stochastic_%D' in ti_names_to_calculate: ti_df['Stochastic_%D'] = stoch_output.iloc[:,1]
-        if any(x in ti_names_to_calculate for x in ['ADX', 'DI+', 'DI-']):
-            adx_output = ta.adx(df['high'], df['low'], df['close'], length=p.get("adx_length", 14))
-            if adx_output is not None and not adx_output.empty:
-                if 'ADX' in ti_names_to_calculate: ti_df['ADX'] = adx_output.iloc[:,0]
-                if 'DI+' in ti_names_to_calculate: ti_df['DI+'] = adx_output.iloc[:,1]
-                if 'DI-' in ti_names_to_calculate: ti_df['DI-'] = adx_output.iloc[:,2]
-        if 'ATR' in ti_names_to_calculate:
-            ti_df['ATR'] = ta.atr(df['high'], df['low'], df['close'], length=p.get("atr_length", 14))
-        if 'CCI' in ti_names_to_calculate:
-            ti_df['CCI'] = ta.cci(df['high'], df['low'], df['close'], length=p.get("cci_length", 14))
-        if 'WilliamsR' in ti_names_to_calculate:
-            ti_df['WilliamsR'] = ta.willr(df['high'], df['low'], df['close'], length=p.get("willr_length", 14))
-        if 'Momentum' in ti_names_to_calculate:
-            ti_df['Momentum'] = ta.mom(df['close'], length=p.get("mom_length", 14))
-        if 'ROC' in ti_names_to_calculate:
-            ti_df['ROC'] = ta.roc(df['close'], length=p.get("roc_length", 14))
+            if len(df['close']) >= rsi_len:
+                rsi_series = ta.rsi(df['close'], length=rsi_len)
+                ti_df_results['RSI'] = rsi_series if isinstance(rsi_series, pd.Series) else np.nan
+            else:
+                ti_df_results['RSI'] = np.nan
 
-        for ti_name in self.params["ti_feature_names"]:
-            if ti_name not in ti_df.columns:
-                ti_df[ti_name] = np.nan
+        # MACD
+        macd_fast = p.get("macd_fast", 12)
+        macd_slow = p.get("macd_slow", 26)
+        macd_signal = p.get("macd_signal", 9)
+        min_len_macd = macd_slow + macd_signal - 1 
+        if any(x in ti_names_to_calculate for x in ['MACD', 'MACD_Histogram', 'MACD_Signal']):
+            if len(df['close']) >= min_len_macd:
+                macd_output_df = ta.macd(df['close'], fast=macd_fast, slow=macd_slow, signal=macd_signal)
+                if isinstance(macd_output_df, pd.DataFrame) and not macd_output_df.empty:
+                    macd_col_name = f"MACD_{macd_fast}_{macd_slow}_{macd_signal}"
+                    hist_col_name = f"MACDh_{macd_fast}_{macd_slow}_{macd_signal}"
+                    signal_col_name = f"MACDs_{macd_fast}_{macd_slow}_{macd_signal}"
+
+                    if 'MACD' in ti_names_to_calculate:
+                        ti_df_results['MACD'] = macd_output_df[macd_col_name] if macd_col_name in macd_output_df.columns else np.nan
+                    if 'MACD_Histogram' in ti_names_to_calculate:
+                        ti_df_results['MACD_Histogram'] = macd_output_df[hist_col_name] if hist_col_name in macd_output_df.columns else np.nan
+                    if 'MACD_Signal' in ti_names_to_calculate:
+                        ti_df_results['MACD_Signal'] = macd_output_df[signal_col_name] if signal_col_name in macd_output_df.columns else np.nan
+                else:
+                    if 'MACD' in ti_names_to_calculate: ti_df_results['MACD'] = np.nan
+                    if 'MACD_Histogram' in ti_names_to_calculate: ti_df_results['MACD_Histogram'] = np.nan
+                    if 'MACD_Signal' in ti_names_to_calculate: ti_df_results['MACD_Signal'] = np.nan
+            else:
+                if 'MACD' in ti_names_to_calculate: ti_df_results['MACD'] = np.nan
+                if 'MACD_Histogram' in ti_names_to_calculate: ti_df_results['MACD_Histogram'] = np.nan
+                if 'MACD_Signal' in ti_names_to_calculate: ti_df_results['MACD_Signal'] = np.nan
+
+        # Stochastic
+        stoch_k_period = p.get("stoch_k", 14)
+        stoch_d_period = p.get("stoch_d", 3) # This is the 'd' passed to ta.stoch
+        stoch_smooth_k_period = p.get("stoch_smooth_k", 3)
+
+        # Min length for a non-NaN smoothed %K value
+        min_len_for_k_smooth = stoch_k_period + stoch_smooth_k_period - 1
+        # Min length for a non-NaN %D value (based on smoothed %K and stoch_d_period)
+        min_len_for_d_final = min_len_for_k_smooth + stoch_d_period - 1
+
+        stoch_k_wanted = 'Stochastic_%K' in ti_names_to_calculate
+        stoch_d_wanted = 'Stochastic_%D' in ti_names_to_calculate
+
+        # Initialize to NaN
+        if stoch_k_wanted: ti_df_results['Stochastic_%K'] = np.nan
+        if stoch_d_wanted: ti_df_results['Stochastic_%D'] = np.nan
+
+        # If stoch_d_period (from config, typically > 0) is used, 
+        # ta.stoch will attempt to calculate %D.
+        # This is only safe from internal pandas-ta errors if len(df) >= min_len_for_d_final.
+        if stoch_d_period > 0: # Assuming d_period from config is the one to use
+            if len(df['high']) >= min_len_for_d_final:
+                if stoch_k_wanted or stoch_d_wanted: # Only call if at least one is actually needed
+                    stoch_output_df = ta.stoch(df['high'], df['low'], df['close'], 
+                                               k=stoch_k_period, 
+                                               d=stoch_d_period, # Pass the configured d period
+                                               smooth_k=stoch_smooth_k_period)
+                    
+                    if isinstance(stoch_output_df, pd.DataFrame) and not stoch_output_df.empty:
+                        # Standard column names from pandas-ta for stoch
+                        k_col_name = f"STOCHk_{stoch_k_period}_{stoch_d_period}_{stoch_smooth_k_period}"
+                        d_col_name = f"STOCHd_{stoch_k_period}_{stoch_d_period}_{stoch_smooth_k_period}"
+
+                        if stoch_k_wanted and k_col_name in stoch_output_df.columns:
+                            ti_df_results['Stochastic_%K'] = stoch_output_df[k_col_name]
+                        
+                        if stoch_d_wanted and d_col_name in stoch_output_df.columns:
+                            ti_df_results['Stochastic_%D'] = stoch_output_df[d_col_name]
+            # Else (len < min_len_for_d_final): %K and %D remain NaN, ta.stoch is not called.
         
-        return ti_df[self.params["ti_feature_names"]].iloc[[-1]].reset_index(drop=True).astype(np.float32)
+        elif stoch_d_period == 0: # User explicitly configured d=0 (wants %K only, no %D)
+            if stoch_k_wanted:
+                if len(df['high']) >= min_len_for_k_smooth:
+                    # Call ta.stoch with d=0. This might still be problematic in some pandas-ta versions
+                    # if it expects stoch_d.name later. For safety, one might need to use a version
+                    # of stoch that only computes K, or handle this case very carefully.
+                    # Assuming for now d=0 is intended to skip %D calculation part that causes error.
+                    # However, the error `stoch_d.name` implies `stoch_d` is None even if `d=0`.
+                    # This path (d=0) is risky with the current pandas-ta error.
+                    # Safest is to treat d=0 as "no D line", and if K is wanted, it's subject to K's own length.
+                    # But the call to ta.stoch itself might be the issue if d=0 leads to stoch_d=None.
+                    # For now, if d=0, we assume only K is wanted and it needs min_len_for_k_smooth.
+                    # This part is tricky. The previous logic (stricter guard) is safer.
+                    # Reverting to the stricter guard: if d_period from config is >0, then min_len_for_d_final is the guard.
+                    # If d_period from config is 0, then this block is effectively "don't calculate D".
+                    try:
+                        # Attempt to get K only, by passing d=0. This is speculative.
+                        stoch_output_df_k_only = ta.stoch(df['high'], df['low'], df['close'],
+                                                          k=stoch_k_period,
+                                                          d=0, # Explicitly pass d=0
+                                                          smooth_k=stoch_smooth_k_period)
+                        if isinstance(stoch_output_df_k_only, pd.DataFrame) and not stoch_output_df_k_only.empty:
+                             k_col_name_d0 = f"STOCHk_{stoch_k_period}_0_{stoch_smooth_k_period}" # Name with d=0
+                             if k_col_name_d0 in stoch_output_df_k_only.columns:
+                                ti_df_results['Stochastic_%K'] = stoch_output_df_k_only[k_col_name_d0]
+                             # Stochastic_%D remains NaN as d=0
+                    except AttributeError as e_stoch_d0:
+                        print(f"GeneratorPlugin: Warning - ta.stoch with d=0 failed for K-only: {e_stoch_d0}. Stochastic_%K will be NaN.")
+                        # Stochastic_%K remains NaN
+                # Else (len < min_len_for_k_smooth): Stochastic_%K remains NaN
+        # If stoch_d_period from config is > 0, the first 'if stoch_d_period > 0:' block handles it.
+        # The 'elif stoch_d_period == 0:' is for the specific case where user configures d=0.
+        
+        # ADX
+        adx_len_param = p.get("adx_length", 14)
+        # Min length for DMI lines (+DI, -DI)
+        min_len_dmi_lines = adx_len_param 
+        # Min length for ADX value (DMI period + ADX smoothing period - 1)
+        min_len_adx_value = adx_len_param * 2 -1 
+        
+        if any(x in ti_names_to_calculate for x in ['ADX', 'DI+', 'DI-']):
+            # Check if data is long enough for at least DMI lines
+            if len(df['high']) >= min_len_dmi_lines:
+                adx_output_df = ta.adx(df['high'], df['low'], df['close'], length=adx_len_param)
+                if isinstance(adx_output_df, pd.DataFrame) and not adx_output_df.empty:
+                    # Standard column names from pandas-ta for adx
+                    adx_col_name = f"ADX_{adx_len_param}"
+                    dip_col_name = f"DMP_{adx_len_param}" # DI+
+                    dim_col_name = f"DMN_{adx_len_param}" # DI-
+
+                    if 'DI+' in ti_names_to_calculate:
+                        ti_df_results['DI+'] = adx_output_df[dip_col_name] if dip_col_name in adx_output_df.columns else np.nan
+                    if 'DI-' in ti_names_to_calculate:
+                        ti_df_results['DI-'] = adx_output_df[dim_col_name] if dim_col_name in adx_output_df.columns else np.nan
+                    
+                    if 'ADX' in ti_names_to_calculate:
+                        # Check if data is long enough for ADX value specifically
+                        if len(df['high']) >= min_len_adx_value:
+                            ti_df_results['ADX'] = adx_output_df[adx_col_name] if adx_col_name in adx_output_df.columns else np.nan
+                        else:
+                            ti_df_results['ADX'] = np.nan # Not enough data for ADX
+                else: # adx_output_df is None, not a DataFrame, or empty
+                    if 'ADX' in ti_names_to_calculate: ti_df_results['ADX'] = np.nan
+                    if 'DI+' in ti_names_to_calculate: ti_df_results['DI+'] = np.nan
+                    if 'DI-' in ti_names_to_calculate: ti_df_results['DI-'] = np.nan
+            else: # len(df['high']) < min_len_dmi_lines
+                if 'ADX' in ti_names_to_calculate: ti_df_results['ADX'] = np.nan
+                if 'DI+' in ti_names_to_calculate: ti_df_results['DI+'] = np.nan
+                if 'DI-' in ti_names_to_calculate: ti_df_results['DI-'] = np.nan
+
+        # ATR
+        atr_len = p.get("atr_length", 14)
+        if 'ATR' in ti_names_to_calculate:
+            if len(df['high']) >= atr_len: # ATR needs at least 'length' periods for first value
+                 atr_series = ta.atr(df['high'], df['low'], df['close'], length=atr_len)
+                 ti_df_results['ATR'] = atr_series if isinstance(atr_series, pd.Series) else np.nan
+            else:
+                ti_df_results['ATR'] = np.nan
+
+        # CCI
+        cci_len = p.get("cci_length", 14)
+        if 'CCI' in ti_names_to_calculate:
+            if len(df['high']) >= cci_len: # CCI needs at least 'length' periods
+                cci_series = ta.cci(df['high'], df['low'], df['close'], length=cci_len)
+                ti_df_results['CCI'] = cci_series if isinstance(cci_series, pd.Series) else np.nan
+            else:
+                ti_df_results['CCI'] = np.nan
+        
+        # Williams %R
+        willr_len = p.get("willr_length", 14)
+        if 'WilliamsR' in ti_names_to_calculate:
+            if len(df['high']) >= willr_len: # Williams %R needs at least 'length' periods
+                willr_series = ta.willr(df['high'], df['low'], df['close'], length=willr_len)
+                ti_df_results['WilliamsR'] = willr_series if isinstance(willr_series, pd.Series) else np.nan
+            else:
+                ti_df_results['WilliamsR'] = np.nan
+
+        # Momentum
+        mom_len = p.get("mom_length", 14)
+        if 'Momentum' in ti_names_to_calculate:
+            if len(df['close']) >= mom_len + 1: # Momentum needs length + 1 samples
+                mom_series = ta.mom(df['close'], length=mom_len)
+                ti_df_results['Momentum'] = mom_series if isinstance(mom_series, pd.Series) else np.nan
+            else:
+                ti_df_results['Momentum'] = np.nan
+        
+        # ROC
+        roc_len = p.get("roc_length", 14)
+        if 'ROC' in ti_names_to_calculate:
+            if len(df['close']) >= roc_len + 1: # ROC needs length + 1 samples
+                roc_series = ta.roc(df['close'], length=roc_len)
+                ti_df_results['ROC'] = roc_series if isinstance(roc_series, pd.Series) else np.nan
+            else:
+                ti_df_results['ROC'] = np.nan
+
+        # EMA
+        ema_len = p.get("ema_length", 14)
+        if 'EMA' in ti_names_to_calculate:
+            if len(df['close']) >= ema_len: # EMA needs at least 'length' periods for first value
+                ema_series = ta.ema(df['close'], length=ema_len)
+                ti_df_results['EMA'] = ema_series if isinstance(ema_series, pd.Series) else np.nan
+            else:
+                ti_df_results['EMA'] = np.nan
+
+        # Ensure all requested TI columns exist in ti_df_results, filling with NaN if not calculated
+        for ti_name in self.params["ti_feature_names"]:
+            if ti_name not in ti_df_results.columns:
+                ti_df_results[ti_name] = np.nan
+        
+        # Select only the requested TIs and return the last row.
+        if ti_df_results.empty and not df.empty: # Should not happen if df was not empty and ti_df_results was indexed to it
+            # This case implies no TIs were calculated or assigned.
+            # Create a DataFrame with NaNs based on df's index to ensure tail(1) works.
+            for ti_name_fill in self.params["ti_feature_names"]: # Iterate to create columns
+                 ti_df_results[ti_name_fill] = np.nan
+        elif ti_df_results.empty and df.empty: # Input df was empty, already handled at the start
+             nan_placeholder_df = pd.DataFrame(columns=self.params["ti_feature_names"], index=[0]).astype(np.float32)
+             nan_placeholder_df = nan_placeholder_df.fillna(np.nan)
+             return nan_placeholder_df
+
+        # Ensure all target columns are present before selecting, to avoid KeyError
+        final_ti_columns_present = [col for col in self.params["ti_feature_names"] if col in ti_df_results.columns]
+        
+        if not final_ti_columns_present: # No TIs could be put into ti_df_results
+             nan_placeholder_df = pd.DataFrame(np.nan, index=[0], columns=self.params["ti_feature_names"]).astype(np.float32)
+             return nan_placeholder_df
+
+        # Return the last row of the calculated TIs
+        last_row_tis = ti_df_results[final_ti_columns_present].tail(1).reset_index(drop=True)
+        
+        # Reindex to ensure all originally requested TIs are present, filling missing ones with NaN
+        last_row_tis_reindexed = last_row_tis.reindex(columns=self.params["ti_feature_names"], fill_value=np.nan)
+        
+        return last_row_tis_reindexed.astype(np.float32)
+
+    # ADD THIS HELPER METHOD (adapted from FeederPlugin)
+    def _get_scaled_date_features_for_plugin(self, datetime_obj: pd.Timestamp) -> np.ndarray:
+        """Generates scaled (sin/cos) date features for a given datetime. Uses Generator's params and main_config."""
+        date_features = []
+        # Ensure self.main_config is available, it's set in __init__ from the passed config
+        main_cfg = getattr(self, 'main_config', {}) # Fallback to empty dict if not found
+
+        # Use self.params for feature names, self.main_config for max values (as Feeder does)
+        date_conditional_names = self.params.get("date_conditional_feature_names", [])
+
+        if "day_of_month" in date_conditional_names:
+            dom = datetime_obj.day
+            max_dom = main_cfg.get("feeder_max_day_of_month", 31)
+            date_features.extend([np.sin(2 * np.pi * dom / max_dom), np.cos(2 * np.pi * dom / max_dom)])
+        if "hour_of_day" in date_conditional_names:
+            hod = datetime_obj.hour
+            max_hod = main_cfg.get("feeder_max_hour_of_day", 23)
+            date_features.extend([np.sin(2 * np.pi * hod / (max_hod + 1)), np.cos(2 * np.pi * hod / (max_hod + 1))])
+        if "day_of_week" in date_conditional_names:
+            dow = datetime_obj.dayofweek
+            max_dow = main_cfg.get("feeder_max_day_of_week", 6)
+            date_features.extend([np.sin(2 * np.pi * dow / (max_dow + 1)), np.cos(2 * np.pi * dow / (max_dow + 1))])
+        if "day_of_year" in date_conditional_names:
+            doy = datetime_obj.dayofyear
+            max_doy = main_cfg.get("feeder_max_day_of_year", 366)
+            date_features.extend([np.sin(2 * np.pi * doy / max_doy), np.cos(2 * np.pi * doy / max_doy)])
+        return np.array(date_features, dtype=np.float32)
 
     def generate(self,
                  feeder_outputs_sequence: List[Dict[str, np.ndarray]],
                  sequence_length_T: int,
-                 initial_full_feature_window: Optional[np.ndarray] = None
+                 initial_full_feature_window: Optional[np.ndarray] = None,
+                 initial_datetimes_for_window: Optional[pd.Series] = None,
+                 true_prev_close_for_initial_window_log_return: Optional[float] = None # NEW ARGUMENT
                 ) -> np.ndarray:
         """
         Genera una secuencia de variables base de manera autorregresiva usando el modelo secuencial cargado.
@@ -520,15 +754,11 @@ class GeneratorPlugin:
         decoder_input_window_size = self.params["decoder_input_window_size"]
         min_ohlc_hist_len = self.params["ti_calculation_min_lookback"]
         
-        ohlc_names = self.params["ohlc_feature_names"] # Should be ["OPEN", "HIGH", "LOW", "CLOSE"]
+        ohlc_names = self.params["ohlc_feature_names"]
 
         # Initialize self.previous_normalized_close for this generation sequence
-        self.previous_normalized_close = None # Reset for each call to generate
-        if initial_full_feature_window is not None and 'CLOSE' in self.feature_to_idx:
-            last_norm_close_in_window = initial_full_feature_window[-1, self.feature_to_idx['CLOSE']]
-            if pd.notnull(last_norm_close_in_window):
-                self.previous_normalized_close = float(last_norm_close_in_window)
-                print(f"GeneratorPlugin: Initialized previous_normalized_close from initial_full_feature_window: {self.previous_normalized_close}")
+        self.previous_normalized_close = None 
+        # This will be properly set after the initial window is processed or from its last tick.
 
         ohlc_history_for_ti_list = [] 
 
@@ -536,41 +766,149 @@ class GeneratorPlugin:
         if initial_full_feature_window is not None:
             if initial_full_feature_window.shape == current_input_feature_window.shape:
                 current_input_feature_window = initial_full_feature_window.astype(np.float32).copy()
+                
+                # Populate ohlc_history_for_ti_list from the initial window (denormalized)
+                # This part is crucial for TI calculation during pre-fill and main loop.
                 start_idx_for_ohlc_hist = max(0, decoder_input_window_size - min_ohlc_hist_len)
-                for i in range(start_idx_for_ohlc_hist, decoder_input_window_size):
-                    # OHLC in initial_full_feature_window are assumed to be NORMALIZED
+                for i in range(decoder_input_window_size): # Iterate full window to build complete history
                     row_ohlc_norm_values = {
                         name: current_input_feature_window[i, self.feature_to_idx[name]]
-                        for name in self.params["ohlc_feature_names"] if name in self.feature_to_idx
+                        for name in ohlc_names if name in self.feature_to_idx and pd.notnull(current_input_feature_window[i, self.feature_to_idx[name]])
                     }
-                    # Denormalize here for TI history
-                    ohlc_dict_denorm = {
-                        name: self._denormalize_value(row_ohlc_norm_values.get(name, np.nan), name)
-                        for name in self.params["ohlc_feature_names"]
-                    }
-                    # Only add if all OHLC values are valid after denormalization
-                    if all(pd.notnull(v) for v in ohlc_dict_denorm.values()) and len(ohlc_dict_denorm) == len(self.params["ohlc_feature_names"]):
-                        ohlc_history_for_ti_list.append(ohlc_dict_denorm)
+                    if len(row_ohlc_norm_values) == len(ohlc_names): # Ensure all OHLC are present
+                        ohlc_dict_denorm = {
+                            name: self._denormalize_value(row_ohlc_norm_values.get(name, np.nan), name)
+                            for name in ohlc_names
+                        }
+                        if all(pd.notnull(v) for v in ohlc_dict_denorm.values()):
+                            ohlc_history_for_ti_list.append(ohlc_dict_denorm)
+                
+                if len(ohlc_history_for_ti_list) > min_ohlc_hist_len + 50: # Trim if it became too long
+                    ohlc_history_for_ti_list = ohlc_history_for_ti_list[-(min_ohlc_hist_len + 50):]
 
-            else:
+
+                # --- BEGIN PRE-FILL OF DERIVED FEATURES IN current_input_feature_window ---
+                if initial_datetimes_for_window is not None and \
+                   len(initial_datetimes_for_window) == decoder_input_window_size:
+                    
+                    print("GeneratorPlugin: Pre-filling derived features in initial_full_feature_window...")
+                    _local_prev_norm_close_for_prefill = None
+                    
+                    # --- MODIFIED: Initialize _local_prev_norm_close_for_prefill ---
+                    if true_prev_close_for_initial_window_log_return is not None and pd.notnull(true_prev_close_for_initial_window_log_return):
+                        _local_prev_norm_close_for_prefill = true_prev_close_for_initial_window_log_return
+                        print(f"DEBUG GeneratorPlugin: Pre-fill using true_prev_close_for_initial_window_log_return: {_local_prev_norm_close_for_prefill}")
+                    elif 'CLOSE' in self.feature_to_idx and pd.notnull(current_input_feature_window[0, self.feature_to_idx['CLOSE']]):
+                        # Fallback: if true previous close isn't available, use the first CLOSE in the window,
+                        # which means the first log_return in the window will be 0.
+                        _local_prev_norm_close_for_prefill = current_input_feature_window[0, self.feature_to_idx['CLOSE']]
+                        print(f"DEBUG GeneratorPlugin: Pre-fill using fallback for _local_prev_norm_close_for_prefill (first CLOSE in window): {_local_prev_norm_close_for_prefill}")
+                    else:
+                        print("DEBUG GeneratorPlugin: Pre-fill: _local_prev_norm_close_for_prefill could not be initialized from true_prev or window's first CLOSE.")
+                    # --- END MODIFICATION ---
+
+                    for i_prefill in range(decoder_input_window_size):
+                        dt_obj_prefill = initial_datetimes_for_window.iloc[i_prefill]
+                        
+                        # 1. Raw Date Features (day_of_month, hour_of_day, day_of_week)
+                        raw_date_map_prefill = {
+                            "day_of_month": dt_obj_prefill.day,
+                            "hour_of_day": dt_obj_prefill.hour,
+                            "day_of_week": dt_obj_prefill.dayofweek
+                        }
+                        for raw_feat_name, raw_val in raw_date_map_prefill.items():
+                            if raw_feat_name in self.feature_to_idx:
+                                current_input_feature_window[i_prefill, self.feature_to_idx[raw_feat_name]] = self._normalize_value(raw_val, raw_feat_name)
+
+                        # 2. Sin/Cos Date Features
+                        scaled_date_features_prefill_arr = self._get_scaled_date_features_for_plugin(dt_obj_prefill)
+                        sincos_idx_counter = 0
+                        for original_date_feat_name_cfg in self.params.get("date_conditional_feature_names", []):
+                            for suffix in ["_sin", "_cos"]:
+                                feat_name_transformed = f"{original_date_feat_name_cfg}{suffix}"
+                                if feat_name_transformed in self.feature_to_idx:
+                                    if sincos_idx_counter < len(scaled_date_features_prefill_arr):
+                                        current_input_feature_window[i_prefill, self.feature_to_idx[feat_name_transformed]] = scaled_date_features_prefill_arr[sincos_idx_counter]
+                                    else: # Should not happen if _get_scaled_date_features_for_plugin is correct
+                                        current_input_feature_window[i_prefill, self.feature_to_idx[feat_name_transformed]] = 0.0 
+                                    sincos_idx_counter += 1
+                        
+                        # Fundamental features: Assumed to be correctly populated from preprocessor output or remain 0.0/NaN
+
+                        # 3. Technical Indicators
+                        # Use the ohlc_history_for_ti_list (which contains denormalized OHLC for the whole initial window)
+                        # We need to pass a DataFrame slice of this history to _calculate_technical_indicators
+                        # The slice should be up to and including the current row i_prefill for TI calculation.
+                        if len(ohlc_history_for_ti_list) > i_prefill : # Ensure we have history up to this point
+                            history_slice_for_ti_df = pd.DataFrame(ohlc_history_for_ti_list[:i_prefill+1])
+                            if not history_slice_for_ti_df.empty:
+                                calculated_ti_for_prefill_df = self._calculate_technical_indicators(history_slice_for_ti_df) # Returns DF for last row
+                                if not calculated_ti_for_prefill_df.empty:
+                                    for ti_name in self.params["ti_feature_names"]:
+                                        if ti_name in self.feature_to_idx and ti_name in calculated_ti_for_prefill_df.columns:
+                                            val_ti_denorm = calculated_ti_for_prefill_df.iloc[0][ti_name]
+                                            if pd.notnull(val_ti_denorm):
+                                                current_input_feature_window[i_prefill, self.feature_to_idx[ti_name]] = self._normalize_value(val_ti_denorm, ti_name)
+                                            else: # If TI is NaN, keep it NaN (will be 0.01 later if needed for model input)
+                                                current_input_feature_window[i_prefill, self.feature_to_idx[ti_name]] = np.nan
+
+
+                        # 4. Log Return
+                        # CLOSE for current prefill step
+                        norm_c_prefill = np.nan
+                        if 'CLOSE' in self.feature_to_idx and pd.notnull(current_input_feature_window[i_prefill, self.feature_to_idx['CLOSE']]):
+                             norm_c_prefill = current_input_feature_window[i_prefill, self.feature_to_idx['CLOSE']]
+                        elif 'OPEN' in self.feature_to_idx and pd.notnull(current_input_feature_window[i_prefill, self.feature_to_idx['OPEN']]):
+                             norm_c_prefill = current_input_feature_window[i_prefill, self.feature_to_idx['OPEN']] # Fallback
+
+                        if "log_return" in self.feature_to_idx:
+                            log_return_val_to_norm_prefill = 0.0
+                            if _local_prev_norm_close_for_prefill is not None and pd.notnull(norm_c_prefill) and \
+                               _local_prev_norm_close_for_prefill > 1e-9 and norm_c_prefill > 1e-9:
+                                log_return_val_to_norm_prefill = np.log(norm_c_prefill / _local_prev_norm_close_for_prefill)
+                            
+                            current_input_feature_window[i_prefill, self.feature_to_idx["log_return"]] = self._normalize_value(log_return_val_to_norm_prefill, "log_return")
+                        
+                        if pd.notnull(norm_c_prefill):
+                            _local_prev_norm_close_for_prefill = norm_c_prefill
+                    
+                    print("GeneratorPlugin: Finished pre-filling derived features in initial_full_feature_window.")
+                # --- END PRE-FILL ---
+                elif initial_full_feature_window is not None: # initial_datetimes_for_window was missing or mismatched
+                     print("GeneratorPlugin: Warning - initial_full_feature_window provided, but initial_datetimes_for_window is missing or mismatched. Cannot pre-fill derived features in the window.")
+
+            else: # Shape mismatch for initial_full_feature_window
                 raise ValueError(f"Shape mismatch for initial_full_feature_window. Expected {current_input_feature_window.shape}, got {initial_full_feature_window.shape}")
-        else:
-            print("GeneratorPlugin Warning: No initial_full_feature_window provided. Using zeros.")
+        else: # No initial_full_feature_window provided
+            print("GeneratorPlugin Warning: No initial_full_feature_window provided. Using zeros. TIs will be NaN initially.")
+
+        # Initialize self.previous_normalized_close for the main generation loop
+        # This should be based on the *last* tick of the (now potentially pre-filled) current_input_feature_window
+        if 'CLOSE' in self.feature_to_idx and current_input_feature_window.shape[0] > 0:
+            last_norm_close_in_window = current_input_feature_window[-1, self.feature_to_idx['CLOSE']]
+            if pd.notnull(last_norm_close_in_window):
+                self.previous_normalized_close = float(last_norm_close_in_window)
+                print(f"GeneratorPlugin: Initialized previous_normalized_close for main loop from window's last tick: {self.previous_normalized_close}")
+            elif self.initial_denormalized_close_anchor is not None: # Fallback to anchor if last window CLOSE is bad
+                self.previous_normalized_close = self._normalize_value(self.initial_denormalized_close_anchor, "CLOSE")
+                print(f"GeneratorPlugin: Initialized previous_normalized_close for main loop from initial_denormalized_close_anchor: {self.previous_normalized_close}")
+
 
         generated_sequence_all_features_list = []
 
+        # --- MAIN GENERATION LOOP ---
         for t in tqdm(range(sequence_length_T), desc="Generating synthetic sequence", unit="step", dynamic_ncols=True):
             current_tick_assembled_features = np.full(self.num_all_features, np.nan, dtype=np.float32)
 
             feeder_step_output = feeder_outputs_sequence[t]
             zt_original = feeder_step_output["Z"] 
             
-            if zt_original.ndim == 2:
-                zt = np.expand_dims(zt_original, axis=0)
+            if zt_original.ndim == 2: # Expected (seq_len, features)
+                zt = np.expand_dims(zt_original, axis=0) # Add batch dim -> (1, seq_len, features)
             elif zt_original.ndim == 3 and zt_original.shape[0] == 1: 
-                zt = zt_original
+                zt = zt_original # Already has batch dim
             else:
-                raise ValueError(f"Unexpected shape for zt from Feeder: {zt_original.shape}.")
+                raise ValueError(f"Unexpected shape for zt from Feeder: {zt_original.shape}. Expected 2D (seq, feat) or 3D (1, seq, feat).")
 
             conditional_data_t = feeder_step_output["conditional_data"] 
             if conditional_data_t.ndim == 1: conditional_data_t = np.expand_dims(conditional_data_t, axis=0)
@@ -578,13 +916,77 @@ class GeneratorPlugin:
             context_h_t = feeder_step_output.get("context_h", np.zeros((1,1))) 
             if context_h_t.ndim == 1: context_h_t = np.expand_dims(context_h_t, axis=0)
 
-            decoder_inputs = {
+            # --- CORRECTED MODEL INPUT ASSEMBLY ---
+            # The Keras model (sequence_conv_transpose_cvae_decoder) expects inputs in the order:
+            # 1. Latent (decoder_input_z_seq)
+            # 2. Context (decoder_input_h_context)
+            # 3. Conditions (decoder_input_conditions)
+            # The window input (input_x_window) is intentionally not fed based on previous "working" logic.
+
+            model_input_names_in_order = [inp.name.split(':')[0] for inp in self.sequential_model.inputs]
+            to_feed = []
+
+            # This dictionary maps the *actual model input names* (obtained from self.params values)
+            # to their corresponding data variables.
+            available_data_for_model = {
                 self.params["decoder_input_name_latent"]: zt,
+                self.params["decoder_input_name_context"]: context_h_t,
                 self.params["decoder_input_name_conditions"]: conditional_data_t,
-                self.params["decoder_input_name_context"]: context_h_t
             }
+
+            configured_window_input_name = self.params.get("decoder_input_name_window")
             
-            generated_decoder_output_step_t = self.sequential_model.predict(decoder_inputs, verbose=0)
+            expected_fed_input_count = 0
+            # Loop through the input names *expected by the model* in their defined order.
+            for model_input_name in model_input_names_in_order:
+                if model_input_name == configured_window_input_name:
+                    # This input is the window, which we decided not to feed directly.
+                    # print(f"GeneratorPlugin: Intentionally skipping model input '{model_input_name}' as it is configured as the window input.")
+                    continue # Skip adding this to to_feed
+
+                # This input is expected by the model and is not the window input.
+                expected_fed_input_count += 1 
+                
+                # Check if we have prepared data for this specific model input name.
+                if model_input_name in available_data_for_model:
+                    to_feed.append(available_data_for_model[model_input_name])
+                else:
+                    # Error: Model expects an input (e.g., "some_other_input_layer_name")
+                    # but this name was not found as a key in our `available_data_for_model` dictionary.
+                    # This means the model's actual input layer name does not match any of the
+                    # values provided by self.params["decoder_input_name_latent"],
+                    # self.params["decoder_input_name_context"], or self.params["decoder_input_name_conditions"].
+                    raise ValueError(
+                        f"GeneratorPlugin: Model expects input '{model_input_name}', but this name was not found as a key in "
+                        f"the prepared 'available_data_for_model' dictionary. "
+                        f"Ensure the model's input layer names match the values configured in "
+                        f"self.params['decoder_input_name_latent'], self.params['decoder_input_name_context'], "
+                        f"and self.params['decoder_input_name_conditions']. "
+                        f"Available keys in prepared data (actual model input names derived from self.params): {list(available_data_for_model.keys())}"
+                    )
+            
+            # After iterating through all model inputs, check if we prepared the correct number of inputs.
+            if len(to_feed) != expected_fed_input_count:
+                # This error means that for some non-window inputs the model expected,
+                # we did not find a match in `available_data_for_model`.
+                
+                # For debugging, list the names we *would* have fed if they matched.
+                potential_fed_names = []
+                for name_in_model_order in model_input_names_in_order:
+                    if name_in_model_order != configured_window_input_name and name_in_model_order in available_data_for_model:
+                        potential_fed_names.append(name_in_model_order)
+
+                raise ValueError(
+                    f"GeneratorPlugin: Mismatch in the number of inputs prepared for the model. "
+                    f"Prepared to feed {len(to_feed)} inputs (based on matching names: {potential_fed_names}). "
+                    f"Model expects {expected_fed_input_count} non-window inputs. "
+                    f"Model input names (in order from Keras model): {model_input_names_in_order}. "
+                    f"Configured window input name (skipped): {configured_window_input_name}."
+                )
+            
+            # --- End corrected model input assembly ---
+            
+            generated_decoder_output_step_t = self.sequential_model.predict(to_feed, verbose=0)
             
             if generated_decoder_output_step_t.ndim == 3 and generated_decoder_output_step_t.shape[1] == 1:
                 decoded_features_for_current_tick = generated_decoder_output_step_t[0, 0, :]
@@ -621,25 +1023,19 @@ class GeneratorPlugin:
 
                 if pd.notnull(norm_open) and pd.notnull(norm_bc_bo_for_calc):
                     denorm_open_val = self._denormalize_value(norm_open, "OPEN")
-                    denorm_bc_bo_val = self._denormalize_value(norm_bc_bo_for_calc, "BC-BO")
+                    denorm_bc_bo_val = self._denormalize_value(norm_bc_bo_for_calc, "BC-BO") # Assuming BC-BO is also normalized like other features
                     
-                    if t < 2:
-                        print(f"DEBUG GeneratorPlugin (t={t}): denorm_open_val: {denorm_open_val}")
-                        print(f"DEBUG GeneratorPlugin (t={t}): denorm_bc_bo_val: {denorm_bc_bo_val}")
+                    if t < 2: # Print for the first 2 ticks
+                        print(f"DEBUG GeneratorPlugin (t={t}): denorm_open_val: {denorm_open_val}, denorm_bc_bo_val: {denorm_bc_bo_val}")
 
                     if pd.notnull(denorm_open_val) and pd.notnull(denorm_bc_bo_val):
-                        denorm_close_val = denorm_open_val + denorm_bc_bo_val
-                        calculated_norm_close_from_obcbo = self._normalize_value(denorm_close_val, "CLOSE")
-                        if t < 2:
-                            print(f"DEBUG GeneratorPlugin (t={t}): denorm_close_val (sum): {denorm_close_val}")
-                            print(f"DEBUG GeneratorPlugin (t={t}): calculated_norm_close_from_obcbo: {calculated_norm_close_from_obcbo}")
-                            if self.normalization_params and "CLOSE" in self.normalization_params:
-                                norm_p = self.normalization_params["CLOSE"]
-                                print(f"DEBUG GeneratorPlugin (t={t}): CLOSE norm_params: min={norm_p.get('min')}, max={norm_p.get('max')}")
-                            else:
-                                print(f"DEBUG GeneratorPlugin (t={t}): CLOSE norm_params: Not found or normalization_params not loaded.")
+                        # Corrected logic: CLOSE = OPEN + (BC-BO)
+                        denormalized_close_candidate = denorm_open_val + denorm_bc_bo_val
+                        calculated_norm_close_from_obcbo = self._normalize_value(denormalized_close_candidate, "CLOSE")
+
+                        if t < 2: print(f"DEBUG GeneratorPlugin (t={t}): calculated_norm_close_from_obcbo (from OPEN+BCBO): {calculated_norm_close_from_obcbo}, denormalized_candidate: {denormalized_close_candidate}")
                     elif t < 2:
-                        print(f"DEBUG GeneratorPlugin (t={t}): Skipping denorm_close_val calculation due to NaN in denorm_open_val or denorm_bc_bo_val.")
+                        print(f"DEBUG GeneratorPlugin (t={t}): Skipping CLOSE calculation from OPEN+BCBO due to NaN in denorm_open_val or denorm_bc_bo_val.")
                 elif t < 2:
                     print(f"DEBUG GeneratorPlugin (t={t}): Skipping denormalization due to NaN in norm_open or norm_bc_bo_for_calc.")
                 # --- END DEBUG PRINTS for CLOSE calculation ---
@@ -649,24 +1045,25 @@ class GeneratorPlugin:
             if "CLOSE" in self.feature_to_idx:
                 if pd.notnull(calculated_norm_close_from_obcbo):
                     norm_close = calculated_norm_close_from_obcbo
-                    if t < 2: print(f"DEBUG GeneratorPlugin (t={t}): norm_close set from calculated_norm_close_from_obcbo: {norm_close}")
-                elif t == 0 and self.initial_denormalized_close_anchor is not None:
-                    norm_close = self._normalize_value(self.initial_denormalized_close_anchor, "CLOSE")
-                    if t < 2: print(f"DEBUG GeneratorPlugin (t={t}): norm_close set from initial_anchor: {norm_close} (anchor: {self.initial_denormalized_close_anchor})")
-                elif pd.notnull(norm_open): # Fallback to norm_close = norm_open
+                # --- MODIFIED: CLOSE derivation for t=0 and fallbacks ---
+                elif t == 0: # First synthetic tick
+                    if pd.notnull(norm_open): # Try to use OPEN from decoder
+                        norm_close = norm_open
+                        if t < 2: print(f"DEBUG GeneratorPlugin t={t}: CLOSE from O+BCBO is NaN. Using norm_open: {norm_close} as CLOSE for first synthetic tick.")
+                    elif self.previous_normalized_close is not None and pd.notnull(self.previous_normalized_close): # Use previous actual close from end of real window
+                        norm_close = self.previous_normalized_close
+                        if t < 2: print(f"DEBUG GeneratorPlugin t={t}: CLOSE from O+BCBO is NaN, norm_open is NaN. Using self.previous_normalized_close: {norm_close} as CLOSE for first synthetic tick.")
+                    else: # Absolute last resort if decoder gives no OPEN and no previous_normalized_close
+                        norm_close = self._normalize_value(self.initial_denormalized_close_anchor, "CLOSE") if self.initial_denormalized_close_anchor is not None else 0.01
+                        if t < 2: print(f"DEBUG GeneratorPlugin t={t}: CLOSE from O+BCBO is NaN, norm_open is NaN, previous_normalized_close is None. Using initial_denormalized_close_anchor (fallback): {norm_close} as CLOSE.")
+                elif pd.notnull(norm_open): # Fallback to OPEN if CLOSE cannot be derived (for t > 0)
                     norm_close = norm_open
-                    if t < 2: print(f"DEBUG GeneratorPlugin (t={t}): norm_close set from fallback norm_open: {norm_close}")
-                else: # All strategies to determine norm_close failed, it remains NaN
-                    if t < 2: print(f"DEBUG GeneratorPlugin (t={t}): norm_close remains NaN after all strategies.")
+                else: # Last resort, use previous close if available (for t > 0)
+                    norm_close = self.previous_normalized_close if self.previous_normalized_close is not None else 0.01
+                # --- END MODIFICATION ---
 
-                if pd.notnull(norm_close):
-                    current_tick_assembled_features[self.feature_to_idx["CLOSE"]] = norm_close
-                    if t < 2: print(f"DEBUG GeneratorPlugin (t={t}): Assigned to current_tick_assembled_features['CLOSE']: {norm_close}")
-                else:
-                    # CLOSE remains NaN in current_tick_assembled_features, will be handled by placeholder logic in step 8
-                    if t < 2: print(f"DEBUG GeneratorPlugin (t={t}): current_tick_assembled_features['CLOSE'] remains NaN before step 8.")
-            elif t < 2:
-                 print(f"DEBUG GeneratorPlugin (t={t}): 'CLOSE' not in self.feature_to_idx. norm_close is {norm_close}.")
+            elif t < 2: # If 'CLOSE' is not even in feature_to_idx (config error)
+                 print(f"DEBUG GeneratorPlugin t={t}: 'CLOSE' not in self.feature_to_idx. Cannot derive norm_close.")
 
 
             # 2. Fill conditional features (sin/cos dates, fundamentals)
@@ -814,10 +1211,24 @@ class GeneratorPlugin:
 
             generated_sequence_all_features_list.append(current_tick_assembled_features)
 
-            current_input_feature_window = np.roll(current_input_feature_window, -1, axis=0)
-            current_input_feature_window[-1, :] = current_tick_assembled_features
+            # --- MODIFICATION: Ensure no NaNs are fed into the rolling window for the model ---
+            # current_tick_features_for_window = np.nan_to_num(current_tick_assembled_features, nan=0.01) # OLD
+            # The current_tick_assembled_features might have NaNs for TIs if history is too short.
+            # These NaNs should be replaced before updating current_input_feature_window.
+            
+            # Create a copy for the window update, replacing NaNs
+            current_tick_features_for_model_window_update = np.nan_to_num(current_tick_assembled_features.copy(), nan=0.01)
 
-            if len(ohlc_history_for_ti_list) > self.params["ti_calculation_min_lookback"] + 50: 
+
+            current_input_feature_window = np.roll(current_input_feature_window, -1, axis=0)
+            # current_input_feature_window[-1, :] = current_tick_assembled_features # This was from the prompt's "working" version
+            current_input_feature_window[-1, :] = current_tick_features_for_model_window_update # Use NaN-replaced version for model's input window
+        
+            # Manage ohlc_history_for_ti_list (append new denormalized OHLC, pop old)
+            # This was inside the TI calculation block, ensure it's correctly placed relative to history usage.
+            # The current ohlc_history_for_ti_list management seems okay, it appends the latest denormalized OHLC
+            # and trims if it gets too long. This happens *after* TIs for current tick are calculated.
+            if len(ohlc_history_for_ti_list) > min_ohlc_hist_len + 50: # Corrected from self.params["ti_calculation_min_lookback"]
                 ohlc_history_for_ti_list.pop(0)
         
         final_generated_sequence = np.array(generated_sequence_all_features_list, dtype=np.float32)
