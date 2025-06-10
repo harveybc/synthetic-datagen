@@ -941,3 +941,22 @@ def huber_metric(y_true, y_pred):
     return Huber(delta=1.0)(y_true, y_pred)
 
 huber_metric.__name__ = "huber"
+
+
+def run_pipeline(feeder_plugin, generator_plugin, evaluator_plugin, optimizer_plugin, config):
+    """
+    Unified pipeline: processes data, then runs hyperparameter optimization, GAN training, or prediction pipeline.
+    """
+    # 1. Process data
+    data_dict = process_data(config)
+
+    # 2. Hyperparameter optimization
+    if config.get("hyperparameter_optimization_mode", False) and config.get("run_hyperparameter_optimization", True):
+        return optimizer_plugin.optimize(feeder_plugin, generator_plugin, evaluator_plugin, config)
+
+    # 3. GAN training mode
+    if config.get("gan_training_mode", False):
+        return generator_plugin.train(data_dict, config)
+
+    # 4. Standard prediction pipeline
+    return run_prediction_pipeline(config, generator_plugin)

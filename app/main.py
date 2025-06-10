@@ -9,26 +9,16 @@ Punto de entrada de la aplicación de predicción de EUR/USD. Este script orques
     - El guardado de la configuración resultante de forma local y/o remota.
 """
 
-import os # Ensure os is imported
-import sys # Ensure sys is imported
-import traceback 
-import json # Ensure json is imported
-import pandas as pd # Ensure pandas is imported
-import numpy as np # Ensure numpy is imported
-import tempfile # ADD THIS IMPORT
+import os  # Ensure os is imported
+import sys  # Ensure sys is imported
+import traceback
+import json  # Ensure json is imported
+import pandas as pd  # Ensure pandas is imported
+import numpy as np  # Ensure numpy is imported
+import tempfile  # ADD THIS IMPORT
 
-# --- MONKEY PATCH for numpy.NaN ---
-# Applied because pandas_ta 0.3.14b0 (or a dependency) seems to use
-# the deprecated np.NaN with NumPy 2.x.
-if hasattr(np, '__version__') and int(np.__version__.split('.')[0]) >= 2: # Check if NumPy is version 2.x or higher
-    if not hasattr(np, 'NaN'):
-        print("INFO: Monkey patching numpy: Assigning np.NaN = np.nan for compatibility.")
-        np.NaN = np.nan
-    elif np.NaN is not np.nan: # If NaN exists but is not the same object as nan (less likely for np 2.x)
-        print("INFO: Monkey patching numpy: np.NaN exists but is not np.nan. Re-assigning.")
-        np.NaN = np.nan
-# --- END MONKEY PATCH ---
-
+from typing import Dict, Any, Optional
+from datetime import datetime, timedelta
 from app.config_handler import (
     load_config,
     save_config,
@@ -37,61 +27,10 @@ from app.config_handler import (
     remote_log
 )
 from app.cli import parse_args
-from app.config import DEFAULT_VALUES # Ensure this provides 'full_feature_names_ordered'
+from app.config import DEFAULT_VALUES
 from app.plugin_loader import load_plugin
 from config_merger import merge_config, process_unknown_args
-
-# Debugging information
-print("--- Python sys.path from main.py ---")
-for p in sys.path:
-    print(p)
-print("--- End Python sys.path ---")
-
-print("--- Python Environment Variables from main.py ---")
-print(f"PYTHONPATH: {os.environ.get('PYTHONPATH')}")
-print(f"CONDA_PREFIX: {os.environ.get('CONDA_PREFIX')}")
-print(f"PATH: {os.environ.get('PATH')}")
-print("--- End Python Environment Variables ---")
-
-print("--- Checking NumPy version before pandas_ta import ---")
-try:
-    import numpy
-    print(f"Successfully imported numpy. Version: {numpy.__version__}")
-    print(f"Numpy location: {numpy.__file__}")
-    # Try accessing np.NaN to see if this specific part fails early
-    try:
-        _ = numpy.NaN
-        print("numpy.NaN is accessible.")
-    except AttributeError as e_nan:
-        print(f"Error accessing numpy.NaN: {e_nan}")
-except ImportError as e_np:
-    print(f"Failed to import numpy: {e_np}")
-except Exception as e_np_other:
-    print(f"An unexpected error occurred while importing numpy: {e_np_other}")
-print("--- End NumPy version check ---")
-
-print("--- Attempting to import pandas_ta directly in main.py ---")
-try:
-    import pandas_ta
-    print("✔︎ pandas_ta imported successfully.")
-except ImportError as e_pta:
-    print(f"❌ Failed to import pandas_ta: {e_pta}")
-except Exception as e_pta_other:
-    print(f"An unexpected error occurred while importing pandas_ta: {e_pta_other}")
-print("--- End pandas_ta import attempt ---")
-
-# Assume these are defined in your config or constants file and loaded into `config`
-# For example:
-# TARGET_COLUMN_ORDER = config.get("target_column_order", ['DATETIME', 'High', 'Low', 'Open', 'Close', 'Close_Open', 'High_Low', 'RSI_14', ...])
-# DATE_TIME_COLUMN_NAME = config.get("datetime_col_name", "DATETIME")
-# NUM_BASE_FEATURES_GENERATED = config.get("num_base_features_generated", 6) # e.g., H,L,O,C, C-O, H-L
-# BASE_FEATURE_NAMES = TARGET_COLUMN_ORDER[1:NUM_BASE_FEATURES_GENERATED+1] # e.g., ['High', ..., 'High_Low']
-
-# --- REMOVE UNUSED FUNCTION ---
-# The function 'generate_synthetic_datetimes_before_real' was defined but not found to be used.
-# If it is used by other modules importing main.py (unlikely for a main script), it should be kept.
-# For now, assuming it's unused within this script's execution flow.
-# def generate_synthetic_datetimes_before_real(...): ...
+from app.data_processor import run_pipeline  # Unified pipeline entry
 
 # Define the target CSV column order based on normalized_d2.csv
 # This should be the exact header string from your file, split into a list.
