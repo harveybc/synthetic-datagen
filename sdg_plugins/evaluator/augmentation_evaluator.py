@@ -281,7 +281,7 @@ class AugmentationEvaluator:
         target.set_params(**pred_config)
 
         # Preprocess
-        datasets = preprocessor.run_preprocessing(pred_config)
+        datasets = preprocessor.run_preprocessing(target, pred_config)
         if isinstance(datasets, tuple):
             datasets = datasets[0]
 
@@ -294,17 +294,21 @@ class AugmentationEvaluator:
         baseline_val = datasets.get("baseline_val")
         baseline_test = datasets.get("baseline_test")
 
-        # Convert y from list-of-arrays to plain 2D array
-        def _y_to_array(y):
+        # Convert y from dict/list to the format the model expects
+        def _y_to_list_or_array(y):
+            """Return a list of arrays (one per horizon) for multi-output models,
+            or a single array for single-output models."""
             if y is None:
                 return None
+            if isinstance(y, dict):
+                return [np.asarray(v).astype(np.float32).reshape(-1, 1) for v in y.values()]
             if isinstance(y, list):
-                return np.asarray(y[0]).astype(np.float32).reshape(-1, 1) if len(y) == 1 else np.stack(y, axis=1).astype(np.float32)
+                return [np.asarray(a).astype(np.float32).reshape(-1, 1) for a in y]
             return np.asarray(y).astype(np.float32)
 
-        y_train = _y_to_array(y_train_raw)
-        y_val = _y_to_array(y_val_raw)
-        y_test = _y_to_array(y_test_raw)
+        y_train = _y_to_list_or_array(y_train_raw)
+        y_val = _y_to_list_or_array(y_val_raw)
+        y_test = _y_to_list_or_array(y_test_raw)
 
         # Build model
         window_size = pred_config.get("window_size")
@@ -334,14 +338,23 @@ class AugmentationEvaluator:
             callbacks=callbacks, verbose=1,
         )
 
-        # Predictions
+        # Predictions — handle multi-output (list) or single-output
+        def _flatten_predictions(preds, y_true):
+            if isinstance(preds, list):
+                preds_flat = np.concatenate([np.asarray(p).flatten() for p in preds])
+                y_flat = np.concatenate([np.asarray(y).flatten() for y in y_true])
+            else:
+                preds_flat = np.asarray(preds).flatten()
+                y_flat = np.asarray(y_true).flatten()
+            return float(np.mean(np.abs(preds_flat - y_flat)))
+
         val_preds = predictor.model.predict(x_val, batch_size=batch_size, verbose=0)
-        val_mae = float(np.mean(np.abs(val_preds.flatten() - y_val.flatten())))
+        val_mae = _flatten_predictions(val_preds, y_val)
 
         test_mae = float("inf")
         if x_test is not None and y_test is not None:
             test_preds = predictor.model.predict(x_test, batch_size=batch_size, verbose=0)
-            test_mae = float(np.mean(np.abs(test_preds.flatten() - y_test.flatten())))
+            test_mae = _flatten_predictions(test_preds, y_test)
 
         return {"val_mae": val_mae, "test_mae": test_mae}
 

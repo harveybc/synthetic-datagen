@@ -53,8 +53,12 @@ DEFAULT_VALUES = {
     "disc_layers": [64, 32],
     "disc_dropout": 0.3,
 
+    # --- Conditional (temporal) ---
+    "conditional": True,
+    "n_temporal": 6,
+
     # --- Generation ---
-    "n_samples": 5000,
+    "n_samples": 1575,
     "seed": 42,
     "start_datetime": "2020-01-01 00:00:00",
     "interval_hours": 4,       # output interval (4 h)

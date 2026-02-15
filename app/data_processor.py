@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from typing import Sequence
+from typing import Sequence, Optional
 
 
 # ── I/O ─────────────────────────────────────────────────────────────────────
@@ -65,30 +65,75 @@ def create_windows(data: np.ndarray, window_size: int) -> np.ndarray:
     return data[indices]
 
 
+# ── Temporal features ──────────────────────────────────────────────────────
+
+def extract_temporal_features(dates: pd.Series) -> np.ndarray:
+    """
+    Extract cyclical temporal features from a datetime Series.
+
+    Returns ndarray of shape (len(dates), 6):
+        hour sin/cos, day_of_week sin/cos, month sin/cos
+    """
+    dt = pd.to_datetime(dates)
+    TWO_PI = 2.0 * np.pi
+
+    hour = dt.dt.hour.values.astype(np.float64)
+    dow = dt.dt.dayofweek.values.astype(np.float64)  # 0=Mon … 4=Fri
+    month = dt.dt.month.values.astype(np.float64)
+
+    features = np.column_stack([
+        np.sin(TWO_PI * hour / 24.0),
+        np.cos(TWO_PI * hour / 24.0),
+        np.sin(TWO_PI * dow / 5.0),
+        np.cos(TWO_PI * dow / 5.0),
+        np.sin(TWO_PI * month / 12.0),
+        np.cos(TWO_PI * month / 12.0),
+    ])
+    return features
+
+
 # ── Prepare training data ──────────────────────────────────────────────────
 
 def prepare_training_data(
     paths: Sequence[str],
     window_size: int,
     use_returns: bool = True,
-) -> tuple[np.ndarray, float]:
+    conditional: bool = False,
+) -> tuple[np.ndarray, ...]:
     """
     Load 4h CSVs → optional returns → sliding windows.
 
     Returns
     -------
-    windows : ndarray of shape (N, window_size)
-    initial_price : the first price (needed to reconstruct from returns)
+    If conditional=False:
+        (windows, initial_price)
+    If conditional=True:
+        (windows, temporal_features, initial_price)
+        where temporal_features shape = (n_windows, 6), using last timestamp per window.
     """
     df = load_multiple_csv(paths)
     prices = df["typical_price"].values.astype(np.float64)
+    dates = df["DATE_TIME"]
 
     initial_price = float(prices[0])
 
     if use_returns:
         series = prices_to_returns(prices)
+        # dates for returns align with the second price onward
+        series_dates = dates.iloc[1:].reset_index(drop=True)
     else:
         series = prices
+        series_dates = dates.reset_index(drop=True)
 
     windows = create_windows(series, window_size)
-    return windows, initial_price
+
+    if not conditional:
+        return windows, initial_price
+
+    # For each window, take temporal features of the LAST timestamp
+    all_temporal = extract_temporal_features(series_dates)
+    # Window i spans indices [i, i+window_size), last index = i+window_size-1
+    last_indices = np.arange(window_size - 1, window_size - 1 + len(windows))
+    temporal_features = all_temporal[last_indices]
+
+    return windows, temporal_features, initial_price

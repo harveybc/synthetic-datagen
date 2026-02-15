@@ -104,6 +104,7 @@ class TestGeneratorCLI:
                     "layer_size_divisor": 2, "kl_weight": 1e-3,
                     "kl_anneal_epochs": 2, "mmd_lambda": 1e-2, "l2_reg": 1e-6,
                     "use_returns": True, "early_patience": 999,
+                    "learning_rate": 1e-3,
                     "start_from_epoch": 1, "disc_layers": [8], "disc_dropout": 0.1,
                     "discriminator_lr": 1e-4, "generator_lr": 1e-4,
                 })
