@@ -22,11 +22,23 @@ gen.load_model("model.keras")
 df = gen.generate(seed=42, n_samples=5000)
 # → DataFrame with DATE_TIME, typical_price columns
 
-# Evaluate
+# Evaluate (THE metric — predictive utility from MDSc thesis phase 4)
+from sdg_plugins.evaluator.predictive_evaluator import PredictiveEvaluator
+ev = PredictiveEvaluator()
+ev.configure({"window_size": 144, "eval_epochs": 50})
+result = ev.evaluate(
+    synthetic=synthetic_df,
+    real_train=train_df,     # d4
+    real_val=val_df,         # d5
+    real_test=test_df,       # d6
+)
+# result["mae_delta_test"] < 0  → synthetic data HELPS prediction
+# result["synthetic_helps_test"] = True/False
+
+# Secondary distribution metrics
 from sdg_plugins.evaluator.distribution_evaluator import DistributionEvaluator
-ev = DistributionEvaluator()
-metrics = ev.evaluate(synthetic=synthetic_df, real=real_df)
-# or: metrics = ev.evaluate_arrays(synthetic_prices, real_prices)
+dist_ev = DistributionEvaluator()
+metrics = dist_ev.evaluate(synthetic=synthetic_df, real=real_df)
 ```
 
 ## CLI Quick Start
@@ -47,11 +59,28 @@ sdg --mode generate \
     --n_samples 5000 --seed 42 \
     --output_file synthetic_typical_price.csv
 
-# Evaluate quality
+# Evaluate: does synthetic data improve prediction? (thesis phase 4)
 sdg --mode evaluate \
     --synthetic_data synthetic_typical_price.csv \
-    --real_data examples/data/d4.csv \
+    --real_train examples/data/d4.csv \
+    --real_val examples/data/d5.csv \
+    --real_test examples/data/d6.csv \
     --metrics_file metrics.json
+
+# Optional: use external predictor repo for evaluation
+sdg --mode evaluate \
+    --synthetic_data synthetic_typical_price.csv \
+    --real_train examples/data/d4.csv \
+    --real_val examples/data/d5.csv \
+    --real_test examples/data/d6.csv \
+    --predictor_dir /home/openclaw/predictor \
+    --metrics_file metrics.json
+
+# Secondary: distribution metrics only
+sdg --mode evaluate --evaluator distribution_evaluator \
+    --synthetic_data synthetic_typical_price.csv \
+    --real_data examples/data/d4.csv \
+    --metrics_file dist_metrics.json
 
 # Optimize hyper-parameters via GA
 sdg --mode optimize --trainer vae_gan_trainer \
@@ -93,7 +122,7 @@ synthetic-datagen/
 |------|-------------|
 | **train** | Train a generative model on real typical_price CSVs |
 | **generate** | Generate synthetic data from a trained model + seed |
-| **evaluate** | Compare synthetic vs real data quality metrics |
+| **evaluate** | Predictive utility test: does synthetic data improve prediction? |
 | **optimize** | GA search for optimal hyper-parameters |
 
 ## Output Format
@@ -105,6 +134,25 @@ DATE_TIME,typical_price
 2020-01-01 00:00:00,1.3007625
 2020-01-01 04:00:00,1.2966883333333332
 ```
+
+## Evaluation Methodology (MDSc Thesis Phase 4)
+
+The **real test** of synthetic data quality: does it improve prediction?
+
+```
+Step 1: Train predictor on real d4          → MAE on d5, d6 (baseline)
+Step 2: Prepend synthetic data to d4        → train same predictor
+Step 3: Measure MAE on same d5, d6          → (augmented)
+Step 4: Compare: delta = augmented - baseline
+        If delta < 0 → synthetic data HELPS → good generator
+        If delta > 0 → synthetic data HURTS → bad generator
+```
+
+This is THE metric. Distribution similarity (KL, Wasserstein) is secondary.
+
+Two evaluator backends:
+- **Built-in** (default): lightweight LSTM predictor, fast, good for iteration
+- **External**: runs Harvey's full predictor repo as subprocess, authoritative
 
 ## Key Design Decisions
 

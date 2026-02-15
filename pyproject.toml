@@ -37,6 +37,7 @@ typical_price_generator = "sdg_plugins.generator.typical_price_generator:Typical
 
 [project.entry-points."sdg.evaluator"]
 distribution_evaluator = "sdg_plugins.evaluator.distribution_evaluator:DistributionEvaluator"
+predictive_evaluator = "sdg_plugins.evaluator.predictive_evaluator:PredictiveEvaluator"
 
 [project.entry-points."sdg.optimizer"]
 ga_optimizer = "sdg_plugins.optimizer.ga_optimizer:GaOptimizer"

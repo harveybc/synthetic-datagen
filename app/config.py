@@ -7,7 +7,7 @@ DEFAULT_VALUES = {
     # --- Plugin selection ---
     "trainer": "vae_gan_trainer",
     "generator": "typical_price_generator",
-    "evaluator": "distribution_evaluator",
+    "evaluator": "predictive_evaluator",
     "optimizer": "ga_optimizer",
 
     # --- Data ---
@@ -16,6 +16,13 @@ DEFAULT_VALUES = {
     "synthetic_data": None,    # synthetic CSV for evaluation
     "output_file": "synthetic_typical_price.csv",
     "metrics_file": "metrics.json",
+    "real_train": None,        # real training CSV (d4) for evaluate mode
+    "real_val": None,          # real validation CSV (d5) for evaluate mode
+    "real_test": None,         # real test CSV (d6) for evaluate mode
+    "predictor_dir": None,     # path to external predictor repo (optional)
+    "eval_epochs": 50,         # epochs for built-in evaluation predictor
+    "eval_batch_size": 64,     # batch size for built-in evaluation predictor
+    "horizon": 1,              # prediction horizon for evaluation
 
     # --- Model I/O ---
     "save_model": "model.keras",

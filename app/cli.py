@@ -28,6 +28,17 @@ def parse_args(argv=None):
     p.add_argument("--synthetic_data", default=D["synthetic_data"])
     p.add_argument("--output_file", default=D["output_file"])
     p.add_argument("--metrics_file", default=D["metrics_file"])
+    p.add_argument("--real_train", default=D["real_train"],
+                   help="Real training CSV (d4) for predictive evaluation")
+    p.add_argument("--real_val", default=D["real_val"],
+                   help="Real validation CSV (d5) for predictive evaluation")
+    p.add_argument("--real_test", default=D["real_test"],
+                   help="Real test CSV (d6) for predictive evaluation")
+    p.add_argument("--predictor_dir", default=D["predictor_dir"],
+                   help="Path to external predictor repo (optional)")
+    p.add_argument("--eval_epochs", type=int, default=D["eval_epochs"])
+    p.add_argument("--eval_batch_size", type=int, default=D["eval_batch_size"])
+    p.add_argument("--horizon", type=int, default=D["horizon"])
 
     # Model I/O
     p.add_argument("--save_model", default=D["save_model"])

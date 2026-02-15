@@ -81,16 +81,30 @@ def main(argv=None):
 
     # ── EVALUATE ────────────────────────────────────────────────────────
     elif mode == "evaluate":
-        if not config.get("synthetic_data") or not config.get("real_data"):
-            log.error("--synthetic_data and --real_data required for evaluate mode")
-            sys.exit(1)
-        eval_cls = load_plugin("sdg.evaluator", config["evaluator"])
+        evaluator_name = config["evaluator"]
+        eval_cls = load_plugin("sdg.evaluator", evaluator_name)
         ev = eval_cls()
         ev.configure(config)
-        metrics = ev.evaluate()
+
+        if evaluator_name == "predictive_evaluator":
+            # Predictive utility evaluation (thesis phase 4 methodology)
+            if not config.get("synthetic_data"):
+                log.error("--synthetic_data required for evaluate mode")
+                sys.exit(1)
+            if not config.get("real_train"):
+                log.error("--real_train required for predictive evaluation")
+                sys.exit(1)
+            metrics = ev.evaluate()
+        else:
+            # Distribution evaluator (secondary metrics)
+            if not config.get("synthetic_data") or not config.get("real_data"):
+                log.error("--synthetic_data and --real_data required for evaluate mode")
+                sys.exit(1)
+            metrics = ev.evaluate()
+
         out = config["metrics_file"]
         with open(out, "w") as f:
-            json.dump(metrics, f, indent=2)
+            json.dump(metrics, f, indent=2, default=str)
         log.info(f"Metrics → {out}")
 
     # Save config if requested

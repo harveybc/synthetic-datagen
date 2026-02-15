@@ -1,15 +1,12 @@
 """
-Distribution evaluator plugin.
+Distribution evaluator plugin — secondary statistical metrics.
 
-Programmatic API:
-
-    from sdg_plugins.evaluator.distribution_evaluator import DistributionEvaluator
-    ev = DistributionEvaluator()
-    metrics = ev.evaluate(synthetic_df, real_df)
-
-Or with raw price arrays:
-
-    metrics = ev.evaluate_arrays(synthetic_prices, real_prices)
+Compares synthetic vs real typical_price using:
+- KL divergence (on returns distribution)
+- Wasserstein distance
+- Autocorrelation preservation
+- ADF stationarity test
+- Mean/std of returns
 """
 
 from __future__ import annotations
@@ -58,7 +55,7 @@ def _adf_pvalue(x: np.ndarray) -> float:
 
 
 class DistributionEvaluator:
-    """Plugin: evaluates synthetic vs real data quality."""
+    """Plugin: statistical distribution comparison (secondary metrics)."""
 
     plugin_params: Dict[str, Any] = {}
 
@@ -78,11 +75,6 @@ class DistributionEvaluator:
         synthetic: pd.DataFrame | str | None = None,
         real: pd.DataFrame | str | None = None,
     ) -> Dict[str, Any]:
-        """
-        Compare synthetic vs real timeseries.
-
-        Args can be DataFrames or CSV paths. Falls back to self.cfg paths.
-        """
         syn = self._resolve(synthetic, "synthetic_data")
         rea = self._resolve(real, "real_data")
         return self.evaluate_arrays(
@@ -95,7 +87,6 @@ class DistributionEvaluator:
         synthetic_prices: np.ndarray,
         real_prices: np.ndarray,
     ) -> Dict[str, Any]:
-        """Evaluate from raw price arrays."""
         r_syn = prices_to_returns(synthetic_prices)
         r_real = prices_to_returns(real_prices)
 
