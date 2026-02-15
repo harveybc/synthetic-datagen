@@ -66,7 +66,6 @@ DEFAULT_VALUES = {
     "mutation_prob": 0.2,
     "optimization_patience": 4,
     "optimization_incremental": True,
-    "optimization_increment_size": 1,
     "optimization_resume": False,
     "optimization_resume_file": "optimization_resume.json",
     "optimization_parameters_file": "best_params.json",

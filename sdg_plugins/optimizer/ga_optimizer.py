@@ -167,13 +167,21 @@ class GaOptimizer:
     # ── public ──────────────────────────────────────────────────────────
 
     def optimize(self) -> Dict[str, Any]:
-        """Run staged incremental optimization. Returns best params."""
+        """Run staged incremental optimization. Returns best params.
+
+        INCREMENTAL means:
+          Stage 1: optimize stage-1 params only; all others frozen at midpoint of bounds
+          Stage 2: optimize stage-1 + stage-2 params; rest frozen at midpoint
+          Stage 3: optimize stage-1 + 2 + 3; rest frozen
+          ...
+          Stage N: optimize ALL params
+
+        Each stage runs GA until patience exhausted, then unfreezes next stage's params.
+        """
         cfg = self.cfg
 
         bounds = cfg.get("hyperparameter_bounds", DEFAULT_HYPERPARAMETER_BOUNDS)
         stages = cfg.get("optimization_stages", DEFAULT_OPTIMIZATION_STAGES)
-        incremental = cfg.get("optimization_incremental", True)
-        increment_size = cfg.get("optimization_increment_size", 1)
         pop_size = cfg.get("population_size", 20)
         n_gen = cfg.get("n_generations", 10)
         patience = cfg.get("optimization_patience", 4)
@@ -190,8 +198,18 @@ class GaOptimizer:
         # Load or compute baseline (once)
         self._ensure_baseline()
 
+        # Compute midpoints for frozen params
+        midpoints = {}
+        for k, (lo, hi) in bounds.items():
+            if k in INT_PARAMS:
+                midpoints[k] = int(round((lo + hi) / 2))
+            elif k in LOG_PARAMS:
+                midpoints[k] = 10 ** ((np.log10(lo) + np.log10(hi)) / 2)
+            else:
+                midpoints[k] = (lo + hi) / 2
+
         # Resume state
-        best_params = self._get_defaults()
+        best_params = dict(midpoints)  # start from midpoints
         start_stage = 0
         if resume and os.path.exists(resume_file):
             state = self._load_resume(resume_file)
@@ -209,37 +227,43 @@ class GaOptimizer:
                 all_param_names = sorted(bounds.keys())
                 meta_f.write("stage,generation,individual," + ",".join(all_param_names) + ",fitness\n")
 
-        # Run stages
-        if incremental:
-            end_stage = min(start_stage + increment_size, len(stages))
-            active_stages = stages[start_stage:end_stage]
-        else:
-            active_stages = stages
-            start_stage = 0
-
         overall_best_fitness = float("inf")
 
-        for stage_def in active_stages:
+        for stage_idx, stage_def in enumerate(stages):
             stage_num = stage_def["stage"]
             stage_name = stage_def["name"]
-            stage_params = stage_def["parameters"]
 
+            if stage_idx < start_stage:
+                continue
+
+            # INCREMENTAL: accumulate all params from stage 1 up to current stage
+            active_params = []
+            for s in stages[:stage_idx + 1]:
+                active_params.extend(s["parameters"])
             # Filter to params that exist in bounds
-            stage_params = [p for p in stage_params if p in bounds]
-            if not stage_params:
+            active_params = [p for p in active_params if p in bounds]
+
+            # Frozen params = everything NOT in active_params, set to midpoint
+            frozen = {}
+            for k in bounds:
+                if k not in active_params:
+                    frozen[k] = midpoints[k]
+
+            if not active_params:
                 log.info(f"Stage {stage_num} ({stage_name}): no tunable params, skipping")
                 continue
 
             log.info(f"\n{'='*60}")
             log.info(f"Stage {stage_num}: {stage_name}")
-            log.info(f"Parameters: {stage_params}")
-            log.info(f"Population: {pop_size}, Generations: {n_gen}")
+            log.info(f"Active params ({len(active_params)}): {active_params}")
+            log.info(f"Frozen params ({len(frozen)}): {list(frozen.keys())}")
+            log.info(f"Population: {pop_size}, Generations: {n_gen}, Patience: {patience}")
             log.info(f"{'='*60}")
 
             stage_best, stage_fitness = self._run_stage(
-                stage_params=stage_params,
+                stage_params=active_params,
                 bounds=bounds,
-                frozen_params=best_params,
+                frozen_params=frozen,
                 pop_size=pop_size,
                 n_gen=n_gen,
                 patience=patience,
@@ -247,20 +271,21 @@ class GaOptimizer:
                 meta_f=meta_f,
             )
 
-            # Update best params with stage results
+            # Update best params with stage results (active params only)
             best_params.update(stage_best)
+            best_params.update(frozen)  # keep frozen at midpoint
 
             if stage_fitness < overall_best_fitness:
                 overall_best_fitness = stage_fitness
 
             log.info(f"Stage {stage_num} best: fitness={stage_fitness:.6f}")
-            log.info(f"Stage {stage_num} params: {stage_best}")
+            log.info(f"Stage {stage_num} best active params: {stage_best}")
 
             # Save resume state
             self._save_resume(resume_file, {
                 "best_params": best_params,
                 "best_fitness": overall_best_fitness,
-                "completed_stages": stage_num,
+                "completed_stages": stage_idx + 1,
             })
 
         if meta_f:
