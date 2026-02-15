@@ -146,6 +146,21 @@ class AugmentationEvaluator:
         cfg = self.cfg
         predictor_root = Path(cfg.get("predictor_root", "/home/openclaw/predictor")).resolve()
 
+        # Force predictor's packages to load from predictor_root, not stale site-packages
+        root_str = str(predictor_root)
+        if root_str not in sys.path:
+            sys.path.insert(0, root_str)
+        # Pre-import predictor plugin packages so entry_points find the right ones
+        import importlib
+        for pkg_name in ["preprocessor_plugins", "predictor_plugins", "target_plugins",
+                         "pipeline_plugins", "optimizer_plugins"]:
+            if pkg_name in sys.modules:
+                del sys.modules[pkg_name]
+                # Also remove submodules
+                for key in list(sys.modules.keys()):
+                    if key.startswith(pkg_name + "."):
+                        del sys.modules[key]
+
         try:
             import tensorflow as tf
         except ImportError:

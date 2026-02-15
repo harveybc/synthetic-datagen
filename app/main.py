@@ -63,7 +63,7 @@ def main(argv=None):
             sys.exit(1)
         gen_cls = load_plugin("sdg.generator", config["generator"])
         gen = gen_cls(config)
-        gen.generate()
+        gen.run_generate()
         log.info(f"Synthetic data → {config['output_file']}")
 
     # ── OPTIMIZE ────────────────────────────────────────────────────────
