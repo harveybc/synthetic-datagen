@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.eggs/
+*.keras
+*.keras.parts/
+examples/models/
+examples/output/
+.venv/
+*.egg

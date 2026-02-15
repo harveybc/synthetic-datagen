@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "synthetic-datagen"
+version = "1.0.0"
+description = "Self-contained synthetic typical_price timeseries generator with plugin architecture"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [{name = "Harvey Bastidas", email = "harveybc@users.noreply.github.com"}]
+keywords = ["synthetic-data", "timeseries", "gan", "vae", "financial"]
+
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "tensorflow>=2.14",
+    "scipy>=1.11",
+    "scikit-learn>=1.3",
+    "deap>=1.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-cov"]
+
+[project.scripts]
+sdg = "app.main:main"
+
+[project.entry-points."sdg.trainer"]
+vae_trainer = "sdg_plugins.trainer.vae_trainer:VaeTrainer"
+gan_trainer = "sdg_plugins.trainer.gan_trainer:GanTrainer"
+vae_gan_trainer = "sdg_plugins.trainer.vae_gan_trainer:VaeGanTrainer"
+
+[project.entry-points."sdg.generator"]
+typical_price_generator = "sdg_plugins.generator.typical_price_generator:TypicalPriceGenerator"
+
+[project.entry-points."sdg.evaluator"]
+distribution_evaluator = "sdg_plugins.evaluator.distribution_evaluator:DistributionEvaluator"
+
+[project.entry-points."sdg.optimizer"]
+ga_optimizer = "sdg_plugins.optimizer.ga_optimizer:GaOptimizer"
+
+[tool.setuptools.packages.find]
+include = ["app*", "sdg_plugins*"]

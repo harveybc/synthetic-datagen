@@ -1,0 +1,27 @@
+{
+  "mode": "train",
+  "trainer": "vae_gan_trainer",
+  "train_data": [
+    "examples/data/d1.csv",
+    "examples/data/d2.csv",
+    "examples/data/d3.csv"
+  ],
+  "save_model": "examples/models/generator.keras",
+  "window_size": 144,
+  "batch_size": 128,
+  "epochs": 400,
+  "latent_dim": 16,
+  "activation": "tanh",
+  "learning_rate": 0.001,
+  "kl_weight": 0.001,
+  "kl_anneal_epochs": 40,
+  "mmd_lambda": 0.01,
+  "l2_reg": 1e-6,
+  "use_returns": true,
+  "early_patience": 120,
+  "start_from_epoch": 15,
+  "intermediate_layers": 2,
+  "initial_layer_size": 48,
+  "layer_size_divisor": 2,
+  "log_level": "INFO"
+}
