@@ -1,14 +1,16 @@
 """
-Pure GAN Trainer plugin (no VAE encoder — latent is random noise).
+Pure GAN Trainer plugin (no VAE encoder).
 
-Useful as an ablation / simpler baseline.
+    trainer = GanTrainer()
+    trainer.configure({...})
+    trainer.train(train_data=["d1.csv"], save_model="model.keras")
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import tensorflow as tf
@@ -16,41 +18,51 @@ from tensorflow import keras
 
 from app.data_processor import prepare_training_data
 from sdg_plugins.trainer.vae_gan_trainer import (
+    _build_encoder,
     _build_decoder,
     _build_discriminator,
+    save_model_parts,
 )
 
 log = logging.getLogger(__name__)
 
 
 class GanTrainer:
-    """Plugin: trains a plain GAN (generator = decoder from VAE arch)."""
+    """Plugin: trains a plain GAN (generator = decoder arch)."""
 
     plugin_params: Dict[str, Any] = {}
 
-    def __init__(self, config: Dict[str, Any]):
-        self.cfg = config
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        self.cfg: Dict[str, Any] = {}
+        if config:
+            self.cfg.update(config)
 
-    def set_params(self, **kw):
+    def configure(self, config: Dict[str, Any]) -> None:
+        self.cfg.update(config)
+
+    def set_params(self, **kw) -> None:
         self.cfg.update(kw)
 
-    def train(self) -> str:
+    def train(
+        self,
+        train_data: list[str] | None = None,
+        save_model: str | None = None,
+    ) -> str:
         cfg = self.cfg
-        ws = cfg["window_size"]
-        ld = cfg["latent_dim"]
-        epochs = cfg["epochs"]
-        bs = cfg["batch_size"]
+        paths = train_data or cfg["train_data"]
+        save_path = save_model or cfg["save_model"]
+        ws = cfg.get("window_size", 144)
+        ld = cfg.get("latent_dim", 16)
+        epochs = cfg.get("epochs", 400)
+        bs = cfg.get("batch_size", 128)
 
         windows, initial_price = prepare_training_data(
-            cfg["train_data"], ws,
-            use_returns=cfg["use_returns"],
-            
+            paths, ws, use_returns=cfg.get("use_returns", True),
         )
         log.info(f"Training windows: {windows.shape}")
 
         generator = _build_decoder(ws, ld, cfg)
         disc = _build_discriminator(ws, cfg)
-
         gen_opt = keras.optimizers.Adam(cfg.get("generator_lr", 1e-4))
         disc_opt = keras.optimizers.Adam(cfg.get("discriminator_lr", 1e-4))
 
@@ -62,8 +74,6 @@ class GanTrainer:
             ep_d, ep_g = [], []
             for batch in dataset:
                 noise = tf.random.normal((tf.shape(batch)[0], ld))
-
-                # Discriminator step
                 with tf.GradientTape() as tape:
                     fake = generator(noise, training=False)
                     real_p = disc(batch, training=True)
@@ -77,7 +87,6 @@ class GanTrainer:
                 grads = tape.gradient(d_loss, disc.trainable_variables)
                 disc_opt.apply_gradients(zip(grads, disc.trainable_variables))
 
-                # Generator step
                 noise = tf.random.normal((tf.shape(batch)[0], ld))
                 with tf.GradientTape() as tape:
                     fake = generator(noise, training=True)
@@ -93,11 +102,7 @@ class GanTrainer:
             if epoch % 10 == 0 or epoch == 1:
                 log.info(f"Epoch {epoch:4d}/{epochs} │ D={np.mean(ep_d):.4f} G={np.mean(ep_g):.4f}")
 
-        save_path = cfg["save_model"]
         os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
-
-        # Save — no encoder for pure GAN, create a dummy
-        from sdg_plugins.trainer.vae_gan_trainer import _build_encoder, VaeGanTrainer
         dummy_enc = _build_encoder(ws, ld, cfg)
-        VaeGanTrainer._save(dummy_enc, generator, save_path, initial_price)
+        save_model_parts(dummy_enc, generator, save_path, initial_price)
         return save_path

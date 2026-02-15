@@ -1,22 +1,30 @@
 """
 VAE-GAN Trainer plugin.
 
-Trains a VAE with adversarial (GAN) refinement on typical_price log-returns.
-Architecture ported & simplified from timeseries-gan (SC-VAE-GAN).
+Programmatic API:
 
-The trained artefact is a single .keras file containing encoder + decoder + metadata.
+    from sdg_plugins.trainer.vae_gan_trainer import VaeGanTrainer
+    trainer = VaeGanTrainer()
+    trainer.configure({...})
+    model_path = trainer.train(
+        train_data=["d1.csv", "d2.csv"],
+        save_model="model.keras",
+    )
+
+Architecture ported & simplified from timeseries-gan (SC-VAE-GAN).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.keras import layers, regularizers, backend as K
+from tensorflow.keras import layers, regularizers
 
 from app.data_processor import prepare_training_data
 
@@ -41,11 +49,11 @@ class Sampling(layers.Layer):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _build_encoder(window_size: int, latent_dim: int, cfg: Dict) -> keras.Model:
-    act = cfg["activation"]
-    l2 = regularizers.l2(cfg["l2_reg"])
-    n_layers = cfg["intermediate_layers"]
-    size = cfg["initial_layer_size"]
-    divisor = cfg["layer_size_divisor"]
+    act = cfg.get("activation", "tanh")
+    l2 = regularizers.l2(cfg.get("l2_reg", 1e-6))
+    n_layers = cfg.get("intermediate_layers", 2)
+    size = cfg.get("initial_layer_size", 48)
+    divisor = cfg.get("layer_size_divisor", 2)
 
     inp = keras.Input(shape=(window_size,), name="encoder_input")
     x = inp
@@ -60,11 +68,11 @@ def _build_encoder(window_size: int, latent_dim: int, cfg: Dict) -> keras.Model:
 
 
 def _build_decoder(window_size: int, latent_dim: int, cfg: Dict) -> keras.Model:
-    act = cfg["activation"]
-    l2 = regularizers.l2(cfg["l2_reg"])
-    n_layers = cfg["intermediate_layers"]
-    size = cfg["initial_layer_size"]
-    divisor = cfg["layer_size_divisor"]
+    act = cfg.get("activation", "tanh")
+    l2 = regularizers.l2(cfg.get("l2_reg", 1e-6))
+    n_layers = cfg.get("intermediate_layers", 2)
+    size = cfg.get("initial_layer_size", 48)
+    divisor = cfg.get("layer_size_divisor", 2)
 
     inp = keras.Input(shape=(latent_dim,), name="decoder_input")
     x = inp
@@ -77,7 +85,6 @@ def _build_decoder(window_size: int, latent_dim: int, cfg: Dict) -> keras.Model:
 
 
 def _build_discriminator(window_size: int, cfg: Dict) -> keras.Model:
-    """Simple MLP discriminator operating on raw windows."""
     inp = keras.Input(shape=(window_size,), name="disc_input")
     x = inp
     for i, units in enumerate(cfg.get("disc_layers", [64, 32])):
@@ -92,12 +99,10 @@ def _build_discriminator(window_size: int, cfg: Dict) -> keras.Model:
 # MMD loss
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _mmd_loss(real: tf.Tensor, fake: tf.Tensor, gamma: float | None = None) -> tf.Tensor:
-    """Gaussian-kernel MMD² between two batches."""
-    if gamma is None:
-        # Median heuristic
-        dists = tf.reduce_sum(tf.square(real[:, None] - real[None, :]), axis=-1)
-        gamma = 1.0 / (tf.reduce_mean(dists) + 1e-8)
+def _mmd_loss(real: tf.Tensor, fake: tf.Tensor) -> tf.Tensor:
+    """Gaussian-kernel MMD² with median heuristic bandwidth."""
+    dists = tf.reduce_sum(tf.square(real[:, None] - real[None, :]), axis=-1)
+    gamma = 1.0 / (tf.reduce_mean(dists) + 1e-8)
     xx = tf.exp(-gamma * tf.reduce_sum(tf.square(real[:, None] - real[None, :]), -1))
     yy = tf.exp(-gamma * tf.reduce_sum(tf.square(fake[:, None] - fake[None, :]), -1))
     xy = tf.exp(-gamma * tf.reduce_sum(tf.square(real[:, None] - fake[None, :]), -1))
@@ -109,33 +114,57 @@ def _mmd_loss(real: tf.Tensor, fake: tf.Tensor, gamma: float | None = None) -> t
 # ═══════════════════════════════════════════════════════════════════════════
 
 class VaeGanTrainer:
-    """Plugin: trains a VAE-GAN on typical_price windows."""
+    """
+    Plugin: trains a VAE-GAN on typical_price windows.
 
-    # Plugin interface
+    Discoverable via entry_points as ``sdg.trainer → vae_gan_trainer``.
+    """
+
     plugin_params: Dict[str, Any] = {}
 
-    def __init__(self, config: Dict[str, Any]):
-        self.cfg = config
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        self.cfg: Dict[str, Any] = {}
+        if config:
+            self.cfg.update(config)
 
-    def set_params(self, **kw):
+    # ── Plugin interface ────────────────────────────────────────────────
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        """Update configuration."""
+        self.cfg.update(config)
+
+    def set_params(self, **kw) -> None:
+        """Alias for configure (Harvey's convention)."""
         self.cfg.update(kw)
 
-    # ── public ──────────────────────────────────────────────────────────
+    def train(
+        self,
+        train_data: list[str] | None = None,
+        save_model: str | None = None,
+    ) -> str:
+        """
+        Train the VAE-GAN model.
 
-    def train(self) -> str:
-        """Run full training.  Returns path to saved model."""
+        Args:
+            train_data: List of CSV paths. Falls back to self.cfg["train_data"].
+            save_model: Output model path. Falls back to self.cfg["save_model"].
+
+        Returns:
+            Path to the saved model.
+        """
         cfg = self.cfg
-        ws = cfg["window_size"]
-        ld = cfg["latent_dim"]
-        epochs = cfg["epochs"]
-        bs = cfg["batch_size"]
+        paths = train_data or cfg["train_data"]
+        save_path = save_model or cfg["save_model"]
+
+        ws = cfg.get("window_size", 144)
+        ld = cfg.get("latent_dim", 16)
+        epochs = cfg.get("epochs", 400)
+        bs = cfg.get("batch_size", 128)
 
         # Data
         log.info("Loading training data …")
         windows, initial_price = prepare_training_data(
-            cfg["train_data"], ws,
-            use_returns=cfg["use_returns"],
-            
+            paths, ws, use_returns=cfg.get("use_returns", True),
         )
         log.info(f"Training windows: {windows.shape}")
 
@@ -145,15 +174,14 @@ class VaeGanTrainer:
         disc = _build_discriminator(ws, cfg)
 
         # Optimisers
-        vae_opt = keras.optimizers.Adam(cfg["learning_rate"])
+        vae_opt = keras.optimizers.Adam(cfg.get("learning_rate", 1e-3))
         disc_opt = keras.optimizers.Adam(cfg.get("discriminator_lr", 1e-4))
         gen_opt = keras.optimizers.Adam(cfg.get("generator_lr", 1e-4))
 
         # KL annealing
-        kl_max = cfg["kl_weight"]
-        kl_anneal = cfg["kl_anneal_epochs"]
+        kl_max = cfg.get("kl_weight", 1e-3)
+        kl_anneal = cfg.get("kl_anneal_epochs", 40)
 
-        # Training dataset
         dataset = tf.data.Dataset.from_tensor_slices(
             windows.astype(np.float32)
         ).shuffle(len(windows)).batch(bs).prefetch(tf.data.AUTOTUNE)
@@ -163,27 +191,10 @@ class VaeGanTrainer:
 
         for epoch in range(1, epochs + 1):
             kl_w = kl_max * min(1.0, epoch / max(kl_anneal, 1))
-
-            ep_recon = []
-            ep_kl = []
-            ep_mmd = []
-            ep_d = []
-            ep_g = []
+            ep_recon, ep_kl, ep_mmd, ep_d, ep_g = [], [], [], [], []
 
             for batch in dataset:
-                # --- VAE forward ---
-                z_mean, z_log_var, z = encoder(batch, training=True)
-                recon = decoder(z, training=True)
-
-                recon_loss = tf.reduce_mean(tf.square(batch - recon))
-                kl_loss = -0.5 * tf.reduce_mean(
-                    1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var)
-                )
-                mmd = _mmd_loss(batch, recon)
-
-                vae_loss = recon_loss + kl_w * kl_loss + cfg["mmd_lambda"] * mmd
-
-                # VAE gradient step (encoder + decoder)
+                # ── VAE step ──
                 vae_vars = encoder.trainable_variables + decoder.trainable_variables
                 with tf.GradientTape() as tape:
                     z_mean, z_log_var, z = encoder(batch, training=True)
@@ -193,14 +204,13 @@ class VaeGanTrainer:
                         1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var)
                     )
                     mmd = _mmd_loss(batch, recon)
-                    vae_loss = recon_loss + kl_w * kl_loss + cfg["mmd_lambda"] * mmd
+                    vae_loss = recon_loss + kl_w * kl_loss + cfg.get("mmd_lambda", 1e-2) * mmd
                 grads = tape.gradient(vae_loss, vae_vars)
                 vae_opt.apply_gradients(zip(grads, vae_vars))
 
-                # --- Discriminator step ---
+                # ── Discriminator step ──
                 noise_z = tf.random.normal((tf.shape(batch)[0], ld))
                 fake = decoder(noise_z, training=False)
-
                 with tf.GradientTape() as tape:
                     real_pred = disc(batch, training=True)
                     fake_pred = disc(fake, training=True)
@@ -213,7 +223,7 @@ class VaeGanTrainer:
                 grads = tape.gradient(d_loss, disc.trainable_variables)
                 disc_opt.apply_gradients(zip(grads, disc.trainable_variables))
 
-                # --- Generator (decoder) adversarial step ---
+                # ── Generator adversarial step ──
                 noise_z = tf.random.normal((tf.shape(batch)[0], ld))
                 with tf.GradientTape() as tape:
                     fake = decoder(noise_z, training=True)
@@ -232,55 +242,53 @@ class VaeGanTrainer:
             avg_recon = np.mean(ep_recon)
             avg_kl = np.mean(ep_kl)
             avg_mmd = np.mean(ep_mmd)
-            avg_d = np.mean(ep_d)
-            avg_g = np.mean(ep_g)
-            total = avg_recon + kl_w * avg_kl + cfg["mmd_lambda"] * avg_mmd
+            total = avg_recon + kl_w * avg_kl + cfg.get("mmd_lambda", 1e-2) * avg_mmd
 
             if epoch % 10 == 0 or epoch == 1:
                 log.info(
                     f"Epoch {epoch:4d}/{epochs} │ "
                     f"recon={avg_recon:.6f} kl={avg_kl:.6f} mmd={avg_mmd:.6f} "
-                    f"D={avg_d:.4f} G={avg_g:.4f} total={total:.6f}"
+                    f"D={np.mean(ep_d):.4f} G={np.mean(ep_g):.4f} total={total:.6f}"
                 )
 
-            # Early stopping (after start_from_epoch)
             if epoch >= cfg.get("start_from_epoch", 15):
                 if total < best_loss - cfg.get("min_delta", 1e-7):
                     best_loss = total
                     patience_counter = 0
                 else:
                     patience_counter += 1
-                if patience_counter >= cfg["early_patience"]:
+                if patience_counter >= cfg.get("early_patience", 120):
                     log.info(f"Early stopping at epoch {epoch}")
                     break
 
-        # Save combined model artefact
-        save_path = cfg["save_model"]
         os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
-        self._save(encoder, decoder, save_path, initial_price)
+        save_model_parts(encoder, decoder, save_path, initial_price)
         return save_path
 
-    # ── persistence ─────────────────────────────────────────────────────
 
-    @staticmethod
-    def _save(encoder, decoder, path, initial_price):
-        """Save encoder + decoder + metadata as a single .keras archive."""
-        # We save decoder as main model and encoder weights alongside
-        # plus metadata needed for generation
-        combined_dir = path + ".parts"
-        os.makedirs(combined_dir, exist_ok=True)
-        encoder.save(os.path.join(combined_dir, "encoder.keras"))
-        decoder.save(os.path.join(combined_dir, "decoder.keras"))
+# ═══════════════════════════════════════════════════════════════════════════
+# Shared persistence (used by all trainers)
+# ═══════════════════════════════════════════════════════════════════════════
 
-        import json
-        meta = {
-            "initial_price": initial_price,
-            "latent_dim": int(decoder.input_shape[-1]),
-            "window_size": int(decoder.output_shape[-1]),
-        }
-        with open(os.path.join(combined_dir, "meta.json"), "w") as f:
-            json.dump(meta, f)
+def save_model_parts(
+    encoder: keras.Model,
+    decoder: keras.Model,
+    path: str,
+    initial_price: float,
+) -> None:
+    """Save encoder + decoder + metadata as .keras + .parts/ directory."""
+    parts_dir = path + ".parts"
+    os.makedirs(parts_dir, exist_ok=True)
+    encoder.save(os.path.join(parts_dir, "encoder.keras"))
+    decoder.save(os.path.join(parts_dir, "decoder.keras"))
 
-        # Also save the decoder standalone for quick generation
-        decoder.save(path)
-        log.info(f"Saved model parts → {combined_dir}/ and decoder → {path}")
+    meta = {
+        "initial_price": initial_price,
+        "latent_dim": int(decoder.input_shape[-1]),
+        "window_size": int(decoder.output_shape[-1]),
+    }
+    with open(os.path.join(parts_dir, "meta.json"), "w") as f:
+        json.dump(meta, f)
+
+    decoder.save(path)
+    log.info(f"Saved model parts → {parts_dir}/ and decoder → {path}")

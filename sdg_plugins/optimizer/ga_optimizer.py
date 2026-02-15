@@ -13,7 +13,7 @@ import copy
 import logging
 import random
 import tempfile
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 from deap import algorithms, base, creator, tools
@@ -67,10 +67,15 @@ class GaOptimizer:
 
     plugin_params: Dict[str, Any] = {}
 
-    def __init__(self, config: Dict[str, Any]):
-        self.cfg = config
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        self.cfg: Dict[str, Any] = {}
+        if config:
+            self.cfg.update(config)
 
-    def set_params(self, **kw):
+    def configure(self, config: Dict[str, Any]) -> None:
+        self.cfg.update(config)
+
+    def set_params(self, **kw) -> None:
         self.cfg.update(kw)
 
     def optimize(self) -> Dict[str, Any]:

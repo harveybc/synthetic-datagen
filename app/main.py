@@ -2,14 +2,14 @@
 """
 Entry point for synthetic-datagen (sdg).
 
-Dispatches to the four modes: train, generate, optimize, evaluate.
+Thin CLI wrapper around plugin-first architecture.
+All plugins have clean programmatic APIs — the CLI just wires config → plugin.
 """
 
 import json
 import logging
-import os
 import sys
-from typing import Any, Dict
+from typing import Dict
 
 from app.cli import parse_args
 from app.config import DEFAULT_VALUES
@@ -17,7 +17,6 @@ from app.plugin_loader import load_plugin
 
 
 def _merge_config(defaults: Dict, cli: Dict) -> Dict:
-    """Merge CLI values over defaults, ignoring None CLI values."""
     cfg = defaults.copy()
     for k, v in cli.items():
         if v is not None:
@@ -29,7 +28,6 @@ def main(argv=None):
     args, unknown = parse_args(argv)
     cli = vars(args)
 
-    # Optional JSON config file
     config = DEFAULT_VALUES.copy()
     if cli.get("load_config"):
         with open(cli["load_config"]) as f:
@@ -52,8 +50,12 @@ def main(argv=None):
             log.error("--train_data required for train mode")
             sys.exit(1)
         trainer_cls = load_plugin("sdg.trainer", config["trainer"])
-        trainer = trainer_cls(config)
-        trainer.train()
+        trainer = trainer_cls()
+        trainer.configure(config)
+        trainer.train(
+            train_data=config["train_data"],
+            save_model=config["save_model"],
+        )
         log.info(f"Model saved → {config['save_model']}")
 
     # ── GENERATE ────────────────────────────────────────────────────────
@@ -62,9 +64,9 @@ def main(argv=None):
             log.error("--load_model (--model) required for generate mode")
             sys.exit(1)
         gen_cls = load_plugin("sdg.generator", config["generator"])
-        gen = gen_cls(config)
-        gen.generate()
-        log.info(f"Synthetic data → {config['output_file']}")
+        gen = gen_cls()
+        gen.configure(config)
+        gen.run_generate()
 
     # ── OPTIMIZE ────────────────────────────────────────────────────────
     elif mode == "optimize":
@@ -72,7 +74,8 @@ def main(argv=None):
             log.error("--train_data required for optimize mode")
             sys.exit(1)
         opt_cls = load_plugin("sdg.optimizer", config["optimizer"])
-        opt = opt_cls(config)
+        opt = opt_cls()
+        opt.configure(config)
         best = opt.optimize()
         log.info(f"Best params: {best}")
 
@@ -82,7 +85,8 @@ def main(argv=None):
             log.error("--synthetic_data and --real_data required for evaluate mode")
             sys.exit(1)
         eval_cls = load_plugin("sdg.evaluator", config["evaluator"])
-        ev = eval_cls(config)
+        ev = eval_cls()
+        ev.configure(config)
         metrics = ev.evaluate()
         out = config["metrics_file"]
         with open(out, "w") as f:

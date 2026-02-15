@@ -1,26 +1,27 @@
 """
 Pure VAE Trainer plugin (no adversarial component).
 
-Simpler alternative to vae_gan_trainer — useful for ablation.
+    trainer = VaeTrainer()
+    trainer.configure({...})
+    trainer.train(train_data=["d1.csv"], save_model="model.keras")
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.keras import layers, regularizers
 
 from app.data_processor import prepare_training_data
 from sdg_plugins.trainer.vae_gan_trainer import (
-    Sampling,
     _build_encoder,
     _build_decoder,
     _mmd_loss,
+    save_model_parts,
 )
 
 log = logging.getLogger(__name__)
@@ -31,36 +32,45 @@ class VaeTrainer:
 
     plugin_params: Dict[str, Any] = {}
 
-    def __init__(self, config: Dict[str, Any]):
-        self.cfg = config
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        self.cfg: Dict[str, Any] = {}
+        if config:
+            self.cfg.update(config)
 
-    def set_params(self, **kw):
+    def configure(self, config: Dict[str, Any]) -> None:
+        self.cfg.update(config)
+
+    def set_params(self, **kw) -> None:
         self.cfg.update(kw)
 
-    def train(self) -> str:
+    def train(
+        self,
+        train_data: list[str] | None = None,
+        save_model: str | None = None,
+    ) -> str:
         cfg = self.cfg
-        ws = cfg["window_size"]
-        ld = cfg["latent_dim"]
-        epochs = cfg["epochs"]
-        bs = cfg["batch_size"]
+        paths = train_data or cfg["train_data"]
+        save_path = save_model or cfg["save_model"]
+        ws = cfg.get("window_size", 144)
+        ld = cfg.get("latent_dim", 16)
+        epochs = cfg.get("epochs", 400)
+        bs = cfg.get("batch_size", 128)
 
         windows, initial_price = prepare_training_data(
-            cfg["train_data"], ws,
-            use_returns=cfg["use_returns"],
-            
+            paths, ws, use_returns=cfg.get("use_returns", True),
         )
         log.info(f"Training windows: {windows.shape}")
 
         encoder = _build_encoder(ws, ld, cfg)
         decoder = _build_decoder(ws, ld, cfg)
-        opt = keras.optimizers.Adam(cfg["learning_rate"])
+        opt = keras.optimizers.Adam(cfg.get("learning_rate", 1e-3))
 
         dataset = tf.data.Dataset.from_tensor_slices(
             windows.astype(np.float32)
         ).shuffle(len(windows)).batch(bs).prefetch(tf.data.AUTOTUNE)
 
-        kl_max = cfg["kl_weight"]
-        kl_anneal = cfg["kl_anneal_epochs"]
+        kl_max = cfg.get("kl_weight", 1e-3)
+        kl_anneal = cfg.get("kl_anneal_epochs", 40)
         best_loss = float("inf")
         patience_ctr = 0
 
@@ -77,7 +87,7 @@ class VaeTrainer:
                         1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var)
                     )
                     mmd = _mmd_loss(batch, recon)
-                    loss = recon_loss + kl_w * kl_loss + cfg["mmd_lambda"] * mmd
+                    loss = recon_loss + kl_w * kl_loss + cfg.get("mmd_lambda", 1e-2) * mmd
 
                 all_vars = encoder.trainable_variables + decoder.trainable_variables
                 grads = tape.gradient(loss, all_vars)
@@ -94,13 +104,10 @@ class VaeTrainer:
                     patience_ctr = 0
                 else:
                     patience_ctr += 1
-                if patience_ctr >= cfg["early_patience"]:
+                if patience_ctr >= cfg.get("early_patience", 120):
                     log.info(f"Early stopping at epoch {epoch}")
                     break
 
-        save_path = cfg["save_model"]
         os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
-
-        from sdg_plugins.trainer.vae_gan_trainer import VaeGanTrainer
-        VaeGanTrainer._save(encoder, decoder, save_path, initial_price)
+        save_model_parts(encoder, decoder, save_path, initial_price)
         return save_path

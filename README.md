@@ -4,7 +4,32 @@ Self-contained synthetic **typical_price** timeseries generator with plugin arch
 
 Trains generative models (VAE, GAN, VAE-GAN) on real EUR/USD typical_price data, then generates realistic but unpredictable synthetic timeseries — critical for [DOIN](https://github.com/harveybc/doin-core) verification.
 
-## Quick Start
+## Programmatic API (Plugin-First)
+
+All plugins have clean programmatic APIs — the CLI is just a wrapper.
+
+```python
+# Train
+from sdg_plugins.trainer.vae_gan_trainer import VaeGanTrainer
+trainer = VaeGanTrainer()
+trainer.configure({"window_size": 144, "latent_dim": 16, "epochs": 400, ...})
+trainer.train(train_data=["d1.csv", "d2.csv"], save_model="model.keras")
+
+# Generate (e.g. from DOIN evaluator)
+from sdg_plugins.generator.typical_price_generator import TypicalPriceGenerator
+gen = TypicalPriceGenerator()
+gen.load_model("model.keras")
+df = gen.generate(seed=42, n_samples=5000)
+# → DataFrame with DATE_TIME, typical_price columns
+
+# Evaluate
+from sdg_plugins.evaluator.distribution_evaluator import DistributionEvaluator
+ev = DistributionEvaluator()
+metrics = ev.evaluate(synthetic=synthetic_df, real=real_df)
+# or: metrics = ev.evaluate_arrays(synthetic_prices, real_prices)
+```
+
+## CLI Quick Start
 
 ```bash
 # Install
