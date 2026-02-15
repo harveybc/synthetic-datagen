@@ -75,6 +75,13 @@ def parse_args(argv=None):
     p.add_argument("--population_size", type=int, default=D["population_size"])
     p.add_argument("--n_generations", type=int, default=D["n_generations"])
 
+    # Augmentation evaluator
+    p.add_argument("--d4_file", default=D.get("d4_file"))
+    p.add_argument("--d5_file", default=D.get("d5_file"))
+    p.add_argument("--d6_file", default=D.get("d6_file"))
+    p.add_argument("--predictor_root", default=D.get("predictor_root"))
+    p.add_argument("--baseline_file", default=D.get("baseline_file"))
+
     # Config I/O
     p.add_argument("--load_config", default=D["load_config"])
     p.add_argument("--save_config", default=D["save_config"])

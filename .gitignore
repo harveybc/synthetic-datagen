@@ -10,3 +10,4 @@ examples/models/
 examples/output/
 .venv/
 *.egg
+examples/results/_augmented_train.csv
