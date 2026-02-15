@@ -59,7 +59,6 @@ class TestVaeGanTrainer:
                     "early_patience": 999,
                     "start_from_epoch": 1,
                     "min_delta": 1e-7,
-                    "downsample_factor": 1,
                     "disc_layers": [16, 8],
                     "disc_dropout": 0.1,
                     "discriminator_lr": 1e-4,
@@ -79,7 +78,6 @@ class TestVaeGanTrainer:
                     "use_returns": True,
                     "start_datetime": "2021-01-01 00:00:00",
                     "interval_hours": 4,
-                    "downsample_factor": 1,
                 }
                 g = TypicalPriceGenerator(gen_cfg)
                 df = g.generate()

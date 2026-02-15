@@ -88,7 +88,7 @@ DATE_TIME,typical_price
 - **Returns-based**: models log-returns (stationary), reconstructs prices
 - **Seed-deterministic**: same model + same seed = identical output
 - **Plugin architecture**: all components replaceable via entry_points
-- **Downsampling**: supports 1h→4h by averaging
+- **4h periodicity**: trains on and outputs 4h interval data directly
 
 ## Reference Parameters (from MDSc phase_4_2)
 

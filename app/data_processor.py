@@ -2,10 +2,9 @@
 Data loading & preprocessing utilities.
 
 Handles:
-- Reading DATE_TIME,typical_price CSVs
+- Reading DATE_TIME,typical_price CSVs (already 4h periodicity)
 - Computing log-returns and reconstructing prices
 - Creating sliding windows for training
-- Downsampling (1h → 4h by averaging)
 """
 
 from __future__ import annotations
@@ -66,24 +65,15 @@ def create_windows(data: np.ndarray, window_size: int) -> np.ndarray:
     return data[indices]
 
 
-# ── Down-sampling ───────────────────────────────────────────────────────────
-
-def downsample(prices: np.ndarray, factor: int) -> np.ndarray:
-    """Average every *factor* consecutive values.  Truncates remainder."""
-    n = len(prices) - len(prices) % factor
-    return prices[:n].reshape(-1, factor).mean(axis=1)
-
-
 # ── Prepare training data ──────────────────────────────────────────────────
 
 def prepare_training_data(
     paths: Sequence[str],
     window_size: int,
     use_returns: bool = True,
-    downsample_factor: int = 1,
 ) -> tuple[np.ndarray, float]:
     """
-    Load CSVs → optional downsample → optional returns → sliding windows.
+    Load 4h CSVs → optional returns → sliding windows.
 
     Returns
     -------
@@ -92,9 +82,6 @@ def prepare_training_data(
     """
     df = load_multiple_csv(paths)
     prices = df["typical_price"].values.astype(np.float64)
-
-    if downsample_factor > 1:
-        prices = downsample(prices, downsample_factor)
 
     initial_price = float(prices[0])
 

@@ -10,7 +10,6 @@ from app.data_processor import (
     prices_to_returns,
     returns_to_prices,
     create_windows,
-    downsample,
     load_csv,
     save_csv,
     prepare_training_data,
@@ -35,12 +34,6 @@ def test_create_windows():
 def test_create_windows_too_short():
     with pytest.raises(ValueError):
         create_windows(np.array([1.0, 2.0]), 5)
-
-
-def test_downsample():
-    data = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
-    ds = downsample(data, 4)
-    np.testing.assert_allclose(ds, [2.5, 6.5])
 
 
 def test_csv_roundtrip():

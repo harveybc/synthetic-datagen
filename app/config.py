@@ -51,7 +51,6 @@ DEFAULT_VALUES = {
     "seed": 42,
     "start_datetime": "2020-01-01 00:00:00",
     "interval_hours": 4,       # output interval (4 h)
-    "downsample_factor": 1,    # 1 = already 4 h data; set 4 if training on 1 h
 
     # --- Optimizer (GA) ---
     "population_size": 20,

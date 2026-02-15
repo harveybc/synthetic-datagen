@@ -59,7 +59,6 @@ def parse_args(argv=None):
     p.add_argument("--seed", type=int, default=D["seed"])
     p.add_argument("--start_datetime", default=D["start_datetime"])
     p.add_argument("--interval_hours", type=int, default=D["interval_hours"])
-    p.add_argument("--downsample_factor", type=int, default=D["downsample_factor"])
 
     # Optimizer
     p.add_argument("--population_size", type=int, default=D["population_size"])

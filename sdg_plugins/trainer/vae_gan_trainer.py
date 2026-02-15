@@ -135,7 +135,7 @@ class VaeGanTrainer:
         windows, initial_price = prepare_training_data(
             cfg["train_data"], ws,
             use_returns=cfg["use_returns"],
-            downsample_factor=cfg.get("downsample_factor", 1),
+            
         )
         log.info(f"Training windows: {windows.shape}")
 

@@ -18,7 +18,7 @@ import pandas as pd
 import tensorflow as tf
 from tensorflow import keras
 
-from app.data_processor import returns_to_prices, downsample
+from app.data_processor import returns_to_prices
 
 log = logging.getLogger(__name__)
 
@@ -70,11 +70,6 @@ class TypicalPriceGenerator:
             prices = returns_to_prices(all_returns, initial_price)
         else:
             prices = windows.reshape(-1)[:n_samples]
-
-        # Optional downsampling
-        ds = cfg.get("downsample_factor", 1)
-        if ds > 1:
-            prices = downsample(prices, ds)
 
         # Build DataFrame
         start_dt = pd.to_datetime(cfg.get("start_datetime", "2020-01-01 00:00:00"))
