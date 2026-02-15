@@ -217,10 +217,12 @@ class AugmentationEvaluator:
             )
             augmented_df.to_csv(tmp_path, index=False)
 
-            # Point predictor at the augmented file
+            # Point predictor at the augmented file and expand max_steps_train
             pred_config["x_train_file"] = tmp_path
             pred_config["y_train_file"] = tmp_path
+            pred_config["max_steps_train"] = len(augmented_df)
             log.info(f"Augmented training data: {len(d4_df)} real + {len(augment_data)} synthetic = {len(augmented_df)} total")
+            log.info(f"max_steps_train bumped to {len(augmented_df)} to include synthetic data")
         else:
             # Use d4 as-is
             d4_path = cfg.get("d4_file")
