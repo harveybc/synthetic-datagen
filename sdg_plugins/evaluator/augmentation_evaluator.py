@@ -142,6 +142,19 @@ class AugmentationEvaluator:
             augment_data: If provided, append to training data (d4).
         """
         import gc
+        import builtins
+
+        # Keep reference to real print for our own output
+        _orig_print = builtins.print
+
+        # Suppress noisy predictor prints when quiet mode is active
+        if os.environ.get('PREDICTOR_QUIET', '0') == '1':
+            def _quiet_print(*args, **kwargs):
+                if args:
+                    msg = str(args[0]).upper()
+                    if any(k in msg for k in ['ERROR', 'WARN', 'EXCEPTION', 'FATAL']):
+                        _orig_print(*args, **kwargs)
+            builtins.print = _quiet_print
 
         cfg = self.cfg
         predictor_root = Path(cfg.get("predictor_root", "/home/openclaw/predictor")).resolve()
@@ -181,7 +194,7 @@ class AugmentationEvaluator:
         _cfg_spec.loader.exec_module(_cfg_mod)
         pred_config = _cfg_mod.DEFAULT_VALUES.copy()
 
-        config_file = cfg.get("load_config")
+        config_file = cfg.get("predictor_config") or cfg.get("load_config")
         if config_file:
             config_path = Path(config_file)
             if not config_path.is_absolute():
@@ -197,48 +210,106 @@ class AugmentationEvaluator:
 
         pred_config["disable_postfit_uncertainty"] = True
         pred_config["mc_samples"] = 1
+        pred_config["quiet"] = True
 
-        # If augmenting, we need to modify the training data files
-        # Strategy: create a temp CSV with d4 + synthetic, point config at it
+        # Resolve relative file paths in pred_config against predictor_root
+        # so the preprocessor can find the data files and normalization JSON
+        _file_keys = [
+            "x_train_file", "y_train_file",
+            "x_validation_file", "y_validation_file",
+            "x_test_file", "y_test_file",
+            "use_normalization_json",
+        ]
+        for fk in _file_keys:
+            val = pred_config.get(fk)
+            if val and isinstance(val, str) and not os.path.isabs(val):
+                resolved = str(predictor_root / val)
+                if os.path.exists(resolved):
+                    pred_config[fk] = resolved
+                    log.debug(f"Resolved {fk}: {val} -> {resolved}")
+
+        # If augmenting, we need to modify the training data files.
+        # Strategy: load the NORMALIZED training CSV from the predictor config,
+        # normalize the synthetic data with the same z-score params, append,
+        # and point the config at the augmented file.
         if augment_data is not None:
-            d4_path = cfg.get("d4_file")
-            if not d4_path:
-                raise ValueError("d4_file required for augmentation evaluation")
+            train_path = pred_config.get("x_train_file")
+            if not train_path or not os.path.exists(train_path):
+                raise ValueError(
+                    f"x_train_file required for augmentation evaluation "
+                    f"(got: {train_path})"
+                )
 
-            d4_df = load_csv(d4_path)
-            augmented_df = pd.concat([d4_df, augment_data], ignore_index=True)
-            augmented_df.sort_values("DATE_TIME", inplace=True)
-            augmented_df.reset_index(drop=True, inplace=True)
+            # Load real normalized training data (as preprocessor would)
+            real_train_df = pd.read_csv(train_path, parse_dates=True, index_col=0)
+            log.info(
+                f"Loaded real training data: {real_train_df.shape} from {train_path}"
+            )
 
-            # Save to temp file
+            # Normalize synthetic data if a normalization JSON is available
+            norm_json_path = pred_config.get("use_normalization_json")
+            if norm_json_path and os.path.exists(norm_json_path):
+                import json as _json
+                with open(norm_json_path) as _nf:
+                    norm_params = _json.load(_nf)
+                # Normalize each column that exists in both synthetic and norm config
+                synth_normalized = augment_data.copy()
+                for col in synth_normalized.columns:
+                    if col == "DATE_TIME":
+                        continue
+                    if col in norm_params:
+                        mean = norm_params[col]["mean"]
+                        std = norm_params[col]["std"]
+                        synth_normalized[col] = (
+                            (synth_normalized[col] - mean) / std
+                        )
+                        log.info(
+                            f"Normalized synthetic '{col}': "
+                            f"mean={mean:.6f}, std={std:.6f}"
+                        )
+                    else:
+                        log.warning(
+                            f"Column '{col}' not in normalization config — "
+                            f"left as-is"
+                        )
+            else:
+                log.warning(
+                    "No normalization JSON found — appending synthetic data "
+                    "as-is (assuming already normalized or no normalization needed)"
+                )
+                synth_normalized = augment_data.copy()
+
+            # Convert synthetic to same format as real (DATE_TIME as index)
+            if "DATE_TIME" in synth_normalized.columns:
+                synth_normalized = synth_normalized.set_index("DATE_TIME")
+
+            # Append and sort
+            augmented_df = pd.concat(
+                [real_train_df, synth_normalized], ignore_index=False
+            )
+            augmented_df.sort_index(inplace=True)
+            augmented_df = augmented_df[~augmented_df.index.duplicated(keep="first")]
+
+            # Save to temp file (same format as normalized CSVs: index=DATE_TIME)
             tmp_path = os.path.join(
                 os.path.dirname(cfg.get("metrics_file", ".")) or ".",
                 "_augmented_train.csv"
             )
-            augmented_df.to_csv(tmp_path, index=False)
+            augmented_df.to_csv(tmp_path)  # index=True → DATE_TIME as first col
 
             # Point predictor at the augmented file and expand max_steps_train
             pred_config["x_train_file"] = tmp_path
             pred_config["y_train_file"] = tmp_path
             pred_config["max_steps_train"] = len(augmented_df)
-            log.info(f"Augmented training data: {len(d4_df)} real + {len(augment_data)} synthetic = {len(augmented_df)} total")
-            log.info(f"max_steps_train bumped to {len(augmented_df)} to include synthetic data")
-        else:
-            # Use d4 as-is
-            d4_path = cfg.get("d4_file")
-            if d4_path:
-                pred_config["x_train_file"] = d4_path
-                pred_config["y_train_file"] = d4_path
-
-        # Set validation and test files
-        d5_path = cfg.get("d5_file")
-        d6_path = cfg.get("d6_file")
-        if d5_path:
-            pred_config["x_validation_file"] = d5_path
-            pred_config["y_validation_file"] = d5_path
-        if d6_path:
-            pred_config["x_test_file"] = d6_path
-            pred_config["y_test_file"] = d6_path
+            log.info(
+                f"Augmented training data: {len(real_train_df)} real + "
+                f"{len(synth_normalized)} synthetic = "
+                f"{len(augmented_df)} total (after dedup)"
+            )
+            log.info(
+                f"max_steps_train bumped to {len(augmented_df)} "
+                f"to include synthetic data"
+            )
 
         # Load predictor plugins via predictor's own plugin_loader
         _pl_spec = _ilu.spec_from_file_location(
@@ -331,11 +402,27 @@ class AugmentationEvaluator:
         epochs = pred_config.get("epochs", 10)
         batch_size = pred_config.get("batch_size", 32)
 
+        quiet = pred_config.get("quiet", False)
+        if quiet:
+            # Minimal epoch-end callback: just val_loss + best
+            class _QuietEpochLogger(tf.keras.callbacks.Callback):
+                def __init__(self):
+                    self.best = float('inf')
+                def on_epoch_end(self, epoch, logs=None):
+                    vl = logs.get('val_loss', 0)
+                    if vl < self.best:
+                        self.best = vl
+                        tag = ' *'
+                    else:
+                        tag = ''
+                    _orig_print(f"  Epoch {epoch+1}/{epochs}: val_loss={vl:.6f}{tag}")
+            callbacks.append(_QuietEpochLogger())
+
         predictor.model.fit(
             x_train, y_train,
             epochs=epochs, batch_size=batch_size,
             validation_data=(x_val, y_val),
-            callbacks=callbacks, verbose=1,
+            callbacks=callbacks, verbose=0 if quiet else 1,
         )
 
         # Predictions — handle multi-output (list) or single-output

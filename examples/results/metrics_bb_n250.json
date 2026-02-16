@@ -1,0 +1,11 @@
+{
+  "baseline_val_mae": 0.0030066492035984993,
+  "baseline_test_mae": 0.0018394326325505972,
+  "augmented_val_mae": 0.0032914425246417522,
+  "augmented_test_mae": 0.0019335757242515683,
+  "val_improvement": -0.00028479332104325294,
+  "test_improvement": -9.414309170097113e-05,
+  "val_improvement_pct": -9.472116690646812,
+  "test_improvement_pct": -5.1180505355300925,
+  "verdict": "BAD"
+}

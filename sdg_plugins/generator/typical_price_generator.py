@@ -99,6 +99,9 @@ class TypicalPriceGenerator:
         conditional = meta.get("conditional", False)
         n_temporal = meta.get("n_temporal", 6) if conditional else 0
 
+        # Load anchor prices from real data if available, else use initial_price
+        anchor_prices = self._get_anchor_prices(meta, initial_price)
+
         start_dt = pd.to_datetime(
             start_datetime or self.cfg.get("start_datetime", "2020-01-01 00:00:00")
         )
@@ -107,15 +110,14 @@ class TypicalPriceGenerator:
         log.info(
             f"Generating {n_samples} samples with seed={seed}, "
             f"latent_dim={latent_dim}, window_size={window_size}, "
-            f"conditional={conditional}"
+            f"conditional={conditional}, anchor_prices={len(anchor_prices)} available"
         )
 
         rng = np.random.default_rng(seed)
+        # +1 window for the initial price point per window
         n_windows = (n_samples // window_size) + 2
 
         if conditional and n_temporal > 0:
-            # Generate timestamps for all points, then extract temporal features
-            # per window (last timestamp in each window)
             total_points = n_windows * window_size
             all_dates = pd.Series([
                 start_dt + i * interval for i in range(total_points)
@@ -125,7 +127,6 @@ class TypicalPriceGenerator:
             windows_list = []
             for w in range(n_windows):
                 z = rng.standard_normal((1, latent_dim)).astype(np.float32)
-                # Last timestamp index for this window
                 last_idx = (w + 1) * window_size - 1
                 if last_idx >= len(all_temporal):
                     last_idx = len(all_temporal) - 1
@@ -138,13 +139,49 @@ class TypicalPriceGenerator:
             windows = decoder.predict(z, verbose=0)
 
         if self.cfg.get("use_returns", True):
-            all_returns = windows.reshape(-1)[: n_samples - 1]
-            prices = returns_to_prices(all_returns, initial_price)
+            # Windowed price reconstruction: each window independently
+            # converted to prices, anchored to a realistic price.
+            # This prevents cumulative drift across windows.
+            prices_list = []
+            for w in range(n_windows):
+                win_returns = windows[w].reshape(-1)
+                # Zero-mean correction: remove per-window drift bias
+                win_returns = win_returns - win_returns.mean()
+                # Pick anchor price: sample from real data distribution
+                anchor = anchor_prices[rng.integers(len(anchor_prices))]
+                win_prices = returns_to_prices(win_returns, anchor)
+                prices_list.append(win_prices)
+            prices = np.concatenate(prices_list)[:n_samples]
         else:
             prices = windows.reshape(-1)[:n_samples]
 
         dates = [start_dt + i * interval for i in range(len(prices))]
         return pd.DataFrame({"DATE_TIME": dates, "typical_price": prices})
+
+    def _get_anchor_prices(
+        self, meta: Dict[str, Any], fallback: float
+    ) -> np.ndarray:
+        """
+        Get realistic anchor prices for windowed generation.
+
+        Uses training data prices if train_data_paths is configured,
+        otherwise returns array with just the initial_price from metadata.
+        """
+        paths = self.cfg.get("train_data_paths") or self.cfg.get("train_data")
+        if paths:
+            try:
+                from app.data_processor import load_multiple_csv
+                df = load_multiple_csv(paths)
+                prices = df["typical_price"].values.astype(np.float64)
+                log.info(
+                    f"Loaded {len(prices)} anchor prices from training data "
+                    f"(range: {prices.min():.4f} - {prices.max():.4f})"
+                )
+                return prices
+            except Exception as e:
+                log.warning(f"Could not load anchor prices: {e}")
+
+        return np.array([fallback])
 
     @staticmethod
     def _load_from_disk(path: str) -> tuple[keras.Model, dict]:
