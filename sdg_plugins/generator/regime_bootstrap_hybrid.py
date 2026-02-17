@@ -117,38 +117,44 @@ def generate(model: Dict[str, Any], n_steps: int, seed: int = 0,
     regime_blocks = model["regime_blocks"]
     block_size = model["block_size"]
     
-    log_returns = []
+    raw_blocks = []  # list of (block_returns, regime_id)
     
     # Initial regime
     regime = rng.choice(n_regimes, p=model["stationary_dist"])
+    total_len = 0
     
-    while len(log_returns) < n_steps:
+    while total_len < n_steps + block_size:  # generate extra for blending
         # Sample a block from current regime
         blocks = regime_blocks[regime]
         if not blocks:
-            # Fallback: use regime returns directly
             rets = model["regime_returns"][regime]
-            block_len = min(block_size, n_steps - len(log_returns))
-            sampled = rng.choice(rets, size=block_len, replace=True)
+            block_len = min(block_size, n_steps - total_len + block_size)
+            sampled = rng.choice(rets, size=max(3, block_len), replace=True)
         else:
-            # Pick a random block
             block = blocks[rng.randint(len(blocks))]
-            
             if len(block) > block_size:
-                # Sample a sub-block of block_size from within the block
                 start = rng.randint(0, max(1, len(block) - block_size))
                 sampled = block[start:start + block_size]
             else:
                 sampled = block
-            
-            # Trim to not exceed n_steps
-            remaining = n_steps - len(log_returns)
-            sampled = sampled[:remaining]
         
-        log_returns.extend(sampled)
-        
-        # Transition to next regime
+        raw_blocks.append(sampled)
+        total_len += len(sampled)
         regime = rng.choice(n_regimes, p=trans[regime])
+    
+    # Stitch blocks with single-point boundary smoothing to reduce AC discontinuity
+    # Only smooth the first return of each new block to be closer to the last return
+    # of the previous block. This preserves the distribution while reducing jumps.
+    log_returns = list(raw_blocks[0])
+    smooth_weight = 0.3  # How much the boundary point inherits from the previous block's last value
+    
+    for i in range(1, len(raw_blocks)):
+        block = list(raw_blocks[i])
+        if len(log_returns) > 0 and len(block) > 0:
+            # Smooth just the first point of the new block
+            prev_val = log_returns[-1]
+            block[0] = (1 - smooth_weight) * block[0] + smooth_weight * prev_val
+        log_returns.extend(block)
     
     log_returns = np.array(log_returns[:n_steps])
     
