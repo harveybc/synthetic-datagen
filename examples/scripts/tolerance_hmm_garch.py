@@ -66,11 +66,11 @@ for seed in range(5):
     sd5 = str(OUT / f"synth_d5_seed{seed}.csv")
     sd6 = str(OUT / f"synth_d6_seed{seed}.csv")
 
-    orig = evaluator.predictor_config.copy()
-    evaluator.predictor_config["x_validation_file"] = sd5
-    evaluator.predictor_config["y_validation_file"] = sd5
-    evaluator.predictor_config["x_test_file"] = sd6
-    evaluator.predictor_config["y_test_file"] = sd6
+    orig = evaluator.cfg.copy()
+    evaluator.cfg["x_validation_file"] = sd5
+    evaluator.cfg["y_validation_file"] = sd5
+    evaluator.cfg["x_test_file"] = sd6
+    evaluator.cfg["y_test_file"] = sd6
 
     print(f"[Seed {seed}] Training...", end="", flush=True)
     t0 = time.time()
@@ -80,7 +80,7 @@ for seed in range(5):
     print(f" val={res['val_mae']:.6f} ({val_gap:.1%}), test={res['test_mae']:.6f} ({test_gap:.1%}) [{time.time()-t0:.0f}s]")
     synth_results.append({"seed": seed, "val_mae": res["val_mae"], "test_mae": res["test_mae"],
                           "val_gap": val_gap, "test_gap": test_gap})
-    evaluator.predictor_config = orig
+    evaluator.cfg = orig
 
 # Summary
 avg_vg = np.mean([r["val_gap"] for r in synth_results])

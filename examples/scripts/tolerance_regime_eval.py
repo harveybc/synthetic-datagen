@@ -46,11 +46,11 @@ for seed in range(5):
     synth_d6 = str(SYNTH / f"synth_d6_seed{seed}.csv")
 
     # Override val/test files temporarily
-    orig_config = evaluator.predictor_config.copy()
-    evaluator.predictor_config["x_validation_file"] = synth_d5
-    evaluator.predictor_config["y_validation_file"] = synth_d5
-    evaluator.predictor_config["x_test_file"] = synth_d6
-    evaluator.predictor_config["y_test_file"] = synth_d6
+    orig_config = evaluator.cfg.copy()
+    evaluator.cfg["x_validation_file"] = synth_d5
+    evaluator.cfg["y_validation_file"] = synth_d5
+    evaluator.cfg["x_test_file"] = synth_d6
+    evaluator.cfg["y_test_file"] = synth_d6
 
     print(f"  [Seed {seed}] Training with synth val/test...")
     t0 = time.time()
@@ -68,7 +68,7 @@ for seed in range(5):
     })
 
     # Restore
-    evaluator.predictor_config = orig_config
+    evaluator.cfg = orig_config
 
 # Summary
 avg_val_gap = np.mean([r["val_gap"] for r in synth_results])
