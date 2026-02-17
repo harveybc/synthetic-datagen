@@ -53,46 +53,9 @@ real_ac5 = autocorrelation(real_ret, 5)
 real_vc = vol_clustering(real_ret)
 real_hurst = hurst(d5)
 
-def score_config(n_regimes, block_size, smooth_weight, vol_scale, n_seeds=5):
-    """Compute composite fitness for a config. Lower = better."""
-    try:
-        model = hybrid.fit(train_prices, n_regimes=n_regimes, block_size=block_size)
-        # Override smooth_weight in generate
-        old_code = hybrid.generate
-    except: return 999, {}
-
-    metrics = []
-    for seed in range(n_seeds):
-        synth = hybrid.generate(model, len(d5), seed=seed, initial_price=d5[0])
-        sr = log_returns(synth)
-        # Apply vol scaling
-        if vol_scale != 1.0:
-            sr = sr * vol_scale
-            synth = d5[0] * np.exp(np.concatenate([[0], np.cumsum(sr)]))[:len(d5)]
-            sr = log_returns(synth)
-
-        std_r = sr.std() / real_ret.std()
-        ac1_r = autocorrelation(sr, 1) / real_ac1 if abs(real_ac1) > 1e-6 else 0
-        ac5_r = autocorrelation(sr, 5) / real_ac5 if abs(real_ac5) > 1e-6 else 0
-        bins = np.linspace(min(real_ret.min(), sr.min()), max(real_ret.max(), sr.max()), 100)
-        rh, _ = np.histogram(real_ret, bins=bins, density=True)
-        sh, _ = np.histogram(sr, bins=bins, density=True)
-        js = float(jensenshannon(rh + 1e-10, sh + 1e-10))
-        wass = float(wasserstein_distance(real_ret, sr))
-        ks = float(ks_2samp(real_ret, sr)[0])
-        vc_r = vol_clustering(sr) / real_vc if abs(real_vc) > 1e-6 else 0
-        h_diff = abs(hurst(synth) - real_hurst)
-
-        metrics.append({
-            "std_ratio": std_r, "ac1_ratio": ac1_r, "ac5_ratio": ac5_r,
-            "js": js, "wass": wass, "ks": ks, "vc_ratio": vc_r, "hurst_diff": h_diff,
-        })
-
-    avg = {k: np.mean([m[k] for m in metrics]) for k in metrics[0]}
-
-    # Composite score: penalize deviation from ideal
-    # Ratios: ideal=1.0, distances: ideal=0.0
-    score = (
+def _compute_score(avg):
+    """Composite score from averaged metrics. Lower = better."""
+    return (
         3.0 * abs(avg["std_ratio"] - 1.0) +   # vol match (high weight)
         2.0 * abs(avg["ac1_ratio"] - 1.0) +    # short-term temporal
         1.5 * abs(avg["ac5_ratio"] - 1.0) +    # medium-term temporal
@@ -102,19 +65,86 @@ def score_config(n_regimes, block_size, smooth_weight, vol_scale, n_seeds=5):
         1.5 * abs(avg["vc_ratio"] - 1.0) +     # stylized fact
         2.0 * avg["hurst_diff"]                  # structural
     )
-    return score, avg
+
+def _eval_single_seed(model, seed, vol_scale):
+    """Evaluate a single seed, return metrics dict."""
+    synth = hybrid.generate(model, len(d5), seed=seed, initial_price=d5[0])
+    sr = log_returns(synth)
+    if vol_scale != 1.0:
+        sr = sr * vol_scale
+        synth = d5[0] * np.exp(np.concatenate([[0], np.cumsum(sr)]))[:len(d5)]
+        sr = log_returns(synth)
+
+    std_r = sr.std() / real_ret.std()
+    ac1_r = autocorrelation(sr, 1) / real_ac1 if abs(real_ac1) > 1e-6 else 0
+    ac5_r = autocorrelation(sr, 5) / real_ac5 if abs(real_ac5) > 1e-6 else 0
+    bins = np.linspace(min(real_ret.min(), sr.min()), max(real_ret.max(), sr.max()), 100)
+    rh, _ = np.histogram(real_ret, bins=bins, density=True)
+    sh, _ = np.histogram(sr, bins=bins, density=True)
+    js = float(jensenshannon(rh + 1e-10, sh + 1e-10))
+    wass = float(wasserstein_distance(real_ret, sr))
+    ks = float(ks_2samp(real_ret, sr)[0])
+    vc_r = vol_clustering(sr) / real_vc if abs(real_vc) > 1e-6 else 0
+    h_diff = abs(hurst(synth) - real_hurst)
+
+    return {
+        "std_ratio": std_r, "ac1_ratio": ac1_r, "ac5_ratio": ac5_r,
+        "js": js, "wass": wass, "ks": ks, "vc_ratio": vc_r, "hurst_diff": h_diff,
+    }
+
+# Early stopping patience: after this many seeds, check if running avg
+# is worse than best_score * margin — if so, skip remaining seeds
+EARLY_STOP_AFTER = 2      # min seeds before checking
+EARLY_STOP_MARGIN = 1.3   # skip if running score > best * margin
+
+best_score = float('inf')
+
+def score_config(n_regimes, block_size, smooth_weight, vol_scale, n_seeds=5):
+    """Compute composite fitness with early stopping across seeds."""
+    global best_score
+    try:
+        model = hybrid.fit(train_prices, n_regimes=n_regimes, block_size=block_size)
+    except: return 999, {}, False
+
+    metrics = []
+    stopped_early = False
+    for seed in range(n_seeds):
+        m = _eval_single_seed(model, seed, vol_scale)
+        metrics.append(m)
+
+        # Early stopping check after EARLY_STOP_AFTER seeds
+        if len(metrics) >= EARLY_STOP_AFTER and best_score < float('inf'):
+            running_avg = {k: np.mean([x[k] for x in metrics]) for k in metrics[0]}
+            running_score = _compute_score(running_avg)
+            if running_score > best_score * EARLY_STOP_MARGIN:
+                stopped_early = True
+                break
+
+    avg = {k: np.mean([x[k] for x in metrics]) for k in metrics[0]}
+    score = _compute_score(avg)
+
+    if score < best_score:
+        best_score = score
+
+    return score, avg, stopped_early
 
 # Grid search
 configs = []
 print(f"{'n_reg':>5} {'bs':>4} {'sw':>5} {'vs':>5} | {'score':>6} {'std':>5} {'ac1':>5} {'ac5':>5} {'js':>6} {'wass':>8} {'ks':>5} {'vc':>5} {'hurst':>5}")
 print("-" * 95)
 
+n_evaluated = 0
+n_early_stopped = 0
 for n_reg in [3, 4, 5, 6]:
     for bs in [15, 24, 30, 48, 60]:
         for vs in [0.70, 0.75, 0.80, 0.85, 1.0]:
             sw = 0.3  # keep smooth_weight fixed
-            score, avg = score_config(n_reg, bs, sw, vs, n_seeds=5)
+            score, avg, stopped = score_config(n_reg, bs, sw, vs, n_seeds=5)
+            n_evaluated += 1
+            if stopped:
+                n_early_stopped += 1
             if score < 999:
+                tag = " ←EARLY" if stopped else (" ★BEST" if score <= best_score else "")
                 configs.append({
                     "n_regimes": n_reg, "block_size": bs,
                     "smooth_weight": sw, "vol_scale": vs,
@@ -123,7 +153,9 @@ for n_reg in [3, 4, 5, 6]:
                 print(f"{n_reg:>5} {bs:>4} {sw:>5.2f} {vs:>5.2f} | {score:>6.3f} "
                       f"{avg['std_ratio']:>5.3f} {avg['ac1_ratio']:>5.3f} {avg['ac5_ratio']:>5.3f} "
                       f"{avg['js']:>6.4f} {avg['wass']:>8.6f} {avg['ks']:>5.3f} "
-                      f"{avg['vc_ratio']:>5.3f} {avg['hurst_diff']:>5.3f}")
+                      f"{avg['vc_ratio']:>5.3f} {avg['hurst_diff']:>5.3f}{tag}")
+
+print(f"\nEarly stopped {n_early_stopped}/{n_evaluated} configs (saved {n_early_stopped * 3} seed evals)")
 
 # Sort and save
 configs.sort(key=lambda x: x["score"])
