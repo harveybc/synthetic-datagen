@@ -1,0 +1,42 @@
+[
+  {
+    "seed": 0,
+    "synth_d5_path": "/home/openclaw/.openclaw/workspace/synthetic-datagen/examples/results/regime_conditional/synth_d5_seed0.csv",
+    "synth_d6_path": "/home/openclaw/.openclaw/workspace/synthetic-datagen/examples/results/regime_conditional/synth_d6_seed0.csv",
+    "real_d5_ret_std": 0.0014666745742056432,
+    "synth_d5_ret_std": 0.0020399661134092935,
+    "std_ratio": 1.3908784874887106
+  },
+  {
+    "seed": 1,
+    "synth_d5_path": "/home/openclaw/.openclaw/workspace/synthetic-datagen/examples/results/regime_conditional/synth_d5_seed1.csv",
+    "synth_d6_path": "/home/openclaw/.openclaw/workspace/synthetic-datagen/examples/results/regime_conditional/synth_d6_seed1.csv",
+    "real_d5_ret_std": 0.0014666745742056432,
+    "synth_d5_ret_std": 0.0018562802454142233,
+    "std_ratio": 1.265638798176884
+  },
+  {
+    "seed": 2,
+    "synth_d5_path": "/home/openclaw/.openclaw/workspace/synthetic-datagen/examples/results/regime_conditional/synth_d5_seed2.csv",
+    "synth_d6_path": "/home/openclaw/.openclaw/workspace/synthetic-datagen/examples/results/regime_conditional/synth_d6_seed2.csv",
+    "real_d5_ret_std": 0.0014666745742056432,
+    "synth_d5_ret_std": 0.0024739389077565364,
+    "std_ratio": 1.6867674338027108
+  },
+  {
+    "seed": 3,
+    "synth_d5_path": "/home/openclaw/.openclaw/workspace/synthetic-datagen/examples/results/regime_conditional/synth_d5_seed3.csv",
+    "synth_d6_path": "/home/openclaw/.openclaw/workspace/synthetic-datagen/examples/results/regime_conditional/synth_d6_seed3.csv",
+    "real_d5_ret_std": 0.0014666745742056432,
+    "synth_d5_ret_std": 0.0017797352769401938,
+    "std_ratio": 1.2134493283243186
+  },
+  {
+    "seed": 4,
+    "synth_d5_path": "/home/openclaw/.openclaw/workspace/synthetic-datagen/examples/results/regime_conditional/synth_d5_seed4.csv",
+    "synth_d6_path": "/home/openclaw/.openclaw/workspace/synthetic-datagen/examples/results/regime_conditional/synth_d6_seed4.csv",
+    "real_d5_ret_std": 0.0014666745742056432,
+    "synth_d5_ret_std": 0.0018721319258168255,
+    "std_ratio": 1.2764467038168843
+  }
+]
