@@ -43,6 +43,7 @@ from scipy.stats import wasserstein_distance, ks_2samp
 from sdg_plugins.generator import regime_hmm_garch as hmm_garch
 from sdg_plugins.generator.regime_conditional import fit_regime_model, generate_synthetic
 from sdg_plugins.generator.block_bootstrap_generator import BlockBootstrapGenerator
+from sdg_plugins.generator import regime_bootstrap_hybrid as hybrid
 
 DATA = Path("/home/openclaw/predictor/examples/data_downsampled/phase_1")
 OUT = Path(__file__).parent.parent / "results/evaluation"
@@ -197,6 +198,10 @@ print("  Block Bootstrap...")
 bb_train_files = [str(DATA / f"base_d{i}.csv") for i in [1, 2, 3]]
 bb_gen = BlockBootstrapGenerator({"block_size": 30, "train_data": bb_train_files, "target_column": "typical_price"})
 
+# 4. Hybrid: HMM + Block Bootstrap
+print("  Hybrid (HMM + Block Bootstrap)...")
+hybrid_model = hybrid.fit(train_prices, n_regimes=4, block_size=30)
+
 # ── Evaluate ─────────────────────────────────────────────────────
 
 all_results = []
@@ -206,6 +211,7 @@ for gen_name, gen_fn in [
     ("HMM+GARCH_K4", lambda seed: hmm_garch.generate(hmm_model, len(d5), seed=seed, initial_price=d5[0])),
     ("HMM_Parametric_K4", lambda seed: generate_synthetic(hmm_param_model, len(d5), seed=seed, initial_price=d5[0])),
     ("Block_Bootstrap_bs30", lambda seed: bb_gen.generate(seed=seed, n_samples=len(d5))["typical_price"].values[:len(d5)]),
+    ("Hybrid_HMM_BB_K4", lambda seed: hybrid.generate(hybrid_model, len(d5), seed=seed, initial_price=d5[0])),
 ]:
     print(f"\n  Evaluating {gen_name} ({n_seeds} seeds)...")
     for seed in range(n_seeds):
