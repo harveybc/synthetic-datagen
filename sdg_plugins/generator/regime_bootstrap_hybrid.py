@@ -24,34 +24,54 @@ except ImportError:
     raise ImportError("pip install hmmlearn")
 
 
-def _compute_features(prices: np.ndarray) -> np.ndarray:
-    """Compute features for HMM: log returns, rolling vol, vol ratio."""
+def _compute_features(prices: np.ndarray, 
+                      vol_short_window: int = 6,
+                      vol_mid_window: int = 24,
+                      vol_long_window: int = 48) -> np.ndarray:
+    """Compute features for HMM: log returns, rolling vol, vol ratio.
+    
+    Args:
+        prices: Price series
+        vol_short_window: Short volatility window (default 6)
+        vol_mid_window: Mid volatility window for rolling vol feature (default 24)
+        vol_long_window: Long volatility window (default 48)
+    """
     log_ret = np.diff(np.log(np.clip(prices, 1e-10, None)))
-    # Rolling volatility (window=24 = 4 days at 4h)
-    vol = pd.Series(log_ret).rolling(24, min_periods=6).std().bfill().values
+    # Rolling volatility
+    vol = pd.Series(log_ret).rolling(vol_mid_window, min_periods=max(1, vol_mid_window // 4)).std().bfill().values
     # Vol ratio (short/long)
-    vol_short = pd.Series(log_ret).rolling(6, min_periods=3).std().bfill().values
-    vol_long = pd.Series(log_ret).rolling(48, min_periods=12).std().bfill().values
+    vol_short = pd.Series(log_ret).rolling(vol_short_window, min_periods=max(1, vol_short_window // 2)).std().bfill().values
+    vol_long = pd.Series(log_ret).rolling(vol_long_window, min_periods=max(1, vol_long_window // 4)).std().bfill().values
     vol_ratio = vol_short / np.clip(vol_long, 1e-10, None)
     return np.column_stack([log_ret, vol, vol_ratio])
 
 
-def fit(prices: np.ndarray, n_regimes: int = 4, block_size: int = 30) -> Dict[str, Any]:
+def fit(prices: np.ndarray, n_regimes: int = 4, block_size: int = 30,
+        min_block_length: int = 3, covariance_type: str = "full",
+        vol_short_window: int = 6, vol_mid_window: int = 24,
+        vol_long_window: int = 48, smooth_weight: float = 0.3,
+        quiet: bool = False, **kwargs) -> Dict[str, Any]:
     """Fit HMM on training data and segment returns by regime.
     
     Args:
-        prices: Training price series (d1+d2+d3 concatenated)
+        prices: Training price series
         n_regimes: Number of HMM states
         block_size: Block size for bootstrap sampling within regimes
+        min_block_length: Minimum contiguous block length to keep
+        covariance_type: HMM covariance type ("full", "diag", "tied")
+        vol_short_window: Short vol window for features
+        vol_mid_window: Mid vol window for features
+        vol_long_window: Long vol window for features
+        smooth_weight: Block boundary smoothing weight (stored for generate)
     
     Returns:
         Model dict with HMM + per-regime return segments
     """
-    features = _compute_features(prices)
+    features = _compute_features(prices, vol_short_window, vol_mid_window, vol_long_window)
     log_ret = np.diff(np.log(np.clip(prices, 1e-10, None)))
     
     # Fit HMM
-    hmm = GaussianHMM(n_components=n_regimes, covariance_type="full",
+    hmm = GaussianHMM(n_components=n_regimes, covariance_type=covariance_type,
                        n_iter=200, random_state=42, tol=0.001)
     hmm.fit(features)
     states = hmm.predict(features)
@@ -69,10 +89,10 @@ def fit(prices: np.ndarray, n_regimes: int = 4, block_size: int = 30) -> Dict[st
             if s == k:
                 current_block.append(log_ret[i])
             else:
-                if len(current_block) >= 3:  # min block length
+                if len(current_block) >= min_block_length:
                     blocks.append(np.array(current_block))
                 current_block = []
-        if len(current_block) >= 3:
+        if len(current_block) >= min_block_length:
             blocks.append(np.array(current_block))
         regime_prices[k] = blocks
     
@@ -83,13 +103,18 @@ def fit(prices: np.ndarray, n_regimes: int = 4, block_size: int = 30) -> Dict[st
         sigma = regime_returns[k].std()
         n_blocks = len(regime_prices[k])
         avg_block = np.mean([len(b) for b in regime_prices[k]]) if regime_prices[k] else 0
-        print(f"  Regime {k}: n={n}, μ={mu:.6f}, σ={sigma:.6f}, "
-              f"blocks={n_blocks}, avg_len={avg_block:.1f}")
+        if not quiet:
+            print(f"  Regime {k}: n={n}, μ={mu:.6f}, σ={sigma:.6f}, "
+                  f"blocks={n_blocks}, avg_len={avg_block:.1f}")
     
     return {
         "hmm": hmm,
         "n_regimes": n_regimes,
         "block_size": block_size,
+        "min_block_length": min_block_length,
+        "smooth_weight": smooth_weight,
+        "covariance_type": covariance_type,
+        "vol_windows": (vol_short_window, vol_mid_window, vol_long_window),
         "transition_matrix": hmm.transmat_,
         "stationary_dist": hmm.startprob_,
         "regime_returns": regime_returns,
@@ -143,10 +168,8 @@ def generate(model: Dict[str, Any], n_steps: int, seed: int = 0,
         regime = rng.choice(n_regimes, p=trans[regime])
     
     # Stitch blocks with single-point boundary smoothing to reduce AC discontinuity
-    # Only smooth the first return of each new block to be closer to the last return
-    # of the previous block. This preserves the distribution while reducing jumps.
     log_returns = list(raw_blocks[0])
-    smooth_weight = 0.3  # How much the boundary point inherits from the previous block's last value
+    smooth_weight = model.get("smooth_weight", 0.3)
     
     for i in range(1, len(raw_blocks)):
         block = list(raw_blocks[i])

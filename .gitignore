@@ -11,3 +11,7 @@ examples/output/
 .venv/
 *.egg
 examples/results/_augmented_train.csv
+*.db
+*.db-wal
+*.db-shm
+node_modules/

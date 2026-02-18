@@ -410,12 +410,13 @@ class AugmentationEvaluator:
                     self.best = float('inf')
                 def on_epoch_end(self, epoch, logs=None):
                     vl = logs.get('val_loss', 0)
-                    if vl < self.best:
+                    is_best = vl < self.best
+                    if is_best:
                         self.best = vl
-                        tag = ' *'
-                    else:
-                        tag = ''
-                    _orig_print(f"  Epoch {epoch+1}/{epochs}: val_loss={vl:.6f}{tag}")
+                    # Only print on new best or every 100 epochs
+                    if is_best or (epoch + 1) % 100 == 0 or epoch == 0:
+                        tag = ' *' if is_best else ''
+                        _orig_print(f"  Epoch {epoch+1}/{epochs}: val_loss={vl:.6f}{tag}")
             callbacks.append(_QuietEpochLogger())
 
         predictor.model.fit(
