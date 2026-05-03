@@ -257,11 +257,29 @@ The augmented CSV plugs straight into the agent-multi config — only three keys
 
 ### Available Phase-4-ready generators
 
-| Generator family | Status | Validity-by-construction | Memorization gates |
+| Generator family | Status | Validity-by-construction | Memorization gates (4yr ETH 4h) |
 |---|---|---|---|
-| `stationary_bootstrap_ohlcv_generator` | ✅ Production | ✅ | Diagnostic-only on tiny windows; passes on full 4yr window |
+| `stationary_bootstrap_ohlcv_generator` | ⚠ Diagnostic-only | ✅ | **FAILS** `duplicate_window_rate`, `nn_overlap_rate`, `copied_subseq_ratio` — see addendum below |
 | `typical_price_generator` (legacy) | ⚠ Not OHLCV | ❌ | n/a |
 | `block_bootstrap`, `regime_*`, `grasynda`, `timegan`, `vae_gan` | ❌ Not Phase-4 plugin yet | n/a | n/a |
+
+### Quality gates fail closed (2026-05-03 addendum)
+
+Per the SYNTHETIC_DATAGEN_SPECKIT 2026-05-03 addendum, all three gate
+families (algebraic, distribution, memorization) are **fatal by default**.
+If any gate fails:
+
+- `augmentation_summary.json` records `project3_valid_for_training = false`.
+- `SYNTHETIC_LEDGER.csv` gets an `evaluate` row with `valid=false`.
+- The augmented `model_ready` CSV is **not written**, and any pre-existing
+  augmented CSV at the expected path is renamed with the suffix
+  `.invalid_quality_gates`.
+- `build_augmented_project3_training.py` exits with code 3.
+
+A failed generator may be re-run with `--allow_diagnostic_output` purely
+to produce diagnostic artifacts; that mode must never feed Project 3
+SAC/PPO/DQN training. The first ETH 4h `stationary_bootstrap_v1` output
+is currently in this state.
 
 ### Audit trail
 
