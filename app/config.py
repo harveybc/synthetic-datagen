@@ -134,5 +134,61 @@ DEFAULT_VALUES = {
     # --- Config I/O ---
     "load_config": None,
     "save_config": None,
+    "save_log": None,
     "log_level": "INFO",
+    "quiet_mode": False,
+
+    # --- Remote config / logging (predictor + agent-multi compatible) ---
+    "remote_load_config": None,
+    "remote_save_config": None,
+    "remote_log": None,
+    "username": None,
+    "password": None,
+
+    # --- Financial OHLCV mode ---
+    "financial_mode": False,
+    "data_format": "auto",                 # csv | parquet | auto
+    "datetime_column": "DATE_TIME",
+    "primitive_columns": ["OPEN", "HIGH", "LOW", "CLOSE", "VOLUME"],
+    "open_col": "OPEN",
+    "high_col": "HIGH",
+    "low_col": "LOW",
+    "close_col": "CLOSE",
+    "volume_col": "VOLUME",
+    "derived_columns_policy": "recompute_only",
+    "generated_columns": "primitive_ohlcv_only",
+    "asset_id": None,
+    "timeframe": None,
+    "base_timeframe": None,
+    "target_timeframes": None,
+    "train_start": None,
+    "train_end": None,
+    "validation_start": None,
+    "validation_end": None,
+    "heldout_start": None,
+    "heldout_end": None,
+    "fit_transforms_on": "train_only",
+    "transform_plugin": "ohlcv_transformer",
+    "reconstructor_plugin": "ohlcv_reconstructor",
+    "feature_engine_plugin": "minimal_financial_feature_engine",
+    "pipeline_plugin": None,
+    "volume_transform": "log1p",           # log1p | log1p_residual
+    "seasonality_buckets": "none",
+    "block_length_mean": 32,
+    "metadata_file": None,
+    "synthetic_metadata_file": None,
+    "generated_feature_file": None,
+
+    # --- Project 3 augmentation governance ---
+    "project3_mode": False,
+    "heldout_boundary": None,              # required when project3_mode=True
+    "augmentation_ratios": [0.25, 0.5, 1.0],
+    "synthetic_use_case": "diagnostics",   # augmentation | pretraining | stress_test | diagnostics
+    "generator_train_window_policy": "train_only",
+    "reject_if_input_crosses_heldout": True,
+    "allow_non_research_mode": False,
+    "generator_family_id": None,
+    "synthetic_ablation_id": None,
+    "real_validation_report": None,
+    "downstream_utility_report": None,
 }

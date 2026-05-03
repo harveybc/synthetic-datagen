@@ -193,3 +193,80 @@ pytest tests/ -v
 ## License
 
 MIT
+
+---
+
+## Phase 4 — Project 3 SAC Augmentation Workflow (ETHUSDT 4h)
+
+This repo ships a fully-wired Phase 4 augmentation pipeline that takes
+the 8-year ETHUSDT 4h dataset, generates synthetic OHLCV bars, recomputes
+the full `tech_stat` feature matrix, and emits a `model_ready.csv`
+suitable for direct consumption by [agent-multi](https://github.com/harveybc/agent-multi)'s
+`feature_window_preprocessor` → `project3_sac_actor_critic_agent`.
+
+### Data layout
+
+The 8-year reference dataset is provided at:
+
+- [examples/data/ethusdt_4h_full_8yr.csv](examples/data/ethusdt_4h_full_8yr.csv) — `2017-09-28 → 2025-12-31`, 18,086 rows, full `tech_stat` feature matrix.
+
+The agent-multi default split (anchored at `start`) is:
+
+| Window | Span | n_rows |
+|---|---|---|
+| Train | 2017-09-28 → 2021-09-28 | 8,749 |
+| Validation | 2021-09-28 → 2022-09-28 | 2,190 |
+| Test | 2022-09-28 → 2023-09-28 | 2,190 |
+| **Heldout (Phase 3 firewall)** | **2023-09-28 → 2025-12-31** | **4,957** |
+
+Phase 4 generators may NEVER see the validation, test, or heldout windows
+(see [forbidden_paths.txt](forbidden_paths.txt) for enforcement).
+
+### One-command end-to-end augmentation
+
+```bash
+python -m examples.scripts.build_augmented_project3_training \
+    --method stationary_bootstrap \
+    --synthetic_years 1 \
+    --output_dir experiments/synthetic_data/project3_eth_4h
+```
+
+Pipeline:
+
+1. Slices the 4-year training window from the 8-year file.
+2. Trains `stationary_bootstrap_ohlcv_trainer` (Politis-Romano stationary block bootstrap) on the OHLCV columns only.
+3. Generates 1 year (≈2,190 bars) of synthetic 4h OHLCV with timestamps **preceding** the real-data start, so the agent-multi temporal split does not need any modification beyond `train_years += synthetic_years`.
+4. Validates with `OhlcvAlgebraicEvaluator` (must report 0 violations).
+5. Runs `FinancialDistributionEvaluator` + `MemorizationEvaluator` and writes their gate dicts.
+6. Concatenates synthetic + real OHLCV and recomputes the full `tech_stat` feature matrix via `TechStatFeatureEngine` — Phase 4 §6 forbids generating indicators directly.
+7. Emits `ethusdt_4h_tech_stat_augmented_<method>.csv` plus an audit summary and a row appended to `SYNTHETIC_LEDGER.csv`.
+
+### Wiring into agent-multi
+
+The augmented CSV plugs straight into the agent-multi config — only three keys change vs. the real-only baseline:
+
+```jsonc
+{
+  "input_data_file": ".../ethusdt_4h_tech_stat_augmented_stationary_bootstrap.csv",
+  "train_years": 5,        // was 4 — absorbs the 1 year of synthetic
+  "val_years": 1,
+  "test_years": 1
+  // val + test windows still map to 100% real data
+}
+```
+
+### Available Phase-4-ready generators
+
+| Generator family | Status | Validity-by-construction | Memorization gates |
+|---|---|---|---|
+| `stationary_bootstrap_ohlcv_generator` | ✅ Production | ✅ | Diagnostic-only on tiny windows; passes on full 4yr window |
+| `typical_price_generator` (legacy) | ⚠ Not OHLCV | ❌ | n/a |
+| `block_bootstrap`, `regime_*`, `grasynda`, `timegan`, `vae_gan` | ❌ Not Phase-4 plugin yet | n/a | n/a |
+
+### Audit trail
+
+Every fit/generate/evaluate appends one row to
+`experiments/synthetic_data/SYNTHETIC_LEDGER.csv`. Every generator family
+is recorded in `generator_family_registry.json`. Each family also gets a
+`<family>_protocol.md` stub documenting its mathematical assumptions, the
+fit windows used, and the §4.2 gate values it produced.

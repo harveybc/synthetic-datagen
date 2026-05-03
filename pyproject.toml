@@ -31,17 +31,40 @@ sdg = "app.main:main"
 vae_trainer = "sdg_plugins.trainer.vae_trainer:VaeTrainer"
 gan_trainer = "sdg_plugins.trainer.gan_trainer:GanTrainer"
 vae_gan_trainer = "sdg_plugins.trainer.vae_gan_trainer:VaeGanTrainer"
+stationary_bootstrap_ohlcv_trainer = "sdg_plugins.trainer.stationary_bootstrap_ohlcv_trainer:StationaryBootstrapOhlcvTrainer"
 
 [project.entry-points."sdg.generator"]
 typical_price_generator = "sdg_plugins.generator.typical_price_generator:TypicalPriceGenerator"
+stationary_bootstrap_ohlcv_generator = "sdg_plugins.generator.stationary_bootstrap_ohlcv_generator:StationaryBootstrapOhlcvGenerator"
 
 [project.entry-points."sdg.evaluator"]
 distribution_evaluator = "sdg_plugins.evaluator.distribution_evaluator:DistributionEvaluator"
 predictive_evaluator = "sdg_plugins.evaluator.predictive_evaluator:PredictiveEvaluator"
 augmentation_evaluator = "sdg_plugins.evaluator.augmentation_evaluator:AugmentationEvaluator"
+ohlcv_algebraic_evaluator = "sdg_plugins.evaluator.ohlcv_algebraic_evaluator:OhlcvAlgebraicEvaluator"
+financial_stylized_facts_evaluator = "sdg_plugins.evaluator.financial_stylized_facts_evaluator:FinancialStylizedFactsEvaluator"
+financial_distribution_evaluator = "sdg_plugins.evaluator.financial_distribution_evaluator:FinancialDistributionEvaluator"
+memorization_evaluator = "sdg_plugins.evaluator.memorization_evaluator:MemorizationEvaluator"
+augmentation_manifest_pipeline = "sdg_plugins.pipeline.augmentation_manifest_pipeline:AugmentationManifestPipeline"
 
 [project.entry-points."sdg.optimizer"]
 ga_optimizer = "sdg_plugins.optimizer.ga_optimizer:GaOptimizer"
+
+[project.entry-points."sdg.transformer"]
+ohlcv_transformer = "sdg_plugins.transformer.ohlcv_transformer:OhlcvTransformer"
+
+[project.entry-points."sdg.reconstructor"]
+ohlcv_reconstructor = "sdg_plugins.reconstructor.ohlcv_reconstructor:OhlcvReconstructor"
+
+[project.entry-points."sdg.feature_engine"]
+minimal_financial_feature_engine = "sdg_plugins.feature_engine.minimal_financial_feature_engine:MinimalFinancialFeatureEngine"
+tech_stat_feature_engine = "sdg_plugins.feature_engine.tech_stat_feature_engine:TechStatFeatureEngine"
+
+[project.entry-points."sdg.aggregator"]
+ohlcv_timeframe_aggregator = "sdg_plugins.aggregator.ohlcv_timeframe_aggregator:OhlcvTimeframeAggregator"
+
+[project.entry-points."sdg.pipeline"]
+augmentation_manifest_pipeline = "sdg_plugins.pipeline.augmentation_manifest_pipeline:AugmentationManifestPipeline"
 
 [tool.setuptools.packages.find]
 include = ["app*", "sdg_plugins*"]

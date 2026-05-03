@@ -1,0 +1,11 @@
+# Phase 4 §7: paths under these globs MUST NOT be loaded by the synthetic
+# generator nor by any Stage 4.2 evaluator used for generator selection.
+# Stage C / 2025-heldout data is only consumed by the final locked
+# evaluation pipeline. One glob per line; '#' comments and blank lines
+# are ignored.
+
+# 2025 held-out windows (Phase 3 firewall):
+*/heldout/2025/*
+*/2025_heldout/*
+*/stage_c/*
+*/STAGE_C/*

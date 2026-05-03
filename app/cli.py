@@ -85,6 +85,48 @@ def parse_args(argv=None):
     # Config I/O
     p.add_argument("--load_config", default=D["load_config"])
     p.add_argument("--save_config", default=D["save_config"])
+    p.add_argument("--save_log", default=D.get("save_log"))
     p.add_argument("--log_level", default=D["log_level"])
+    p.add_argument("--quiet_mode", "--quiet", action="store_true",
+                   default=D.get("quiet_mode", False))
+
+    # Remote config / logging (interoperable with predictor + agent-multi)
+    p.add_argument("--remote_load_config", default=D.get("remote_load_config"))
+    p.add_argument("--remote_save_config", default=D.get("remote_save_config"))
+    p.add_argument("--remote_log", default=D.get("remote_log"))
+    p.add_argument("--username", default=D.get("username"))
+    p.add_argument("--password", default=D.get("password"))
+
+    # Plugin discovery (lists available plugins per group then exits)
+    p.add_argument("--list_plugins", action="store_true",
+                   help="List all available plugins (per group) and exit.")
+
+    # --- Financial OHLCV mode ---
+    p.add_argument("--financial_mode", action="store_true", default=D.get("financial_mode", False))
+    p.add_argument("--data_format", choices=["csv", "parquet", "auto"], default=D.get("data_format", "auto"))
+    p.add_argument("--datetime_column", default=D.get("datetime_column", "DATE_TIME"))
+    p.add_argument("--asset_id", default=D.get("asset_id"))
+    p.add_argument("--timeframe", default=D.get("timeframe"))
+    p.add_argument("--train_start", default=D.get("train_start"))
+    p.add_argument("--train_end", default=D.get("train_end"))
+    p.add_argument("--validation_start", default=D.get("validation_start"))
+    p.add_argument("--validation_end", default=D.get("validation_end"))
+    p.add_argument("--heldout_start", default=D.get("heldout_start"))
+    p.add_argument("--heldout_end", default=D.get("heldout_end"))
+    p.add_argument("--block_length_mean", type=int, default=D.get("block_length_mean", 32))
+    p.add_argument("--metadata_file", default=D.get("metadata_file"))
+    p.add_argument("--synthetic_metadata_file", default=D.get("synthetic_metadata_file"))
+    p.add_argument("--generated_feature_file", default=D.get("generated_feature_file"))
+
+    # --- Project 3 augmentation governance ---
+    p.add_argument("--project3_mode", action="store_true", default=D.get("project3_mode", False))
+    p.add_argument("--heldout_boundary", default=D.get("heldout_boundary"))
+    p.add_argument("--synthetic_use_case",
+                   choices=["augmentation", "pretraining", "stress_test", "diagnostics"],
+                   default=D.get("synthetic_use_case", "diagnostics"))
+    p.add_argument("--allow_non_research_mode", action="store_true",
+                   default=D.get("allow_non_research_mode", False))
+    p.add_argument("--generator_family_id", default=D.get("generator_family_id"))
+    p.add_argument("--synthetic_ablation_id", default=D.get("synthetic_ablation_id"))
 
     return p.parse_known_args(argv)

@@ -1,0 +1,32 @@
+{
+  "mode": "train",
+  "financial_mode": true,
+  "trainer": "stationary_bootstrap_ohlcv_trainer",
+  "generator": "stationary_bootstrap_ohlcv_generator",
+  "evaluator": "ohlcv_algebraic_evaluator",
+
+  "train_data": "examples/data/financial_ohlcv_sample.csv",
+  "data_format": "csv",
+  "datetime_column": "DATE_TIME",
+  "open_col": "OPEN",
+  "high_col": "HIGH",
+  "low_col": "LOW",
+  "close_col": "CLOSE",
+  "volume_col": "VOLUME",
+
+  "save_model": "examples/data/financial_ohlcv_bootstrap.npz",
+  "save_metadata": "examples/data/financial_ohlcv_bootstrap.metadata.json",
+  "block_length_mean": 24,
+  "seed": 42,
+
+  "n_samples": 600,
+  "output_file": "examples/data/financial_ohlcv_synthetic.csv",
+  "synthetic_metadata_file": "examples/data/financial_ohlcv_synthetic.metadata.json",
+  "start_timestamp": "2024-01-01 00:00:00",
+  "frequency": "1h",
+
+  "project3_mode": false,
+  "synthetic_use_case": "diagnostics",
+  "reject_if_input_crosses_heldout": true,
+  "save_log": "examples/data/financial_ohlcv_run.log.json"
+}

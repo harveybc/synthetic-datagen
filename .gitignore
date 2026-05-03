@@ -15,3 +15,11 @@ examples/results/_augmented_train.csv
 *.db-wal
 *.db-shm
 node_modules/
+
+# Phase 4 experiment outputs
+experiments/
+examples/data/*.npz
+examples/data/financial_ohlcv_bootstrap*
+examples/data/financial_ohlcv_synthetic*
+examples/data/financial_ohlcv_metrics*
+examples/data/financial_ohlcv_run*
