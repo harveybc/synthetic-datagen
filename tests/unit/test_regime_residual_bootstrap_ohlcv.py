@@ -229,3 +229,73 @@ def test_regime_residual_fail_closed_when_gates_fail(tmp_path):
     # and refuse to emit a Project 3 training CSV.
     gates_pass = mem["gates"]["all_pass"]
     assert gates_pass is False
+
+
+# ---------------------------------------------------------------------------
+# 6. anti_memorization mode: deterministic seed + reduces duplicate_rate
+# ---------------------------------------------------------------------------
+def test_anti_memorization_seed_determinism(tmp_path):
+    train_csv = tmp_path / "train.csv"
+    _fixture(800, seed=11).to_csv(train_csv, index=False)
+    model = tmp_path / "m.npz"
+    RegimeResidualBootstrapOhlcvTrainer({
+        "train_data": str(train_csv), "save_model": str(model),
+        "block_length_mean": 6, "n_regimes": 3, "vol_window": 16,
+        "jitter_sigma": 0.2, "seed": 7,
+    }).train()
+    out1 = tmp_path / "a1.csv"
+    out2 = tmp_path / "a2.csv"
+    for outp in (out1, out2):
+        info = RegimeResidualBootstrapOhlcvGenerator({
+            "load_model": str(model), "output_file": str(outp),
+            "n_samples": 300, "seed": 1234,
+            "anti_memorization": True, "anti_mem_window": 16,
+            "anti_mem_max_real_windows": 800, "anti_mem_max_passes": 4,
+            "anti_mem_boost_factor": 4.0, "anti_mem_dup_eps_quantile": 0.001,
+        }).run_generate()
+        assert info["anti_memorization"]["enabled"] is True
+    a = pd.read_csv(out1).to_numpy()
+    b = pd.read_csv(out2).to_numpy()
+    np.testing.assert_array_equal(a, b)
+
+
+def test_anti_memorization_reduces_duplicate_rate(tmp_path):
+    """With anti_memorization on, dup_rate must be <= the off variant."""
+    train_csv = tmp_path / "train.csv"
+    _fixture(1500, seed=29).to_csv(train_csv, index=False)
+    model = tmp_path / "m.npz"
+    RegimeResidualBootstrapOhlcvTrainer({
+        "train_data": str(train_csv), "save_model": str(model),
+        "block_length_mean": 6, "n_regimes": 3, "vol_window": 16,
+        "jitter_sigma": 0.15, "seed": 0,
+    }).train()
+
+    plain_out = tmp_path / "plain.csv"
+    RegimeResidualBootstrapOhlcvGenerator({
+        "load_model": str(model), "output_file": str(plain_out),
+        "n_samples": 600, "seed": 0,
+    }).run_generate()
+    boosted_out = tmp_path / "boost.csv"
+    RegimeResidualBootstrapOhlcvGenerator({
+        "load_model": str(model), "output_file": str(boosted_out),
+        "n_samples": 600, "seed": 0,
+        "anti_memorization": True, "anti_mem_window": 16,
+        "anti_mem_max_real_windows": 1000, "anti_mem_max_passes": 6,
+        "anti_mem_boost_factor": 4.0, "anti_mem_dup_eps_quantile": 0.001,
+    }).run_generate()
+
+    def _mem(syn):
+        return MemorizationEvaluator({
+            "real_data": str(train_csv), "synthetic_data": str(syn),
+            "window": 16, "max_windows": 200, "seed": 0,
+        }).evaluate()
+
+    plain = _mem(plain_out)
+    boosted = _mem(boosted_out)
+    # OHLC validity preserved.
+    assert OhlcvAlgebraicEvaluator({"synthetic_data": str(boosted_out)}).evaluate()["valid"] is True
+    # Anti-memorization must not increase duplicate_rate, nn_overlap, or
+    # copied_subseq_ratio relative to the plain variant.
+    assert boosted["duplicate_window_rate"] <= plain["duplicate_window_rate"] + 1e-9
+    assert boosted["nn_overlap_rate"] <= plain["nn_overlap_rate"] + 1e-9
+    assert boosted["copied_subseq_ratio"] <= plain["copied_subseq_ratio"] + 1e-9

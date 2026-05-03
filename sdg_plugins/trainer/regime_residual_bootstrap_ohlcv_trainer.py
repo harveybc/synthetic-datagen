@@ -248,6 +248,7 @@ class RegimeResidualBootstrapOhlcvTrainer:
             transition=T,
             stationary=pi,
             edges=edges,
+            train_close=df_train[p["close_col"]].to_numpy(dtype=np.float64),
             block_length_mean=np.int64(p["block_length_mean"]),
             n_regimes=np.int64(p["n_regimes"]),
             vol_window=np.int64(p["vol_window"]),

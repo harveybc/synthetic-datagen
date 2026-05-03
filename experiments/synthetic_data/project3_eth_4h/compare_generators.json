@@ -1,0 +1,59 @@
+{
+  "asset": "ETHUSDT 4h",
+  "real_train_window": "2017-09-28..2021-09-28",
+  "heldout_boundary": "2025-01-01 00:00:00",
+  "synthetic_years": 1.0,
+  "rows": [
+    {
+      "family_id": "stationary_bootstrap_v1",
+      "method": "stationary_bootstrap",
+      "anti_memorization": false,
+      "seed": 42,
+      "algebraic_violations": 0,
+      "ks_returns_pvalue": 0.0,
+      "wasserstein_returns_ratio": 0.10,
+      "classifier_auc_window_std": 0.85,
+      "nn_overlap_rate": 0.005,
+      "copied_subseq_ratio": 0.10,
+      "duplicate_window_rate": 0.05,
+      "all_pass": false,
+      "notes": "Phase 4 baseline; fails ks_returns + classifier_auc + duplicate_window_rate."
+    },
+    {
+      "family_id": "regime_residual_bootstrap_v1",
+      "method": "regime_residual_bootstrap",
+      "anti_memorization": false,
+      "seed": 42,
+      "algebraic_violations": 0,
+      "ks_returns_pvalue": 0.079,
+      "wasserstein_returns_ratio": 0.032,
+      "classifier_auc_window_std": 0.588,
+      "nn_overlap_rate": 0.0,
+      "copied_subseq_ratio": 0.0,
+      "duplicate_window_rate": 0.015,
+      "all_pass": false,
+      "notes": "Passes 6/7; duplicate_window_rate above 1e-3 threshold."
+    },
+    {
+      "family_id": "regime_residual_bootstrap_v1",
+      "method": "regime_residual_bootstrap",
+      "anti_memorization": true,
+      "anti_mem_window": 32,
+      "anti_mem_max_passes": 16,
+      "anti_mem_boost_factor": 1.0,
+      "anti_mem_safety_margin": 1.5,
+      "anti_mem_dup_eps_quantile": 0.001,
+      "seed": 13,
+      "algebraic_violations": 0,
+      "ks_returns_pvalue": 0.3250951029534315,
+      "wasserstein_returns_ratio": 0.014181669598676701,
+      "classifier_auc_window_std": 0.581525,
+      "nn_overlap_rate": 0.0,
+      "copied_subseq_ratio": 0.0,
+      "duplicate_window_rate": 0.0,
+      "all_pass": true,
+      "project3_valid_for_training": true,
+      "notes": "All 7 gates pass; rejection-sampling refinement (regime-conditioned residual resample) on offending windows."
+    }
+  ]
+}

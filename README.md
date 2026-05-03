@@ -260,7 +260,8 @@ The augmented CSV plugs straight into the agent-multi config — only three keys
 | Generator family | Status | Validity-by-construction | Memorization gates (4yr ETH 4h) |
 |---|---|---|---|
 | `stationary_bootstrap_ohlcv_generator` | ⚠ Diagnostic-only | ✅ | **FAILS** `duplicate_window_rate=0.025`, `nn_overlap_rate=0.010`, `copied_subseq_ratio=2.469` |
-| `regime_residual_bootstrap_ohlcv_generator` | ⚠ Diagnostic-only | ✅ | 6/7 gates pass; **fails only** `duplicate_window_rate=0.015` (vs 0.001 max). Strictly better than stationary on every gate (`copied_subseq_ratio: 2.469 → 0.000`, `nn_overlap_rate: 0.010 → 0.000`, `duplicate_window_rate: 0.025 → 0.015`) |
+| `regime_residual_bootstrap_ohlcv_generator` (default) | ⚠ Diagnostic-only | ✅ | 6/7 gates pass; **fails only** `duplicate_window_rate=0.015` (vs 0.001 max). Strictly better than stationary on every gate. |
+| `regime_residual_bootstrap_ohlcv_generator` **`--anti_memorization`** | ✅ **VALID for Project 3 training** | ✅ | **All 7 gates pass** (seed 13): `algebraic=0`, `ks_returns_pvalue=0.325`, `wasserstein_ratio=0.014`, `classifier_auc=0.582`, `nn_overlap=0.0`, `copied_subseq=0.0`, `duplicate_window_rate=0.000`. |
 | `typical_price_generator` (legacy) | ⚠ Not OHLCV | ❌ | n/a |
 | `block_bootstrap`, `regime_*` legacy, `grasynda`, `timegan`, `vae_gan` | ❌ Not Phase-4 plugin yet | n/a | n/a |
 
@@ -279,6 +280,61 @@ runs and pushes `nn_overlap_rate` to zero; calibrated `σ=0.20` keeps
 python -m examples.scripts.build_augmented_project3_training \
     --method regime_residual_bootstrap --synthetic_years 1 --seed 42
 ```
+
+#### `--anti_memorization` (post-hoc rejection-sampling refinement)
+
+The default `regime_residual_bootstrap_v1` still leaks ~1.5 % of
+synthetic 32-windows inside the real-real NN epsilon. The optional
+`--anti_memorization` mode adds a deterministic rejection-sampling
+post-pass that **does not relax any gate**. The trainer additionally
+persists the training `CLOSE` column inside the npz state so the
+generator can compute real log-return windows.
+
+Algorithm (after the regular Z_syn synthesis loop):
+
+1. Reconstruct the synthetic `CLOSE` and slide windows of length
+   `anti_mem_window` (default 32) over its log-returns.
+2. Compute the NN-L2 distance from each synthetic window to a
+   sub-sampled set of real log-return windows.
+3. Define `dup_eps = quantile(real-real NN dists, anti_mem_dup_eps_quantile)`
+   (default 0.001, identical to `MemorizationEvaluator`).
+4. Flag synthetic windows with `d ≤ dup_eps · anti_mem_safety_margin`
+   (default 1.5).
+5. For every flagged window, **resample** the rows it spans by drawing a
+   fresh residual from the *same regime's* residual pool plus
+   regime-conditioned Gaussian jitter scaled by `anti_mem_boost_factor`
+   (default 1.0). Each row is resampled at most once across passes —
+   already-touched rows are frozen to avoid variance accumulation.
+6. Re-reconstruct and re-check; loop up to `anti_mem_max_passes`
+   (default 8) iterations or until no flagged windows remain.
+
+Plugin params (defaults):
+
+| param | default | purpose |
+|---|---|---|
+| `anti_memorization` | `False` | Master switch; off by default. |
+| `anti_mem_window` | `32` | Window length for NN duplicate detection. |
+| `anti_mem_max_real_windows` | `4000` | Sub-sample ceiling for the real reference set. |
+| `anti_mem_dup_eps_quantile` | `0.001` | Quantile of real-real NN distances used as dup_eps. |
+| `anti_mem_safety_margin` | `1.50` | Multiplier on dup_eps; window is flagged if `d ≤ margin · dup_eps`. |
+| `anti_mem_boost_factor` | `1.0` | Multiplier on `jitter_sigma` for the resampled rows. |
+| `anti_mem_max_passes` | `8` | Hard cap on outer loop iterations. |
+
+The corresponding CLI flags on `build_augmented_project3_training.py`
+are `--anti_memorization --anti_mem_window --anti_mem_max_passes
+--anti_mem_boost_factor --anti_mem_safety_margin
+--anti_mem_dup_eps_quantile`. Validated combination on ETH 4h:
+
+```bash
+python examples/scripts/build_augmented_project3_training.py \
+    --method regime_residual_bootstrap --synthetic_years 1 --seed 13 \
+    --anti_memorization --anti_mem_window 32 --anti_mem_max_passes 16 \
+    --anti_mem_boost_factor 1.0 --anti_mem_safety_margin 1.5
+```
+
+The full row-by-row gate comparison across the three configurations is
+persisted at
+`experiments/synthetic_data/project3_eth_4h/compare_generators.json`.
 
 ### Quality gates fail closed (2026-05-03 addendum)
 

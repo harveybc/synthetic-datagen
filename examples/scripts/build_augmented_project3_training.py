@@ -114,6 +114,19 @@ def main():
             "the resulting CSV for Project 3 policy training."
         ),
     )
+    ap.add_argument(
+        "--anti_memorization",
+        action="store_true",
+        help=(
+            "Enable rejection-sampling refinement on synthetic windows that "
+            "are too close to a real training window (regime_residual only)."
+        ),
+    )
+    ap.add_argument("--anti_mem_window", type=int, default=32)
+    ap.add_argument("--anti_mem_max_passes", type=int, default=8)
+    ap.add_argument("--anti_mem_boost_factor", type=float, default=4.0)
+    ap.add_argument("--anti_mem_dup_eps_quantile", type=float, default=0.001)
+    ap.add_argument("--anti_mem_safety_margin", type=float, default=1.5)
     args = ap.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -191,15 +204,25 @@ def main():
     syn_timestamps = _build_pre_real_synthetic_timestamps(syn_start, n_syn, "4h")
     syn_path = os.path.join(method_dir, "synthetic_ohlcv.csv")
     generator_cls = _GENERATORS[args.method]
-    gen = generator_cls({
+    gen_cfg = {
         **base_cfg,
         "load_model": model_path,
         "n_samples": n_syn,
         "output_file": syn_path,
         "start_timestamp": str(syn_timestamps[0]),
         "frequency": "4h",
-    })
-    gen.run_generate()
+    }
+    if args.anti_memorization and args.method == "regime_residual_bootstrap":
+        gen_cfg.update({
+            "anti_memorization": True,
+            "anti_mem_window": args.anti_mem_window,
+            "anti_mem_max_passes": args.anti_mem_max_passes,
+            "anti_mem_boost_factor": args.anti_mem_boost_factor,
+            "anti_mem_dup_eps_quantile": args.anti_mem_dup_eps_quantile,
+            "anti_mem_safety_margin": args.anti_mem_safety_margin,
+        })
+    gen = generator_cls(gen_cfg)
+    gen_info = gen.run_generate()
     audit_gen = build_audit_record(
         {**base_cfg, "generator": generator_cls.__name__,
          "load_model": model_path, "output_file": syn_path,
