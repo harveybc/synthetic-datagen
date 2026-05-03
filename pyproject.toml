@@ -32,10 +32,12 @@ vae_trainer = "sdg_plugins.trainer.vae_trainer:VaeTrainer"
 gan_trainer = "sdg_plugins.trainer.gan_trainer:GanTrainer"
 vae_gan_trainer = "sdg_plugins.trainer.vae_gan_trainer:VaeGanTrainer"
 stationary_bootstrap_ohlcv_trainer = "sdg_plugins.trainer.stationary_bootstrap_ohlcv_trainer:StationaryBootstrapOhlcvTrainer"
+regime_residual_bootstrap_ohlcv_trainer = "sdg_plugins.trainer.regime_residual_bootstrap_ohlcv_trainer:RegimeResidualBootstrapOhlcvTrainer"
 
 [project.entry-points."sdg.generator"]
 typical_price_generator = "sdg_plugins.generator.typical_price_generator:TypicalPriceGenerator"
 stationary_bootstrap_ohlcv_generator = "sdg_plugins.generator.stationary_bootstrap_ohlcv_generator:StationaryBootstrapOhlcvGenerator"
+regime_residual_bootstrap_ohlcv_generator = "sdg_plugins.generator.regime_residual_bootstrap_ohlcv_generator:RegimeResidualBootstrapOhlcvGenerator"
 
 [project.entry-points."sdg.evaluator"]
 distribution_evaluator = "sdg_plugins.evaluator.distribution_evaluator:DistributionEvaluator"

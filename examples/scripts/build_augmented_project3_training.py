@@ -42,9 +42,29 @@ from sdg_plugins.feature_engine.tech_stat_feature_engine import TechStatFeatureE
 from sdg_plugins.generator.stationary_bootstrap_ohlcv_generator import (
     StationaryBootstrapOhlcvGenerator,
 )
+from sdg_plugins.generator.regime_residual_bootstrap_ohlcv_generator import (
+    RegimeResidualBootstrapOhlcvGenerator,
+)
 from sdg_plugins.trainer.stationary_bootstrap_ohlcv_trainer import (
     StationaryBootstrapOhlcvTrainer,
 )
+from sdg_plugins.trainer.regime_residual_bootstrap_ohlcv_trainer import (
+    RegimeResidualBootstrapOhlcvTrainer,
+)
+
+
+_TRAINERS = {
+    "stationary_bootstrap": StationaryBootstrapOhlcvTrainer,
+    "regime_residual_bootstrap": RegimeResidualBootstrapOhlcvTrainer,
+}
+_GENERATORS = {
+    "stationary_bootstrap": StationaryBootstrapOhlcvGenerator,
+    "regime_residual_bootstrap": RegimeResidualBootstrapOhlcvGenerator,
+}
+_FAMILY_IDS = {
+    "stationary_bootstrap": "stationary_bootstrap_v1",
+    "regime_residual_bootstrap": "regime_residual_bootstrap_v1",
+}
 
 
 REAL_INPUT = "examples/data/ethusdt_4h_full_8yr.csv"
@@ -80,8 +100,8 @@ def _build_pre_real_synthetic_timestamps(start_real: pd.Timestamp, n: int, freq:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--method", default="stationary_bootstrap",
-                    choices=["stationary_bootstrap"],
-                    help="Synthetic generation method (currently only the Phase-4-ready bootstrap)")
+                    choices=sorted(_TRAINERS.keys()),
+                    help="Synthetic generation method")
     ap.add_argument("--synthetic_years", type=float, default=1.0,
                     help="How many years of synthetic data to prepend (≈2190 rows/year at 4h)")
     ap.add_argument("--output_dir", default="experiments/synthetic_data/project3_eth_4h")
@@ -117,7 +137,7 @@ def main():
 
     # 3. Train
     print(f"[2/7] Training {args.method}...")
-    family_id = "stationary_bootstrap_v1"
+    family_id = _FAMILY_IDS[args.method]
     base_cfg = {
         "financial_mode": True,
         "asset_id": "ethusdt",
@@ -136,15 +156,28 @@ def main():
         "synthetic_ledger_path": os.path.join(args.output_dir, "SYNTHETIC_LEDGER.csv"),
     }
     model_path = os.path.join(method_dir, "bootstrap.npz")
-    trainer = StationaryBootstrapOhlcvTrainer({
+    trainer_cls = _TRAINERS[args.method]
+    trainer_cfg = {
         **base_cfg,
         "train_data": train_ohlcv_path,
         "save_model": model_path,
         "block_length_mean": 24,
-    })
+    }
+    if args.method == "regime_residual_bootstrap":
+        trainer_cfg.update({
+            # Shorter blocks + per-row regime-conditioned residual sampling +
+            # moderate jitter strikes the best balance on ETH 4h between
+            # memorization gates (need duplicate_rate=0/200) and the
+            # distribution KS p-value gate (need >0.01).
+            "block_length_mean": 4,
+            "n_regimes": 3,
+            "vol_window": 24,
+            "jitter_sigma": 0.20,
+        })
+    trainer = trainer_cls(trainer_cfg)
     trainer.train()
     audit_fit = build_audit_record(
-        {**base_cfg, "trainer": "stationary_bootstrap_ohlcv_trainer",
+        {**base_cfg, "trainer": trainer_cls.__name__,
          "train_data": train_ohlcv_path, "save_model": model_path},
         input_files={"train_data": train_ohlcv_path},
     )
@@ -157,7 +190,8 @@ def main():
     syn_start = train_real[DATETIME_COL].iloc[0]
     syn_timestamps = _build_pre_real_synthetic_timestamps(syn_start, n_syn, "4h")
     syn_path = os.path.join(method_dir, "synthetic_ohlcv.csv")
-    gen = StationaryBootstrapOhlcvGenerator({
+    generator_cls = _GENERATORS[args.method]
+    gen = generator_cls({
         **base_cfg,
         "load_model": model_path,
         "n_samples": n_syn,
@@ -167,7 +201,7 @@ def main():
     })
     gen.run_generate()
     audit_gen = build_audit_record(
-        {**base_cfg, "generator": "stationary_bootstrap_ohlcv_generator",
+        {**base_cfg, "generator": generator_cls.__name__,
          "load_model": model_path, "output_file": syn_path,
          "n_samples": n_syn},
         input_files={"model": model_path},
@@ -286,14 +320,28 @@ def main():
 
     # 7. Audit + family registry
     print("[7/7] Updating ledger + registry + protocol stub...")
-    register_family(
-        family_id,
-        description="Politis-Romano stationary bootstrap on OHLCV primitives.",
-        assumptions=[
+    family_descriptions = {
+        "stationary_bootstrap_v1": "Politis-Romano stationary bootstrap on OHLCV primitives.",
+        "regime_residual_bootstrap_v1": "Regime-conditional residual block bootstrap with Gaussian jitter on OHLCV primitives.",
+    }
+    family_assumptions = {
+        "stationary_bootstrap_v1": [
             "log-returns are weakly stationary on the fit window",
             "block geometric distribution with mean=block_length_mean=24",
             "validity-by-construction reconstruction of OHLCV from primitives",
         ],
+        "regime_residual_bootstrap_v1": [
+            "volatility regimes are quantile-bin labels of rolling |r_close|",
+            "primitives within a regime have approximately stationary residuals",
+            "regime sequence is a Markov chain (Laplace-smoothed transitions)",
+            "additive Gaussian jitter on residuals breaks exact-window memorization",
+            "validity-by-construction reconstruction of OHLCV from primitives",
+        ],
+    }
+    register_family(
+        family_id,
+        description=family_descriptions.get(family_id, args.method),
+        assumptions=family_assumptions.get(family_id, []),
         fit_windows=[{"path": train_ohlcv_path, "n_rows": len(train_real),
                       "start": TRAIN_START, "end": TRAIN_END}],
         gate_values=gate_summary,

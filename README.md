@@ -259,9 +259,26 @@ The augmented CSV plugs straight into the agent-multi config — only three keys
 
 | Generator family | Status | Validity-by-construction | Memorization gates (4yr ETH 4h) |
 |---|---|---|---|
-| `stationary_bootstrap_ohlcv_generator` | ⚠ Diagnostic-only | ✅ | **FAILS** `duplicate_window_rate`, `nn_overlap_rate`, `copied_subseq_ratio` — see addendum below |
+| `stationary_bootstrap_ohlcv_generator` | ⚠ Diagnostic-only | ✅ | **FAILS** `duplicate_window_rate=0.025`, `nn_overlap_rate=0.010`, `copied_subseq_ratio=2.469` |
+| `regime_residual_bootstrap_ohlcv_generator` | ⚠ Diagnostic-only | ✅ | 6/7 gates pass; **fails only** `duplicate_window_rate=0.015` (vs 0.001 max). Strictly better than stationary on every gate (`copied_subseq_ratio: 2.469 → 0.000`, `nn_overlap_rate: 0.010 → 0.000`, `duplicate_window_rate: 0.025 → 0.015`) |
 | `typical_price_generator` (legacy) | ⚠ Not OHLCV | ❌ | n/a |
-| `block_bootstrap`, `regime_*`, `grasynda`, `timegan`, `vae_gan` | ❌ Not Phase-4 plugin yet | n/a | n/a |
+| `block_bootstrap`, `regime_*` legacy, `grasynda`, `timegan`, `vae_gan` | ❌ Not Phase-4 plugin yet | n/a | n/a |
+
+**Algorithmic note** — `regime_residual_bootstrap_v1` quantile-bins the
+training window into K=3 volatility regimes (rolling `|r_close|`),
+stores regime-mean-removed residuals, walks a Markov chain over the
+regimes, and at each step produces
+
+    Z_syn[t] = mean[regime_t] + residual[idx_t] + N(0, σ · std[regime_t])
+
+The continuous Gaussian jitter is what eliminates the `copied_subseq`
+runs and pushes `nn_overlap_rate` to zero; calibrated `σ=0.20` keeps
+`KS_returns p > 0.01`. CLI:
+
+```bash
+python -m examples.scripts.build_augmented_project3_training \
+    --method regime_residual_bootstrap --synthetic_years 1 --seed 42
+```
 
 ### Quality gates fail closed (2026-05-03 addendum)
 
