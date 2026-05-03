@@ -1,0 +1,100 @@
+{
+  "asset": "ETHUSDT_4h",
+  "build_metadata": {
+    "augmentation_summary_path": "experiments/synthetic_data/project3_eth_4h/regime_residual_bootstrap/augmentation_summary.json",
+    "augmentation_summary_sha256": "2bc7bc99fd9ac9584d13aa116f9d24ce0805f9e77b5d40cb6de2d1abb908759d",
+    "built_at_utc": "2026-05-03T16:37:37Z",
+    "phase4_section": "\u00a74.1, \u00a74.2, \u00a74.3 (pre-promotion)"
+  },
+  "distribution_gates": {
+    "all_pass": true,
+    "ks_returns_pass": true,
+    "wasserstein_pass": true
+  },
+  "downstream_training": {
+    "agent_multi_config_template": "examples/config/project3_ethusdt_4h_sac_synth_anti_mem_v1.json",
+    "compare_plan": "experiments/synthetic_data/project3_eth_4h/COMPARE_PLAN.md",
+    "do_not_run_until": "Stage B approval recorded in SYNTHETIC_LEDGER.csv"
+  },
+  "gate_table": {
+    "algebraic_violations": 0,
+    "classifier_auc_window_std": 0.581525,
+    "copied_subseq_ratio": 0.0,
+    "drawdown_ks_pvalue": 1.714e-321,
+    "duplicate_window_rate": 0.0,
+    "ks_returns_pvalue": 0.3250951029534315,
+    "nn_overlap_rate": 0.0,
+    "wasserstein_returns_ratio": 0.014181669598676701
+  },
+  "gate_thresholds": {
+    "algebraic_violations_max": 0,
+    "classifier_auc_window_std_max": 0.7,
+    "copied_subseq_ratio_max": 0.5,
+    "duplicate_window_rate_max": 0.001,
+    "ks_returns_pvalue_min": 0.01,
+    "nn_overlap_rate_max": 0.001,
+    "wasserstein_returns_ratio_max": 1.5
+  },
+  "generator": {
+    "anti_memorization_params": {
+      "anti_mem_boost_factor": 1.0,
+      "anti_mem_dup_eps_quantile": 0.001,
+      "anti_mem_max_passes": 16,
+      "anti_mem_max_real_windows": 4000,
+      "anti_mem_safety_margin": 1.5,
+      "anti_mem_window": 32,
+      "anti_memorization": true
+    },
+    "family_id": "regime_residual_bootstrap_v1",
+    "family_revision": "anti_mem_v1",
+    "generator_plugin": "regime_residual_bootstrap_ohlcv_generator",
+    "seed": 13,
+    "trainer_plugin": "regime_residual_bootstrap_ohlcv_trainer"
+  },
+  "input_files": {
+    "real_input_csv": {
+      "path": "examples/data/ethusdt_4h_full_8yr.csv",
+      "sha256": "1b447c66e68495e826c53e2ab2b08ecd3922c8fdc735747628f8d0435ebe440f"
+    }
+  },
+  "memorization_gates": {
+    "all_pass": true,
+    "classifier_auc_pass": true,
+    "copied_subseq_pass": true,
+    "duplicate_rate_pass": true,
+    "nn_overlap_pass": true
+  },
+  "output_files": {
+    "augmented_tech_stat_csv": {
+      "path": "experiments/synthetic_data/project3_eth_4h/regime_residual_bootstrap/ethusdt_4h_tech_stat_augmented_regime_residual_bootstrap.csv",
+      "sha256": "377cb8f11b252def25729893f7eca9b19aa11363be64c457ec60e5c00c9e4946"
+    },
+    "synthetic_ohlcv_csv": {
+      "path": "experiments/synthetic_data/project3_eth_4h/regime_residual_bootstrap/synthetic_ohlcv.csv",
+      "sha256": "f28ebbbe6f748a7496667382871cdba13fb949854a57a887eafdd8bc241cfdec"
+    },
+    "trainer_npz": {
+      "path": "experiments/synthetic_data/project3_eth_4h/regime_residual_bootstrap/bootstrap.npz",
+      "sha256": "fbe2ae82996f2cb7139b2ac325764a7fb36712196707913d1bdb88ceceb89351"
+    }
+  },
+  "packet_kind": "synthetic_augmentation_protocol",
+  "project3_valid_for_training": true,
+  "schema_version": "1.0.0",
+  "stage_b_status": "PENDING_APPROVAL",
+  "windows": {
+    "downstream_split_template": {
+      "comment": "val + test windows must remain entirely real-data",
+      "split_anchor": "start",
+      "test_years": 1,
+      "train_years": 5,
+      "val_years": 1
+    },
+    "heldout_boundary": "2025-01-01 00:00:00",
+    "pre_stage_c_real_end": "2024-12-31 20:00:00",
+    "real_train_n_rows": 8749,
+    "synthetic_n_rows": 2190,
+    "train_end": "2021-09-28 00:00:00",
+    "train_start": "2017-09-28 04:00:00"
+  }
+}
