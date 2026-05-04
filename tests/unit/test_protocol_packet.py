@@ -106,6 +106,8 @@ def test_protocol_builder_emits_locked_packet_on_valid_input(tmp_path):
     assert packet["generator"]["anti_memorization_params"]["anti_memorization"] is True
     assert packet["windows"]["heldout_boundary"] == "2025-01-01 00:00:00"
     assert packet["stage_b_status"] == "PENDING_APPROVAL"
+    assert packet["diagnostic_warnings"]
+    assert "drawdown_ks_pvalue" in packet["diagnostic_warnings"][0]
     # All file hashes are 64-char hex.
     for blob in [packet["input_files"]["real_input_csv"]] + list(packet["output_files"].values()):
         assert len(blob["sha256"]) == 64 and all(c in "0123456789abcdef" for c in blob["sha256"])

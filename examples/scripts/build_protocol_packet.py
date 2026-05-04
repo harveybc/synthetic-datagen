@@ -91,6 +91,20 @@ def _check_heldout(synthetic_csv: str) -> List[str]:
     return []
 
 
+def _diagnostic_warnings(summary: Dict[str, Any]) -> List[str]:
+    """Return non-blocking warnings for metrics outside the approved gate set."""
+    gs = summary.get("gate_summary", {})
+    warnings: List[str] = []
+    drawdown_p = gs.get("drawdown_ks_pvalue")
+    if drawdown_p is not None and float(drawdown_p) < 0.01:
+        warnings.append(
+            "drawdown_ks_pvalue is below 0.01; this is not an approved Phase 4 "
+            "blocking gate, but Stage B approval must review drawdown-shape mismatch "
+            "before any synthetic-pretraining launch."
+        )
+    return warnings
+
+
 # ---------------------------------------------------------------------------
 def build_protocol_packet(
     augmentation_summary_path: str,
@@ -135,6 +149,7 @@ def build_protocol_packet(
             "protocol packet REFUSED — invariants violated: "
             + "; ".join(failures)
         )
+    diagnostic_warnings = _diagnostic_warnings(summary)
 
     packet: Dict[str, Any] = {
         "schema_version": "1.0.0",
@@ -165,6 +180,7 @@ def build_protocol_packet(
         },
         "gate_thresholds": GATE_THRESHOLDS,
         "gate_table": summary["gate_summary"],
+        "diagnostic_warnings": diagnostic_warnings,
         "distribution_gates": summary["distribution_gates"],
         "memorization_gates": summary["memorization_gates"],
         "project3_valid_for_training": True,
@@ -264,6 +280,16 @@ def render_md(packet: Dict[str, Any]) -> str:
         f"| duplicate_window_rate | < 1e-3 | {g['duplicate_window_rate']:.6g} | ✅ |",
         "",
         f"`project3_valid_for_training` = **{packet['project3_valid_for_training']}**",
+        "",
+        "## Diagnostic warnings",
+        "",
+    ]
+    warnings = packet.get("diagnostic_warnings") or []
+    if warnings:
+        lines.extend(f"- {warning}" for warning in warnings)
+    else:
+        lines.append("- None.")
+    lines += [
         "",
         "## Input files",
     ]

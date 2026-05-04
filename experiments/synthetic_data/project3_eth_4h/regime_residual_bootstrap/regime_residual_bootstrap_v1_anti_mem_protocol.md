@@ -5,7 +5,7 @@ regenerate via `examples/scripts/build_protocol_packet.py`.
 
 - Asset: **ETHUSDT_4h**
 - Schema version: `1.0.0`
-- Built (UTC): `2026-05-03T16:37:37Z`
+- Built (UTC): `2026-05-04T02:56:45Z`
 - Stage B status: **PENDING_APPROVAL**
 
 ## Generator
@@ -52,6 +52,10 @@ regenerate via `examples/scripts/build_protocol_packet.py`.
 | duplicate_window_rate | < 1e-3 | 0 | ✅ |
 
 `project3_valid_for_training` = **True**
+
+## Diagnostic warnings
+
+- drawdown_ks_pvalue is below 0.01; this is not an approved Phase 4 blocking gate, but Stage B approval must review drawdown-shape mismatch before any synthetic-pretraining launch.
 
 ## Input files
 - `real_input_csv` — `examples/data/ethusdt_4h_full_8yr.csv`
