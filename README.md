@@ -1,363 +1,206 @@
 # synthetic-datagen
 
-Self-contained synthetic **typical_price** timeseries generator with plugin architecture.
+Plugin-driven synthetic financial time-series generator. The `sdg` CLI trains
+generator models on real market data, generates synthetic series, optimizes
+generator hyperparameters and evaluates synthetic quality — with an
+**OHLCV-first** workflow: the primary generator families are stationary
+bootstrap and regime-residual bootstrap over full open/high/low/close/volume
+bars, with algebraic-consistency and stylized-facts evaluation. Legacy
+VAE/GAN/VAE-GAN trainers and a typical-price generator remain available as
+plugins. Built-in guardrails (forbidden-paths, held-out boundary, run ledger,
+audit records) keep synthetic data out of evaluation sets and make every run
+traceable.
 
-Trains generative models (VAE, GAN, VAE-GAN) on real EUR/USD typical_price data, then generates realistic but unpredictable synthetic timeseries — critical for [DOIN](https://github.com/harveybc/doin-core) verification.
+## Status
 
-## Programmatic API (Plugin-First)
+**Active component** of the harveybc trading stack (package
+`synthetic-datagen` 1.0.0). Successor of the legacy
+[timeseries-gan](https://github.com/harveybc/timeseries-gan) repository.
 
-All plugins have clean programmatic APIs — the CLI is just a wrapper.
+## Role and non-responsibilities
 
-```python
-# Train
-from sdg_plugins.trainer.vae_gan_trainer import VaeGanTrainer
-trainer = VaeGanTrainer()
-trainer.configure({"window_size": 144, "latent_dim": 16, "epochs": 400, ...})
-trainer.train(train_data=["d1.csv", "d2.csv"], save_model="model.keras")
+`synthetic-datagen` produces synthetic OHLCV / typical-price datasets,
+fitted generator artifacts and augmentation manifests for training-data
+augmentation experiments.
 
-# Generate (e.g. from DOIN evaluator)
-from sdg_plugins.generator.typical_price_generator import TypicalPriceGenerator
-gen = TypicalPriceGenerator()
-gen.load_model("model.keras")
-df = gen.generate(seed=42, n_samples=5000)
-# → DataFrame with DATE_TIME, typical_price columns
+It does **not**:
 
-# Evaluate (THE metric — predictive utility from MDSc thesis phase 4)
-from sdg_plugins.evaluator.predictive_evaluator import PredictiveEvaluator
-ev = PredictiveEvaluator()
-ev.configure({"window_size": 144, "eval_epochs": 50})
-result = ev.evaluate(
-    synthetic=synthetic_df,
-    real_train=train_df,     # d4
-    real_val=val_df,         # d5
-    real_test=test_df,       # d6
-)
-# result["mae_delta_test"] < 0  → synthetic data HELPS prediction
-# result["synthetic_helps_test"] = True/False
-
-# Secondary distribution metrics
-from sdg_plugins.evaluator.distribution_evaluator import DistributionEvaluator
-dist_ev = DistributionEvaluator()
-metrics = dist_ev.evaluate(synthetic=synthetic_df, real=real_df)
-```
-
-## CLI Quick Start
-
-```bash
-# Install
-pip install -e ".[dev]"
-
-# Train a VAE-GAN on real data
-sdg --mode train --trainer vae_gan_trainer \
-    --train_data examples/data/d1.csv examples/data/d2.csv examples/data/d3.csv \
-    --save_model examples/models/generator.keras \
-    --epochs 400 --latent_dim 16
-
-# Generate synthetic data
-sdg --mode generate \
-    --load_model examples/models/generator.keras \
-    --n_samples 5000 --seed 42 \
-    --output_file synthetic_typical_price.csv
-
-# Evaluate: does synthetic data improve prediction? (thesis phase 4)
-sdg --mode evaluate \
-    --synthetic_data synthetic_typical_price.csv \
-    --real_train examples/data/d4.csv \
-    --real_val examples/data/d5.csv \
-    --real_test examples/data/d6.csv \
-    --metrics_file metrics.json
-
-# Optional: use external predictor repo for evaluation
-sdg --mode evaluate \
-    --synthetic_data synthetic_typical_price.csv \
-    --real_train examples/data/d4.csv \
-    --real_val examples/data/d5.csv \
-    --real_test examples/data/d6.csv \
-    --predictor_dir /home/openclaw/predictor \
-    --metrics_file metrics.json
-
-# Secondary: distribution metrics only
-sdg --mode evaluate --evaluator distribution_evaluator \
-    --synthetic_data synthetic_typical_price.csv \
-    --real_data examples/data/d4.csv \
-    --metrics_file dist_metrics.json
-
-# Optimize hyper-parameters via GA
-sdg --mode optimize --trainer vae_gan_trainer \
-    --train_data examples/data/d1.csv \
-    --population_size 20 --n_generations 50
-```
+- train or serve predictive models — that is
+  [predictor](https://github.com/harveybc/predictor) and
+  [prediction_provider](https://github.com/harveybc/prediction_provider);
+- engineer features or labels for real data — that is
+  [feature-eng](https://github.com/harveybc/feature-eng);
+- decide trades or run strategies;
+- host distributed optimization — that is
+  [doin-node](https://github.com/harveybc/doin-node) (which consumes sdg
+  artifacts, see below).
 
 ## Architecture
 
-```
-synthetic-datagen/
-├── app/
-│   ├── main.py              # Entry point & CLI dispatch
-│   ├── cli.py               # Argument parsing
-│   ├── config.py            # Default configuration
-│   ├── data_processor.py    # Data loading, returns, windowing
-│   └── plugin_loader.py     # Plugin discovery (entry_points)
-├── sdg_plugins/
-│   ├── trainer/
-│   │   ├── vae_trainer.py        # Pure VAE
-│   │   ├── gan_trainer.py        # Pure GAN
-│   │   └── vae_gan_trainer.py    # VAE-GAN (recommended)
-│   ├── generator/
-│   │   └── typical_price_generator.py
-│   ├── evaluator/
-│   │   └── distribution_evaluator.py
-│   └── optimizer/
-│       └── ga_optimizer.py
-├── examples/
-│   ├── data/                # Real typical_price datasets (d1–d6)
-│   ├── models/              # Trained models
-│   └── config/              # Example JSON configs
-└── tests/
-```
+[`app/main.py`](app/main.py) dispatches one of four modes — `train`,
+`generate`, `optimize`, `evaluate` — over plugins resolved from nine
+namespaced entry-point groups declared in [`pyproject.toml`](pyproject.toml):
 
-## Operation Modes
+| Group | Plugins |
+|---|---|
+| `sdg.trainer` | `stationary_bootstrap_ohlcv_trainer`, `regime_residual_bootstrap_ohlcv_trainer`, `vae_trainer`, `gan_trainer`, `vae_gan_trainer` — [`sdg_plugins/trainer/`](sdg_plugins/trainer) |
+| `sdg.generator` | `stationary_bootstrap_ohlcv_generator`, `regime_residual_bootstrap_ohlcv_generator`, `typical_price_generator` — [`sdg_plugins/generator/`](sdg_plugins/generator) |
+| `sdg.evaluator` | `ohlcv_algebraic_evaluator`, `financial_stylized_facts_evaluator`, `financial_distribution_evaluator`, `distribution_evaluator`, `predictive_evaluator`, `augmentation_evaluator`, `memorization_evaluator`, `augmentation_manifest_pipeline` — [`sdg_plugins/evaluator/`](sdg_plugins/evaluator) |
+| `sdg.optimizer` | `ga_optimizer` (DEAP genetic search) — [`sdg_plugins/optimizer/`](sdg_plugins/optimizer) |
+| `sdg.transformer` | `ohlcv_transformer` — [`sdg_plugins/transformer/`](sdg_plugins/transformer) |
+| `sdg.reconstructor` | `ohlcv_reconstructor` — [`sdg_plugins/reconstructor/`](sdg_plugins/reconstructor) |
+| `sdg.feature_engine` | `minimal_financial_feature_engine`, `tech_stat_feature_engine` — [`sdg_plugins/feature_engine/`](sdg_plugins/feature_engine) |
+| `sdg.aggregator` | `ohlcv_timeframe_aggregator` — [`sdg_plugins/aggregator/`](sdg_plugins/aggregator) |
+| `sdg.pipeline` | `augmentation_manifest_pipeline` — [`sdg_plugins/pipeline/`](sdg_plugins/pipeline) |
 
-| Mode | Description |
-|------|-------------|
-| **train** | Train a generative model on real typical_price CSVs |
-| **generate** | Generate synthetic data from a trained model + seed |
-| **evaluate** | Predictive utility test: does synthetic data improve prediction? |
-| **optimize** | GA search for optimal hyper-parameters |
+All groups are namespaced under `sdg.*`, so they cannot collide with other
+repositories' entry-point groups. The OHLCV column schema lives in
+[`sdg_plugins/schema/financial_ohlcv_schema.py`](sdg_plugins/schema/financial_ohlcv_schema.py).
 
-## Output Format
+### Guardrails
 
-Matches predictor's expected input exactly:
+- [`app/forbidden_paths.py`](app/forbidden_paths.py) — refuses to open any
+  input matching the globs in [`forbidden_paths.txt`](forbidden_paths.txt)
+  (held-out evaluation data must never feed generator selection).
+- [`app/heldout_guard.py`](app/heldout_guard.py) — enforces the rule that the
+  generator never sees rows on or after the configured held-out boundary
+  (`--heldout_boundary`, `reject_if_input_crosses_heldout`).
+- [`app/synthetic_ledger.py`](app/synthetic_ledger.py) — append-only CSV
+  ledger of every generator fit and generation run, keyed by
+  `(generator_family_id, config_hash, seed, kind)`; default location
+  `experiments/synthetic_data/SYNTHETIC_LEDGER.csv` (overridable via config or
+  the `SDG_SYNTHETIC_LEDGER` environment variable).
+- [`app/audit.py`](app/audit.py) — reproducibility record (config hash, input
+  hash, plugin names, seed, git commit) attached to run metadata.
 
-```csv
-DATE_TIME,typical_price
-2020-01-01 00:00:00,1.3007625
-2020-01-01 04:00:00,1.2966883333333332
-```
+## Requirements
 
-## Evaluation Methodology (MDSc Thesis Phase 4)
+- Python **>= 3.10** (per [`pyproject.toml`](pyproject.toml)).
+- Dependencies (from `pyproject.toml`): `numpy>=1.24`, `pandas>=2.0`,
+  `tensorflow>=2.14`, `scipy>=1.11`, `scikit-learn>=1.3`, `deap>=1.4`;
+  `pytest` via the `dev` extra.
 
-The **real test** of synthetic data quality: does it improve prediction?
+## Installation
 
-```
-Step 1: Train predictor on real d4          → MAE on d5, d6 (baseline)
-Step 2: Prepend synthetic data to d4        → train same predictor
-Step 3: Measure MAE on same d5, d6          → (augmented)
-Step 4: Compare: delta = augmented - baseline
-        If delta < 0 → synthetic data HELPS → good generator
-        If delta > 0 → synthetic data HURTS → bad generator
+Unverified (not executed in a clean environment for this README):
+
+```bash
+git clone https://github.com/harveybc/synthetic-datagen.git
+cd synthetic-datagen
+pip install -e .[dev]
+# installs the `sdg` console script
 ```
 
-This is THE metric. Distribution similarity (KL, Wasserstein) is secondary.
+Verified in the maintainer environment (Python 3.12.13, 2026-08-10):
 
-Two evaluator backends:
-- **Built-in** (default): lightweight LSTM predictor, fast, good for iteration
-- **External**: runs Harvey's full predictor repo as subprocess, authoritative
+- `python -m app.main --help` → prints the full `sdg` usage.
+- `python -m app.main --list_plugins` → prints the plugin registry for all
+  groups (trainers, generators, evaluators, optimizers, ...).
+- `python -c "import app.forbidden_paths, app.heldout_guard, app.synthetic_ledger, app.audit"`
+  → `guardrail imports OK`.
 
-## Key Design Decisions
+## Quickstart
 
-- **Single feature**: typical_price only — no OHLC, no indicators
-- **Self-contained**: trains AND generates — no dependency on feature-extractor
-- **Returns-based**: models log-returns (stationary), reconstructs prices
-- **Seed-deterministic**: same model + same seed = identical output
-- **Plugin architecture**: all components replaceable via entry_points
-- **4h periodicity**: trains on and outputs 4h interval data directly
+Fit a stationary-bootstrap OHLCV generator and produce a synthetic series
+using the repo-owned config and sample data:
 
-## Reference Parameters (from MDSc phase_4_2)
-
-| Parameter | Value |
-|-----------|-------|
-| window_size | 144 (24 days @ 4h) |
-| batch_size | 128 |
-| epochs | 400 |
-| latent_dim | 16 |
-| activation | tanh |
-| kl_weight | 1e-3 |
-| mmd_lambda | 1e-2 |
-| use_returns | true |
-
-## DOIN Integration
-
-In DOIN evaluators, each gets a different seed derived from:
+```bash
+# Train + generate per the example config (writes model .npz, metadata and
+# a synthetic CSV under examples/data/)
+python -m app.main --load_config examples/config/financial_ohlcv_bootstrap_config.json
 ```
-seed = hash(commitment + domain + evaluator_id + chain_tip_hash)
-```
-Same model + different seed = different but valid synthetic data → optimizer can't predict evaluation data.
+
+The config
+[`examples/config/financial_ohlcv_bootstrap_config.json`](examples/config/financial_ohlcv_bootstrap_config.json)
+trains on
+[`examples/data/financial_ohlcv_sample.csv`](examples/data/financial_ohlcv_sample.csv)
+and emits the artifacts committed next to it
+([`financial_ohlcv_bootstrap.npz`](examples/data/financial_ohlcv_bootstrap.npz),
+[`financial_ohlcv_synthetic.csv`](examples/data/financial_ohlcv_synthetic.csv),
+metadata JSONs). This run was not re-executed for this README to avoid
+overwriting the committed artifacts; the `--help`, `--list_plugins` and import
+checks above were executed. A typical-price generation config is at
+[`examples/config/generate.json`](examples/config/generate.json), and larger
+drivers (generator sweeps, augmentation-manifest builds, protocol packets)
+live in [`examples/scripts/`](examples/scripts).
+
+Everything is also callable programmatically — plugins are plain classes
+(`configure(...)` / `train(...)` / `generate(...)` / `evaluate(...)`), and the
+CLI is a thin wrapper over them.
+
+## Distributed / DOIN usage
+
+`synthetic-datagen` itself runs locally. Its fitted generator artifacts are
+consumed by [doin-node](https://github.com/harveybc/doin-node): predictor
+node example configurations point at an sdg artifact root (`sdg_root`) and a
+fitted generator model file to source augmentation data during distributed
+optimization campaigns.
 
 ## Tests
 
 ```bash
-pytest tests/ -v
+python -m pytest -q --collect-only
 ```
+
+Observed result (2026-08-10, Python 3.12.13): `71 tests collected, 3 errors` —
+most of the suite under [`tests/`](tests) collects cleanly; three modules have
+collection errors. Run the suite with `python -m pytest -q`.
+
+## Outputs and reproducibility
+
+- Fitted generator models (`--save_model`, e.g. `.npz` for bootstrap
+  families, `.keras` for neural families) with metadata JSON
+  (`--metadata_file` / `save_metadata`).
+- Synthetic datasets (`--output_file`) with synthetic metadata
+  (`synthetic_metadata_file`) carrying the audit record.
+- Evaluation metrics JSON (`--metrics_file`).
+- Append-only run ledger (default
+  `experiments/synthetic_data/SYNTHETIC_LEDGER.csv`); committed experiment
+  outputs live under [`experiments/synthetic_data/`](experiments/synthetic_data).
+- Runs are seeded (`--seed`) and hashed (config + input hashes in the audit
+  record), so a run is reproducible from its config and metadata.
+
+## Safety and security
+
+- No credentials are required or stored; all data paths are local.
+- Leakage guardrails are on by default where configured: forbidden paths,
+  held-out boundary rejection, and memorization evaluation
+  (`memorization_evaluator`) for copy-detection.
+- Synthetic data is for research and training augmentation. Nothing in this
+  repository is financial advice.
+
+## Limitations
+
+- **No LICENSE file** is committed; [`pyproject.toml`](pyproject.toml)
+  declares `license = MIT`, but until a LICENSE file is added the licensing
+  is only declared in packaging metadata.
+- No `requirements.txt`; dependencies are managed solely through
+  `pyproject.toml`.
+- Three test modules fail to collect (see Tests).
+- Root-level one-off drivers (`run_*.py`, `measure_tolerance*.py`) are
+  research scripts kept for reference, not part of the packaged surface.
+
+## Migration notes
+
+This repository supersedes
+[timeseries-gan](https://github.com/harveybc/timeseries-gan) (package `tsg`):
+the GAN/VAE experiments moved here as `sdg.trainer` plugins, and the current
+recommended generators are the OHLCV bootstrap families. New work should
+target `synthetic-datagen`.
+
+## Related repositories
+
+- [doin-node](https://github.com/harveybc/doin-node) — distributed optimizer
+  runtime that consumes sdg generator artifacts.
+- [predictor](https://github.com/harveybc/predictor) — model training that
+  augmentation manifests target.
+- [preprocessor](https://github.com/harveybc/preprocessor) /
+  [feature-eng](https://github.com/harveybc/feature-eng) — the real-data
+  pipeline whose datasets sdg augments.
+- [timeseries-gan](https://github.com/harveybc/timeseries-gan) — legacy
+  predecessor (superseded).
 
 ## License
 
-MIT
-
----
-
-## Phase 4 — Project 3 SAC Augmentation Workflow (ETHUSDT 4h)
-
-This repo ships a fully-wired Phase 4 augmentation pipeline that takes
-the 8-year ETHUSDT 4h dataset, generates synthetic OHLCV bars, recomputes
-the full `tech_stat` feature matrix, and emits a `model_ready.csv`
-suitable for direct consumption by [agent-multi](https://github.com/harveybc/agent-multi)'s
-`feature_window_preprocessor` → `project3_sac_actor_critic_agent`.
-
-### Data layout
-
-The 8-year reference dataset is provided at:
-
-- [examples/data/ethusdt_4h_full_8yr.csv](examples/data/ethusdt_4h_full_8yr.csv) — `2017-09-28 → 2025-12-31`, 18,086 rows, full `tech_stat` feature matrix.
-
-The agent-multi default split (anchored at `start`) is:
-
-| Window | Span | n_rows |
-|---|---|---|
-| Train | 2017-09-28 → 2021-09-28 | 8,749 |
-| Validation | 2021-09-28 → 2022-09-28 | 2,190 |
-| Test | 2022-09-28 → 2023-09-28 | 2,190 |
-| **Heldout (Phase 3 firewall)** | **2023-09-28 → 2025-12-31** | **4,957** |
-
-Phase 4 generators may NEVER see the validation, test, or heldout windows
-(see [forbidden_paths.txt](forbidden_paths.txt) for enforcement).
-
-### One-command end-to-end augmentation
-
-```bash
-python -m examples.scripts.build_augmented_project3_training \
-    --method stationary_bootstrap \
-    --synthetic_years 1 \
-    --output_dir experiments/synthetic_data/project3_eth_4h
-```
-
-Pipeline:
-
-1. Slices the 4-year training window from the 8-year file.
-2. Trains `stationary_bootstrap_ohlcv_trainer` (Politis-Romano stationary block bootstrap) on the OHLCV columns only.
-3. Generates 1 year (≈2,190 bars) of synthetic 4h OHLCV with timestamps **preceding** the real-data start, so the agent-multi temporal split does not need any modification beyond `train_years += synthetic_years`.
-4. Validates with `OhlcvAlgebraicEvaluator` (must report 0 violations).
-5. Runs `FinancialDistributionEvaluator` + `MemorizationEvaluator` and writes their gate dicts.
-6. Concatenates synthetic + real OHLCV and recomputes the full `tech_stat` feature matrix via `TechStatFeatureEngine` — Phase 4 §6 forbids generating indicators directly.
-7. Emits `ethusdt_4h_tech_stat_augmented_<method>.csv` plus an audit summary and a row appended to `SYNTHETIC_LEDGER.csv`.
-
-### Wiring into agent-multi
-
-The augmented CSV plugs straight into the agent-multi config — only three keys change vs. the real-only baseline:
-
-```jsonc
-{
-  "input_data_file": ".../ethusdt_4h_tech_stat_augmented_stationary_bootstrap.csv",
-  "train_years": 5,        // was 4 — absorbs the 1 year of synthetic
-  "val_years": 1,
-  "test_years": 1
-  // val + test windows still map to 100% real data
-}
-```
-
-### Available Phase-4-ready generators
-
-| Generator family | Status | Validity-by-construction | Memorization gates (4yr ETH 4h) |
-|---|---|---|---|
-| `stationary_bootstrap_ohlcv_generator` | ⚠ Diagnostic-only | ✅ | **FAILS** `duplicate_window_rate=0.025`, `nn_overlap_rate=0.010`, `copied_subseq_ratio=2.469` |
-| `regime_residual_bootstrap_ohlcv_generator` (default) | ⚠ Diagnostic-only | ✅ | 6/7 gates pass; **fails only** `duplicate_window_rate=0.015` (vs 0.001 max). Strictly better than stationary on every gate. |
-| `regime_residual_bootstrap_ohlcv_generator` **`--anti_memorization`** | ✅ **VALID for Project 3 training** | ✅ | **All 7 gates pass** (seed 13): `algebraic=0`, `ks_returns_pvalue=0.325`, `wasserstein_ratio=0.014`, `classifier_auc=0.582`, `nn_overlap=0.0`, `copied_subseq=0.0`, `duplicate_window_rate=0.000`. |
-| `typical_price_generator` (legacy) | ⚠ Not OHLCV | ❌ | n/a |
-| `block_bootstrap`, `regime_*` legacy, `grasynda`, `timegan`, `vae_gan` | ❌ Not Phase-4 plugin yet | n/a | n/a |
-
-**Algorithmic note** — `regime_residual_bootstrap_v1` quantile-bins the
-training window into K=3 volatility regimes (rolling `|r_close|`),
-stores regime-mean-removed residuals, walks a Markov chain over the
-regimes, and at each step produces
-
-    Z_syn[t] = mean[regime_t] + residual[idx_t] + N(0, σ · std[regime_t])
-
-The continuous Gaussian jitter is what eliminates the `copied_subseq`
-runs and pushes `nn_overlap_rate` to zero; calibrated `σ=0.20` keeps
-`KS_returns p > 0.01`. CLI:
-
-```bash
-python -m examples.scripts.build_augmented_project3_training \
-    --method regime_residual_bootstrap --synthetic_years 1 --seed 42
-```
-
-#### `--anti_memorization` (post-hoc rejection-sampling refinement)
-
-The default `regime_residual_bootstrap_v1` still leaks ~1.5 % of
-synthetic 32-windows inside the real-real NN epsilon. The optional
-`--anti_memorization` mode adds a deterministic rejection-sampling
-post-pass that **does not relax any gate**. The trainer additionally
-persists the training `CLOSE` column inside the npz state so the
-generator can compute real log-return windows.
-
-Algorithm (after the regular Z_syn synthesis loop):
-
-1. Reconstruct the synthetic `CLOSE` and slide windows of length
-   `anti_mem_window` (default 32) over its log-returns.
-2. Compute the NN-L2 distance from each synthetic window to a
-   sub-sampled set of real log-return windows.
-3. Define `dup_eps = quantile(real-real NN dists, anti_mem_dup_eps_quantile)`
-   (default 0.001, identical to `MemorizationEvaluator`).
-4. Flag synthetic windows with `d ≤ dup_eps · anti_mem_safety_margin`
-   (default 1.5).
-5. For every flagged window, **resample** the rows it spans by drawing a
-   fresh residual from the *same regime's* residual pool plus
-   regime-conditioned Gaussian jitter scaled by `anti_mem_boost_factor`
-   (default 1.0). Each row is resampled at most once across passes —
-   already-touched rows are frozen to avoid variance accumulation.
-6. Re-reconstruct and re-check; loop up to `anti_mem_max_passes`
-   (default 8) iterations or until no flagged windows remain.
-
-Plugin params (defaults):
-
-| param | default | purpose |
-|---|---|---|
-| `anti_memorization` | `False` | Master switch; off by default. |
-| `anti_mem_window` | `32` | Window length for NN duplicate detection. |
-| `anti_mem_max_real_windows` | `4000` | Sub-sample ceiling for the real reference set. |
-| `anti_mem_dup_eps_quantile` | `0.001` | Quantile of real-real NN distances used as dup_eps. |
-| `anti_mem_safety_margin` | `1.50` | Multiplier on dup_eps; window is flagged if `d ≤ margin · dup_eps`. |
-| `anti_mem_boost_factor` | `1.0` | Multiplier on `jitter_sigma` for the resampled rows. |
-| `anti_mem_max_passes` | `8` | Hard cap on outer loop iterations. |
-
-The corresponding CLI flags on `build_augmented_project3_training.py`
-are `--anti_memorization --anti_mem_window --anti_mem_max_passes
---anti_mem_boost_factor --anti_mem_safety_margin
---anti_mem_dup_eps_quantile`. Validated combination on ETH 4h:
-
-```bash
-python examples/scripts/build_augmented_project3_training.py \
-    --method regime_residual_bootstrap --synthetic_years 1 --seed 13 \
-    --anti_memorization --anti_mem_window 32 --anti_mem_max_passes 16 \
-    --anti_mem_boost_factor 1.0 --anti_mem_safety_margin 1.5
-```
-
-The full row-by-row gate comparison across the three configurations is
-persisted at
-`experiments/synthetic_data/project3_eth_4h/compare_generators.json`.
-
-### Quality gates fail closed (2026-05-03 addendum)
-
-Per the SYNTHETIC_DATAGEN_SPECKIT 2026-05-03 addendum, all three gate
-families (algebraic, distribution, memorization) are **fatal by default**.
-If any gate fails:
-
-- `augmentation_summary.json` records `project3_valid_for_training = false`.
-- `SYNTHETIC_LEDGER.csv` gets an `evaluate` row with `valid=false`.
-- The augmented `model_ready` CSV is **not written**, and any pre-existing
-  augmented CSV at the expected path is renamed with the suffix
-  `.invalid_quality_gates`.
-- `build_augmented_project3_training.py` exits with code 3.
-
-A failed generator may be re-run with `--allow_diagnostic_output` purely
-to produce diagnostic artifacts; that mode must never feed Project 3
-SAC/PPO/DQN training. The first ETH 4h `stationary_bootstrap_v1` output
-is currently in this state.
-
-### Audit trail
-
-Every fit/generate/evaluate appends one row to
-`experiments/synthetic_data/SYNTHETIC_LEDGER.csv`. Every generator family
-is recorded in `generator_family_registry.json`. Each family also gets a
-`<family>_protocol.md` stub documenting its mathematical assumptions, the
-fit windows used, and the §4.2 gate values it produced.
+MIT per [`pyproject.toml`](pyproject.toml); no LICENSE file is committed yet
+(see Limitations).
