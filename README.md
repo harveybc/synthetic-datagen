@@ -114,11 +114,12 @@ The config
 [`examples/config/financial_ohlcv_bootstrap_config.json`](examples/config/financial_ohlcv_bootstrap_config.json)
 trains on
 [`examples/data/financial_ohlcv_sample.csv`](examples/data/financial_ohlcv_sample.csv)
-and emits the artifacts committed next to it
-([`financial_ohlcv_bootstrap.npz`](examples/data/financial_ohlcv_bootstrap.npz),
-[`financial_ohlcv_synthetic.csv`](examples/data/financial_ohlcv_synthetic.csv),
-metadata JSONs). This run was not re-executed for this README to avoid
-overwriting the committed artifacts; the `--help`, `--list_plugins` and import
+and writes generated artifacts next to it
+(`examples/data/financial_ohlcv_bootstrap.npz`,
+`examples/data/financial_ohlcv_synthetic.csv`, metadata JSONs — generated
+outputs, not committed to the repository). This run was not re-executed for
+this README to avoid
+overwriting the locally generated artifacts; the `--help`, `--list_plugins` and import
 checks above were executed. A typical-price generation config is at
 [`examples/config/generate.json`](examples/config/generate.json), and larger
 drivers (generator sweeps, augmentation-manifest builds, protocol packets)
