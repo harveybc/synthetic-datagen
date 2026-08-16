@@ -17,6 +17,14 @@ traceable.
 `synthetic-datagen` 1.0.0). Successor of the legacy
 [timeseries-gan](https://github.com/harveybc/timeseries-gan) repository.
 
+## Run this with an AI agent
+
+Paste this into Claude Code, Cursor, Codex, GitHub Copilot or any coding agent with shell access:
+
+> Read `AGENTS.md` in this repository and follow the **Agent quickstart** section end to end: set up the environment, run the smoke test, execute the example bootstrap fit-and-generate run, then tell me the exact file paths where I can see the results and one analysis I should try first.
+
+`AGENTS.md` is the [agents.md](https://agents.md) convention, read natively by most coding agents.
+
 ## Role and non-responsibilities
 
 `synthetic-datagen` produces synthetic OHLCV / typical-price datasets,
@@ -82,8 +90,6 @@ repositories' entry-point groups. The OHLCV column schema lives in
 
 ## Installation
 
-Unverified (not executed in a clean environment for this README):
-
 ```bash
 git clone https://github.com/harveybc/synthetic-datagen.git
 cd synthetic-datagen
@@ -91,13 +97,28 @@ pip install -e .[dev]
 # installs the `sdg` console script
 ```
 
-Verified in the maintainer environment (Python 3.12.13, 2026-08-10):
+**Plugin discovery needs the package metadata.** Plugins are resolved through
+`importlib.metadata` entry points, and `*.egg-info/` is gitignored, so a fresh
+clone reports `(none installed)` for every plugin group until the package is
+installed. If you cannot install into your environment — `packages.find`
+includes `app*`, which publishes the generic top-level name `app` and collides
+with the sibling repositories in this stack — generate only the local metadata
+instead:
 
+```bash
+python -c "import setuptools; setuptools.setup()" egg_info
+```
+
+Verified on a clean `git archive` checkout (Python 3.12.13, 2026-08-16):
+
+- Before the `egg_info` command, `python -m app.main --list_plugins` prints
+  `(none installed)` for all groups; after it, the full registry appears.
 - `python -m app.main --help` → prints the full `sdg` usage.
-- `python -m app.main --list_plugins` → prints the plugin registry for all
-  groups (trainers, generators, evaluators, optimizers, ...).
 - `python -c "import app.forbidden_paths, app.heldout_guard, app.synthetic_ledger, app.audit"`
   → `guardrail imports OK`.
+- The full train → generate → evaluate loop below runs in about two seconds.
+
+`pip install -e .[dev]` itself was not executed for this README.
 
 ## Quickstart
 
@@ -105,22 +126,33 @@ Fit a stationary-bootstrap OHLCV generator and produce a synthetic series
 using the repo-owned config and sample data:
 
 ```bash
-# Train + generate per the example config (writes model .npz, metadata and
-# a synthetic CSV under examples/data/)
+# 1. Fit the generator (the config's mode is "train")
 python -m app.main --load_config examples/config/financial_ohlcv_bootstrap_config.json
+
+# 2. Generate the synthetic series from the model just fitted
+python -m app.main --load_config examples/config/financial_ohlcv_bootstrap_config.json \
+  --mode generate --load_model examples/data/financial_ohlcv_bootstrap.npz
+
+# 3. Check the generated bars are algebraically consistent
+python -m app.main --mode evaluate --evaluator ohlcv_algebraic_evaluator \
+  --synthetic_data examples/data/financial_ohlcv_synthetic.csv \
+  --real_data examples/data/financial_ohlcv_sample.csv \
+  --metrics_file examples/data/financial_ohlcv_metrics.json
 ```
 
 The config
 [`examples/config/financial_ohlcv_bootstrap_config.json`](examples/config/financial_ohlcv_bootstrap_config.json)
 trains on
 [`examples/data/financial_ohlcv_sample.csv`](examples/data/financial_ohlcv_sample.csv)
-and writes generated artifacts next to it
+(600 hourly OHLCV bars) and writes generated artifacts next to it
 (`examples/data/financial_ohlcv_bootstrap.npz`,
 `examples/data/financial_ohlcv_synthetic.csv`, metadata JSONs — generated
-outputs, not committed to the repository). This run was not re-executed for
-this README to avoid
-overwriting the locally generated artifacts; the `--help`, `--list_plugins` and import
-checks above were executed. A typical-price generation config is at
+outputs, gitignored, not committed). Note that step 1 alone does **not** write
+the synthetic CSV even though the config carries `n_samples` and
+`output_file`: the config's `mode` is `train`, and generation is a separate
+run. All three steps were executed on a clean checkout; step 3 returned
+`valid: true` over 600 rows with zero violations. A typical-price generation
+config is at
 [`examples/config/generate.json`](examples/config/generate.json), and larger
 drivers (generator sweeps, augmentation-manifest builds, protocol packets)
 live in [`examples/scripts/`](examples/scripts).
@@ -140,12 +172,15 @@ optimization campaigns.
 ## Tests
 
 ```bash
-python -m pytest -q --collect-only
+python -m pytest tests/ -q
 ```
 
-Observed result (2026-08-10, Python 3.12.13): `71 tests collected, 3 errors` —
-most of the suite under [`tests/`](tests) collects cleanly; three modules have
-collection errors. Run the suite with `python -m pytest -q`.
+Observed result (2026-08-16, Python 3.12.13): **71 passed** in about 27
+seconds. Running `python -m pytest -q` without a path also collects
+[`examples/scripts/`](examples/scripts) and reports `71 tests collected, 3
+errors`; all three errors are in that directory — two need the unlisted
+`hmmlearn` dependency and one is missing a data file. Scope pytest to
+[`tests/`](tests).
 
 ## Outputs and reproducibility
 
@@ -176,8 +211,12 @@ collection errors. Run the suite with `python -m pytest -q`.
   declares `license = MIT`, but until a LICENSE file is added the licensing
   is only declared in packaging metadata.
 - No `requirements.txt`; dependencies are managed solely through
-  `pyproject.toml`.
-- Three test modules fail to collect (see Tests).
+  `pyproject.toml`. `hmmlearn`, needed by two `examples/scripts/` modules, is
+  not declared anywhere.
+- A fresh clone has no plugins until the package metadata is generated (see
+  Installation) — nothing in the repository states this at the point of use.
+- Three modules under [`examples/scripts/`](examples/scripts) fail to collect
+  (see Tests).
 - Root-level one-off drivers (`run_*.py`, `measure_tolerance*.py`) are
   research scripts kept for reference, not part of the packaged surface.
 
